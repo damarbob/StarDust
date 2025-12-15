@@ -63,7 +63,7 @@ class EntriesManager
      */
     public function get(): array
     {
-        return $this->entriesModel->getCustomBuilder()->get()->getResultArray();
+        return $this->entriesModel->stardust()->get()->getResultArray();
     }
 
     /**
@@ -73,7 +73,7 @@ class EntriesManager
      */
     public function getDeleted(): array
     {
-        return $this->entriesModel->getDeletedCustomBuilder()->get()->getResultArray();
+        return $this->entriesModel->stardust(true)->get()->getResultArray();
     }
 
     /**
@@ -83,7 +83,7 @@ class EntriesManager
      */
     public function count(): int|string
     {
-        return $this->entriesModel->getCustomBuilder()->countAllResults();
+        return $this->entriesModel->stardust()->countAllResults();
     }
 
     /**
@@ -96,7 +96,7 @@ class EntriesManager
     public function countData(int $entryId): int|string
     {
         return $this->entryDataModel
-            ->getCustomBuilder()
+            ->stardust()
             ->where('entry_id', $entryId)
             ->countAllResults();
     }
@@ -108,7 +108,7 @@ class EntriesManager
      */
     public function countDeleted(): int|string
     {
-        return $this->entriesModel->getDeletedCustomBuilder()->countAllResults();
+        return $this->entriesModel->stardust(true)->countAllResults();
     }
 
     /**
@@ -120,7 +120,7 @@ class EntriesManager
      */
     public function find(int $id): array|false
     {
-        $result = $this->entriesModel->getCustomBuilder()
+        $result = $this->entriesModel->stardust()
             ->where('id', $id)
             ->get()
             ->getResultArray();
@@ -136,7 +136,7 @@ class EntriesManager
      */
     public function findEntries(array $ids): array|false
     {
-        $result = $this->entriesModel->getCustomBuilder()
+        $result = $this->entriesModel->stardust()
             ->whereIn('id', $ids)
             ->get()
             ->getResultArray();
@@ -152,7 +152,7 @@ class EntriesManager
      */
     public function findDeleted(int $id): array|false
     {
-        $result = $this->entriesModel->getDeletedCustomBuilder()
+        $result = $this->entriesModel->stardust(true)
             ->where('id', $id)
             ->get()
             ->getResultArray();
@@ -168,7 +168,7 @@ class EntriesManager
      */
     public function findDeletedEntries(array $ids): array|false
     {
-        $result = $this->entriesModel->getDeletedCustomBuilder()
+        $result = $this->entriesModel->stardust(true)
             ->whereIn('id', $ids)
             ->get()
             ->getResultArray();

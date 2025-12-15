@@ -2,6 +2,7 @@
 
 namespace StarDust\Services;
 
+use StarDust\Libraries\RuntimeIndexer;
 use StarDust\Models\EntriesModel;
 use StarDust\Models\EntryDataModel;
 use StarDust\Models\ModelsModel;
@@ -13,6 +14,7 @@ class ModelsManager
     protected ModelDataModel $modelDataModel;
     protected EntriesModel $entriesModel;
     protected EntryDataModel $entryDataModel;
+    protected RuntimeIndexer $runtimeIndexer;
     protected static $instance;
 
     public static function getInstance()
@@ -22,11 +24,13 @@ class ModelsManager
             $modelDataModel = model('StarDust\Models\ModelDataModel');
             $entriesModel = model('StarDust\Models\EntriesModel');
             $entryDataModel = model('StarDust\Models\EntryDataModel');
+            $runtimeIndexer = service('runtimeIndexer');
             static::$instance = new static(
                 $modelsModel,
                 $modelDataModel,
                 $entriesModel,
-                $entryDataModel
+                $entryDataModel,
+                $runtimeIndexer
             );
         }
         return static::$instance;
@@ -36,38 +40,40 @@ class ModelsManager
         ModelsModel $modelsModel,
         ModelDataModel $modelDataModel,
         EntriesModel $entriesModel,
-        EntryDataModel $entryDataModel
+        EntryDataModel $entryDataModel,
+        RuntimeIndexer $runtimeIndexer
     ) {
         $this->modelsModel = $modelsModel;
         $this->modelDataModel = $modelDataModel;
         $this->entriesModel = $entriesModel;
         $this->entryDataModel = $entryDataModel;
+        $this->runtimeIndexer = $runtimeIndexer;
     }
 
     public function get(): array
     {
-        return $this->modelsModel->getCustomBuilder()->get()->getResultArray();
+        return $this->modelsModel->stardust()->get()->getResultArray();
     }
 
 
     public function getDeleted(): array
     {
-        return $this->modelsModel->getDeletedCustomBuilder()->get()->getResultArray();
+        return $this->modelsModel->stardust(true)->get()->getResultArray();
     }
 
     public function count(): int|string
     {
-        return $this->modelsModel->getCustomBuilder()->countAllResults();
+        return $this->modelsModel->stardust()->countAllResults();
     }
 
     public function countDeleted(): int|string
     {
-        return $this->modelsModel->getDeletedCustomBuilder()->countAllResults();
+        return $this->modelsModel->stardust(true)->countAllResults();
     }
 
     public function find(int $id): array|false
     {
-        $modelResult = $this->modelsModel->getCustomBuilder()->where('id', $id)->get()->getResultArray();
+        $modelResult = $this->modelsModel->stardust()->where('id', $id)->get()->getResultArray();
 
         if (empty($modelResult)) {
             return false;
@@ -78,7 +84,7 @@ class ModelsManager
 
     public function findModels(array $ids): array|false
     {
-        $modelResult = $this->modelsModel->getCustomBuilder()->whereIn('id', $ids)->get()->getResultArray();
+        $modelResult = $this->modelsModel->stardust()->whereIn('id', $ids)->get()->getResultArray();
 
         if (empty($modelResult)) {
             return false;
@@ -89,7 +95,7 @@ class ModelsManager
 
     public function findDeleted(int $id): array|false
     {
-        $modelResult = $this->modelsModel->getDeletedCustomBuilder()->where('id', $id)->get()->getResultArray();
+        $modelResult = $this->modelsModel->stardust(true)->where('id', $id)->get()->getResultArray();
 
         if (empty($modelResult)) {
             return false;
@@ -100,7 +106,7 @@ class ModelsManager
 
     public function findDeletedModels(array $ids): array|false
     {
-        $modelResult = $this->modelsModel->getDeletedCustomBuilder()->whereIn('id', $ids)->get()->getResultArray();
+        $modelResult = $this->modelsModel->stardust(true)->whereIn('id', $ids)->get()->getResultArray();
 
         if (empty($modelResult)) {
             return false;
@@ -109,6 +115,9 @@ class ModelsManager
         return $modelResult;
     }
 
+    /**
+     * @todo If syncIndexes fails, the model will be created but without indexes
+     */
     public function create(array $data, int $userId): int
     {
         $this->modelsModel->save(['creator_id' => $userId]);
@@ -118,14 +127,25 @@ class ModelsManager
         $data['creator_id'] = $userId;
         $this->modelDataModel->save($data);
 
+        // Sync indexes
+        $fields = json_decode($data['fields'], true);
+        $this->runtimeIndexer->syncIndexes($fields);
+
         return $modelId;
     }
 
+    /**
+     * @todo If syncIndexes fails, the model will be updated but not the indexes
+     */
     public function update(int $modelId, array $data, int $userId): void
     {
         $data['model_id'] = $modelId;
         $data['creator_id'] = $userId;
         $this->modelDataModel->save($data);
+
+        // Sync indexes
+        $fields = json_decode($data['fields'], true);
+        $this->runtimeIndexer->syncIndexes($fields);
     }
 
     public function updateModels(array $ids, array $data): void

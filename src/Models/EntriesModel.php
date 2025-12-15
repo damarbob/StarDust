@@ -5,8 +5,9 @@ namespace StarDust\Models;
 
 use CodeIgniter\Database\BaseBuilder;
 use CodeIgniter\Model;
+use StarDust\Database\EntriesBuilder;
 
-class EntriesModel extends Model
+final class EntriesModel extends Model
 {
     protected $table = 'entries';           // The table name
     protected $primaryKey = 'id';          // Primary key of the table
@@ -16,8 +17,33 @@ class EntriesModel extends Model
     protected $useSoftDeletes = true;
 
     /**
+     * Get the StarDust Custom Builder instance.
+     * @param bool $onlyDeleted Whether to load the 'deleted' query version.
+     * @return EntriesBuilder
+     */
+    public function stardust(bool $onlyDeleted = false): EntriesBuilder
+    {
+        helper('StarDust\stardust_internal');
+
+        $filename = $onlyDeleted ? 'EntriesModelGetDeleted' : 'EntriesModelGet';
+        $filepath = locate_query_file($filename);
+        $sql      = file_get_contents($filepath);
+
+        // Subquery as the "Table Name"
+        $tableName = "($sql) as sub";
+
+        // Pass the table name and the current DB connection to the parent constructor
+        return new EntriesBuilder($tableName, $this->db);
+    }
+
+    /*
+     * Legacy methods below
+     */
+
+    /**
      * Load the SQL query from an external file and return a BaseBuilder.
      *
+     * @deprecated Since version 0.2.0-alpha
      * @return BaseBuilder
      * @throws \Exception if the SQL file is not found.
      */
@@ -47,6 +73,7 @@ class EntriesModel extends Model
     /**
      * Load the SQL query from an external file and return a BaseBuilder.
      *
+     * @deprecated Since version 0.2.0-alpha
      * @return BaseBuilder
      * @throws \Exception if the SQL file is not found.
      */
@@ -95,6 +122,7 @@ class EntriesModel extends Model
      *   $result = $builder->get()->getResult();
      * </code>
      *
+     * @deprecated Since version 0.2.0-alpha
      * @param BaseBuilder $builder The query builder instance.
      * @param array $conditions An array of associative arrays with keys 'field' and 'value'.
      *

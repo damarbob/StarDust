@@ -4,6 +4,7 @@ namespace StarDust\Config;
 
 use StarDust\Services\EntriesManager;
 use StarDust\Services\ModelsManager;
+use StarDust\Libraries\RuntimeIndexer;
 use CodeIgniter\Config\BaseService;
 
 /**
@@ -52,5 +53,16 @@ class Services extends BaseService
             return self::getSharedInstance('entriesManager');
         }
         return EntriesManager::getInstance();
+    }
+
+    /**
+     * Returns an instance of the RuntimeIndexer class.
+     */
+    public static function runtimeIndexer(bool $getShared = true): RuntimeIndexer
+    {
+        if ($getShared) {
+            return self::getSharedInstance('runtimeIndexer');
+        }
+        return new RuntimeIndexer();
     }
 }

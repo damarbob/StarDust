@@ -15,8 +15,27 @@ class EntryDataModel extends Model
     protected $useSoftDeletes = true;
 
     /**
+     * Get the StarDust Custom Builder instance.
+     * @return \StarDust\Database\EntryDataBuilder
+     */
+    public function stardust(): \StarDust\Database\EntryDataBuilder
+    {
+        helper('StarDust\stardust_internal');
+
+        $filepath = locate_query_file('EntryDataModelGet');
+        $sql      = file_get_contents($filepath);
+
+        // Subquery as the "Table Name"
+        $tableName = "($sql) as sub";
+
+        // Pass the table name and the current DB connection to the parent constructor
+        return new \StarDust\Database\EntryDataBuilder($tableName, $this->db);
+    }
+
+    /**
      * Load the SQL query from an external file and return a BaseBuilder.
      *
+     * @deprecated Since version 0.2.0-alpha
      * @return BaseBuilder
      * @throws \Exception if the SQL file is not found.
      */
