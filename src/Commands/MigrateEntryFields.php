@@ -16,10 +16,7 @@ class MigrateEntryFields extends BaseCommand
     {
         $model = new EntryDataModel();
 
-        // ---------------------------------------------------------
-        // Phase 1: Convert Data Format
-        // ---------------------------------------------------------
-        CLI::write("Phase 1: Converting Entry Data...", 'white', 'blue');
+        CLI::write("Converting Entry Data...", 'white', 'blue');
 
         // Fetch all rows. For very large datasets, chunking is recommended, 
         // but for a library tool we'll start simple or use chunk if provided by model.
@@ -110,20 +107,9 @@ class MigrateEntryFields extends BaseCommand
         CLI::newLine();
 
         // ---------------------------------------------------------
-        // Phase 2: Generate Indexes
+        // IMPORTANT: Indexes are required
         // ---------------------------------------------------------
-        CLI::write("Phase 2: Generating Virtual Column Indexes...", 'white', 'blue');
-
-        $indexer = \StarDust\Config\Services::runtimeIndexer();
-
-        try {
-            // New method in RuntimeIndexer that handles finding correct models
-            // and optimizing column checks.
-            $indexer->indexAllModels();
-            CLI::write("Indexing Complete.", 'green');
-        } catch (\Throwable $e) {
-            CLI::error("Indexing Failed: " . $e->getMessage());
-            $errors++;
-        }
+        CLI::error("IMPORTANT: You must now run 'php spark stardust:generate-indexes' to generate the required database indexes.");
+        CLI::error("Without these indexes, your virtual columns will not work.");
     }
 }
