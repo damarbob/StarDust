@@ -126,6 +126,10 @@ class ModelsManager
         $data['model_id'] = $modelId;
         $data['creator_id'] = $userId;
         $this->modelDataModel->save($data);
+        $modelDataId = $this->modelDataModel->getInsertID();
+
+        // Update the current version pointer
+        $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
 
         // Sync indexes
         $fields = json_decode($data['fields'], true);
@@ -142,6 +146,10 @@ class ModelsManager
         $data['model_id'] = $modelId;
         $data['creator_id'] = $userId;
         $this->modelDataModel->save($data);
+        $modelDataId = $this->modelDataModel->getInsertID();
+
+        // Update the current version pointer
+        $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
 
         // Sync indexes
         $fields = json_decode($data['fields'], true);

@@ -9,7 +9,7 @@ class ModelsModel extends Model
 {
     protected $table = 'models';           // The table name
     protected $primaryKey = 'id';          // Primary key of the table
-    protected $allowedFields = ['creator_id', 'deleter_id', 'created_at', 'updated_at', 'deleted_at']; // Fields that can be inserted/updated
+    protected $allowedFields = ['creator_id', 'deleter_id', 'created_at', 'updated_at', 'deleted_at', 'current_model_data_id']; // Fields that can be inserted/updated
     protected $returnType = 'array';       // Return results as arrays
     protected $useTimestamps = true;
     protected $useSoftDeletes = true;

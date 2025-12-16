@@ -11,7 +11,7 @@ final class EntriesModel extends Model
 {
     protected $table = 'entries';           // The table name
     protected $primaryKey = 'id';          // Primary key of the table
-    protected $allowedFields = ['model_id', 'creator_id', 'deleter_id', 'created_at', 'updated_at', 'deleted_at']; // Fields that can be inserted/updated
+    protected $allowedFields = ['model_id', 'creator_id', 'deleter_id', 'created_at', 'updated_at', 'deleted_at', 'current_entry_data_id']; // Fields that can be inserted/updated
     protected $returnType = 'array';       // Return results as arrays
     protected $useTimestamps = true;
     protected $useSoftDeletes = true;

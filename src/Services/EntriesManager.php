@@ -196,6 +196,10 @@ class EntriesManager
         $data['entry_id'] = $id;
         $data['creator_id'] = $userId;
         $this->entryDataModel->save($data);
+        $entryDataId = $this->entryDataModel->getInsertID();
+
+        // Update the current version pointer
+        $this->entriesModel->update($id, ['current_entry_data_id' => $entryDataId]);
 
         return $id;
     }
@@ -214,6 +218,10 @@ class EntriesManager
         $data['entry_id'] = $entryId;
         $data['creator_id'] = $userId;
         $this->entryDataModel->save($data);
+        $entryDataId = $this->entryDataModel->getInsertID();
+
+        // Update the current version pointer
+        $this->entriesModel->update($entryId, ['current_entry_data_id' => $entryDataId]);
     }
 
     /**
