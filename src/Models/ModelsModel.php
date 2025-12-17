@@ -15,13 +15,55 @@ class ModelsModel extends Model
     protected $useSoftDeletes = true;
 
     /**
+     * Initializes the model.
+     * Use this instead of __construct() to ensure the model is fully set up.
+     */
+    protected function initialize()
+    {
+        // Load the internal helper
+        helper('StarDust\stardust_internal');
+    }
+
+    /**
+     * Override the builder method to return the custom ModelsBuilder.
+     *
+     * @param string|null $table
+     *
+     * @return \StarDust\Database\ModelsBuilder
+     */
+    public function builder(?string $table = null)
+    {
+        // If the builder is already an instance of ModelsBuilder and we are using the default table, return it.
+        if ($this->builder instanceof \StarDust\Database\ModelsBuilder && empty($table)) {
+            return $this->builder;
+        }
+
+        // Ensure the database connection is initialized
+        if (empty($this->db)) {
+            $this->db = \Config\Database::connect($this->DBGroup);
+        }
+
+        // Use the default table if none is provided
+        $table = empty($table) ? $this->table : $table;
+
+        // Create the custom builder
+        $builder = new \StarDust\Database\ModelsBuilder($table, $this->db);
+
+        // Cache the builder if it's for the default table
+        if (empty($table) || $table === $this->table) {
+            $this->builder = $builder;
+        }
+
+        return $builder;
+    }
+
+    /**
      * Get the StarDust Custom Builder instance.
      * @param bool $onlyDeleted Whether to load the 'deleted' query version.
      * @return \StarDust\Database\ModelsBuilder
      */
     public function stardust(bool $onlyDeleted = false): \StarDust\Database\ModelsBuilder
     {
-        helper('StarDust\stardust_internal');
 
         $filename = $onlyDeleted ? 'ModelsModelGetDeleted' : 'ModelsModelGet';
         $filepath = locate_query_file($filename);
@@ -43,8 +85,6 @@ class ModelsModel extends Model
      */
     public function getCustomBuilder(): BaseBuilder
     {
-        // Load the internal helper
-        helper('StarDust\stardust_internal');
 
         // Locate the file using the namespace package
         $filepath = locate_query_file('ModelsModelGet');
@@ -73,8 +113,6 @@ class ModelsModel extends Model
      */
     public function getDeletedCustomBuilder(): BaseBuilder
     {
-        // Load the internal helper
-        helper('StarDust\stardust_internal');
 
         // Locate the file using the Namespace package
         $filepath = locate_query_file('ModelsModelGetDeleted');
