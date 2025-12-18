@@ -5,6 +5,7 @@ namespace StarDust\Models;
 
 use CodeIgniter\Database\BaseBuilder;
 use CodeIgniter\Model;
+use Config\Database;
 use StarDust\Database\EntriesBuilder;
 
 final class EntriesModel extends Model
@@ -42,7 +43,7 @@ final class EntriesModel extends Model
 
         // Ensure the database connection is initialized
         if (empty($this->db)) {
-            $this->db = \Config\Database::connect($this->DBGroup);
+            $this->db = Database::connect($this->DBGroup);
         }
 
         // Use the default table if none is provided
@@ -66,16 +67,21 @@ final class EntriesModel extends Model
      */
     public function stardust(bool $onlyDeleted = false): EntriesBuilder
     {
+        // We explicitly instantiate a new Builder here instead of using $this->builder
+        // to ensure a fresh, isolated query state. Using the shared builder instance
+        // could lead to query contamination if previous conditions weren't cleared,
+        // or duplication of joins/selects if this method were called multiple times.
+        $builder = new EntriesBuilder($this->table, $this->db);
 
-        $filename = $onlyDeleted ? 'EntriesModelGetDeleted' : 'EntriesModelGet';
-        $filepath = locate_query_file($filename);
-        $sql      = file_get_contents($filepath);
+        $builder->default();
 
-        // Subquery as the "Table Name"
-        $tableName = "($sql) as sub";
+        if ($onlyDeleted) {
+            $builder->whereDeleted();
+        } else {
+            $builder->whereActive();
+        }
 
-        // Pass the table name and the current DB connection to the parent constructor
-        return new EntriesBuilder($tableName, $this->db);
+        return $builder;
     }
 
     /*

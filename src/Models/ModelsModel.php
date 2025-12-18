@@ -4,6 +4,8 @@ namespace StarDust\Models;
 
 use CodeIgniter\Database\BaseBuilder;
 use CodeIgniter\Model;
+use Config\Database;
+use StarDust\Database\ModelsBuilder;
 
 class ModelsModel extends Model
 {
@@ -29,25 +31,25 @@ class ModelsModel extends Model
      *
      * @param string|null $table
      *
-     * @return \StarDust\Database\ModelsBuilder
+     * @return ModelsBuilder
      */
     public function builder(?string $table = null)
     {
         // If the builder is already an instance of ModelsBuilder and we are using the default table, return it.
-        if ($this->builder instanceof \StarDust\Database\ModelsBuilder && empty($table)) {
+        if ($this->builder instanceof ModelsBuilder && empty($table)) {
             return $this->builder;
         }
 
         // Ensure the database connection is initialized
         if (empty($this->db)) {
-            $this->db = \Config\Database::connect($this->DBGroup);
+            $this->db = Database::connect($this->DBGroup);
         }
 
         // Use the default table if none is provided
         $table = empty($table) ? $this->table : $table;
 
         // Create the custom builder
-        $builder = new \StarDust\Database\ModelsBuilder($table, $this->db);
+        $builder = new ModelsBuilder($table, $this->db);
 
         // Cache the builder if it's for the default table
         if (empty($table) || $table === $this->table) {
@@ -60,20 +62,25 @@ class ModelsModel extends Model
     /**
      * Get the StarDust Custom Builder instance.
      * @param bool $onlyDeleted Whether to load the 'deleted' query version.
-     * @return \StarDust\Database\ModelsBuilder
+     * @return ModelsBuilder
      */
-    public function stardust(bool $onlyDeleted = false): \StarDust\Database\ModelsBuilder
+    public function stardust(bool $onlyDeleted = false): ModelsBuilder
     {
+        // We explicitly instantiate a new Builder here instead of using $this->builder
+        // to ensure a fresh, isolated query state. Using the shared builder instance
+        // could lead to query contamination if previous conditions weren't cleared,
+        // or duplication of joins/selects if this method were called multiple times.
+        $builder = new ModelsBuilder($this->table, $this->db);
 
-        $filename = $onlyDeleted ? 'ModelsModelGetDeleted' : 'ModelsModelGet';
-        $filepath = locate_query_file($filename);
-        $sql      = file_get_contents($filepath);
+        $builder->default();
 
-        // Subquery as the "Table Name"
-        $tableName = "($sql) as sub";
+        if ($onlyDeleted) {
+            $builder->whereDeleted();
+        } else {
+            $builder->whereActive();
+        }
 
-        // Pass the table name and the current DB connection to the parent constructor
-        return new \StarDust\Database\ModelsBuilder($tableName, $this->db);
+        return $builder;
     }
 
     /**

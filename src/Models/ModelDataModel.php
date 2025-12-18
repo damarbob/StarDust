@@ -4,6 +4,8 @@ namespace StarDust\Models;
 
 use CodeIgniter\Database\BaseBuilder;
 use CodeIgniter\Model;
+use Config\Database;
+use StarDust\Database\ModelDataBuilder;
 
 class ModelDataModel extends Model
 {
@@ -29,25 +31,25 @@ class ModelDataModel extends Model
      *
      * @param string|null $table
      *
-     * @return \StarDust\Database\ModelDataBuilder
+     * @return ModelDataBuilder
      */
     public function builder(?string $table = null)
     {
         // If the builder is already an instance of ModelDataBuilder and we are using the default table, return it.
-        if ($this->builder instanceof \StarDust\Database\ModelDataBuilder && empty($table)) {
+        if ($this->builder instanceof ModelDataBuilder && empty($table)) {
             return $this->builder;
         }
 
         // Ensure the database connection is initialized
         if (empty($this->db)) {
-            $this->db = \Config\Database::connect($this->DBGroup);
+            $this->db = Database::connect($this->DBGroup);
         }
 
         // Use the default table if none is provided
         $table = empty($table) ? $this->table : $table;
 
         // Create the custom builder
-        $builder = new \StarDust\Database\ModelDataBuilder($table, $this->db);
+        $builder = new ModelDataBuilder($table, $this->db);
 
         // Cache the builder if it's for the default table
         if (empty($table) || $table === $this->table) {
@@ -59,19 +61,19 @@ class ModelDataModel extends Model
 
     /**
      * Get the StarDust Custom Builder instance.
-     * @return \StarDust\Database\ModelDataBuilder
+     * @return ModelDataBuilder
      */
-    public function stardust(): \StarDust\Database\ModelDataBuilder
+    public function stardust(): ModelDataBuilder
     {
+        // We explicitly instantiate a new Builder here instead of using $this->builder
+        // to ensure a fresh, isolated query state. Using the shared builder instance
+        // could lead to query contamination if previous conditions weren't cleared,
+        // or duplication of joins/selects if this method were called multiple times.
+        $builder = new ModelDataBuilder($this->table, $this->db);
 
-        $filepath = locate_query_file('ModelDataModelGet');
-        $sql      = file_get_contents($filepath);
+        $builder->default()->whereActive();
 
-        // Subquery as the "Table Name"
-        $tableName = "($sql) as sub";
-
-        // Pass the table name and the current DB connection to the parent constructor
-        return new \StarDust\Database\ModelDataBuilder($tableName, $this->db);
+        return $builder;
     }
 
     /**

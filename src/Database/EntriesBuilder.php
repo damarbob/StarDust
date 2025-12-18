@@ -8,6 +8,16 @@ final class EntriesBuilder extends BaseBuilder
 {
 
     /**
+     * Apply default selection and joins.
+     *
+     * @return self
+     */
+    public function default(): self
+    {
+        return $this->selectDefault()->joinDefault();
+    }
+
+    /**
      * The custom chainable method.
      */
     public function likeFields(array $conditions): self

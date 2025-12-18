@@ -63,6 +63,16 @@ final class EntryDataBuilder extends BaseBuilder
     }
 
     /**
+     * Apply default selection and joins.
+     *
+     * @return self
+     */
+    public function default(): self
+    {
+        return $this->selectDefault()->joinDefault();
+    }
+
+    /**
      * Select standard columns.
      */
     public function selectDefault(): self
