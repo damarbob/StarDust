@@ -19,6 +19,7 @@ final class EntriesBuilder extends BaseBuilder
 
     /**
      * The custom chainable method.
+     * @todo remove in the future
      */
     public function likeFields(array $conditions): self
     {

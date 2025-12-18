@@ -4,6 +4,16 @@ namespace StarDust\Database\Migrations;
 
 use CodeIgniter\Database\Migration;
 
+/**
+ * Migration to add current version reference columns.
+ *
+ * This migration adds `current_entry_data_id` to the `entries` table and
+ * `current_model_data_id` to the `models` table. These columns store a direct
+ * reference to the current version of the data, allowing for O(1) retrieval
+ * performance without needing complex joins or subqueries.
+ *
+ * @package StarDust\Database\Migrations
+ */
 class AddCurrentVersionColumns extends Migration
 {
     public function up()

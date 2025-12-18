@@ -8,6 +8,9 @@ use StarDust\Models\EntryDataModel;
 use StarDust\Models\ModelsModel;
 use StarDust\Models\ModelDataModel;
 
+/**
+ * Service class for managing Models and their associated data.
+ */
 class ModelsManager
 {
     protected ModelsModel $modelsModel;
@@ -17,6 +20,11 @@ class ModelsManager
     protected RuntimeIndexer $runtimeIndexer;
     protected static $instance;
 
+    /**
+     * Get the singleton instance of the ModelsManager.
+     *
+     * @return static
+     */
     public static function getInstance()
     {
         if (is_null(static::$instance)) {
@@ -36,6 +44,15 @@ class ModelsManager
         return static::$instance;
     }
 
+    /**
+     * Constructor.
+     *
+     * @param ModelsModel $modelsModel
+     * @param ModelDataModel $modelDataModel
+     * @param EntriesModel $entriesModel
+     * @param EntryDataModel $entryDataModel
+     * @param RuntimeIndexer $runtimeIndexer
+     */
     public function __construct(
         ModelsModel $modelsModel,
         ModelDataModel $modelDataModel,
@@ -50,27 +67,53 @@ class ModelsManager
         $this->runtimeIndexer = $runtimeIndexer;
     }
 
+    /**
+     * Retrieve all active models.
+     *
+     * @return array
+     */
     public function get(): array
     {
         return $this->modelsModel->stardust()->get()->getResultArray();
     }
 
 
+    /**
+     * Retrieve all deleted models.
+     *
+     * @return array
+     */
     public function getDeleted(): array
     {
         return $this->modelsModel->stardust(true)->get()->getResultArray();
     }
 
+    /**
+     * Count total active models.
+     *
+     * @return int|string
+     */
     public function count(): int|string
     {
         return $this->modelsModel->stardust()->countAllResults();
     }
 
+    /**
+     * Count total deleted models.
+     *
+     * @return int|string
+     */
     public function countDeleted(): int|string
     {
         return $this->modelsModel->stardust(true)->countAllResults();
     }
 
+    /**
+     * Find a specific active model by its ID.
+     *
+     * @param int $id
+     * @return array|false
+     */
     public function find(int $id): array|false
     {
         $modelResult = $this->modelsModel->stardust()->where('id', $id)->get()->getResultArray();
@@ -82,6 +125,12 @@ class ModelsManager
         return $modelResult[0];
     }
 
+    /**
+     * Find multiple active models by their IDs.
+     *
+     * @param array $ids
+     * @return array|false
+     */
     public function findModels(array $ids): array|false
     {
         $modelResult = $this->modelsModel->stardust()->whereIn('id', $ids)->get()->getResultArray();
@@ -93,6 +142,12 @@ class ModelsManager
         return $modelResult;
     }
 
+    /**
+     * Find a specific deleted model by its ID.
+     *
+     * @param int $id
+     * @return array|false
+     */
     public function findDeleted(int $id): array|false
     {
         $modelResult = $this->modelsModel->stardust(true)->where('id', $id)->get()->getResultArray();
@@ -104,6 +159,12 @@ class ModelsManager
         return $modelResult[0];
     }
 
+    /**
+     * Find multiple deleted models by their IDs.
+     *
+     * @param array $ids
+     * @return array|false
+     */
     public function findDeletedModels(array $ids): array|false
     {
         $modelResult = $this->modelsModel->stardust(true)->whereIn('id', $ids)->get()->getResultArray();
@@ -116,6 +177,11 @@ class ModelsManager
     }
 
     /**
+     * Create a new model and its data.
+     *
+     * @param array $data
+     * @param int $userId
+     * @return int The ID of the created model.
      * @todo If syncIndexes fails, the model will be created but without indexes
      */
     public function create(array $data, int $userId): int
@@ -139,6 +205,12 @@ class ModelsManager
     }
 
     /**
+     * Update a model and its data.
+     *
+     * @param int $modelId
+     * @param array $data
+     * @param int $userId
+     * @return void
      * @todo If syncIndexes fails, the model will be updated but not the indexes
      */
     public function update(int $modelId, array $data, int $userId): void
@@ -156,6 +228,13 @@ class ModelsManager
         $this->runtimeIndexer->syncIndexes($fields);
     }
 
+    /**
+     * Update specific fields for multiple models.
+     *
+     * @param array $ids
+     * @param array $data
+     * @return void
+     */
     public function updateModels(array $ids, array $data): void
     {
         $this->modelsModel
@@ -164,6 +243,13 @@ class ModelsManager
             ->update();
     }
 
+    /**
+     * Update specific fields for multiple model data records.
+     *
+     * @param array $modelIds
+     * @param array $data
+     * @return void
+     */
     public function updateData(array $modelIds, array $data): void
     {
         $this->modelDataModel
@@ -172,6 +258,13 @@ class ModelsManager
             ->update();
     }
 
+    /**
+     * Soft delete models and their associated entries.
+     *
+     * @param array $ids
+     * @param int $deleterId
+     * @return void
+     */
     public function deleteModels(array $ids, int $deleterId): void
     {
         // Update models and data
@@ -198,6 +291,11 @@ class ModelsManager
         $this->modelsModel->delete($ids);
     }
 
+    /**
+     * Permanently remove all soft-deleted models and their associated entries.
+     *
+     * @return void
+     */
     public function purgeDeleted(): void
     {
         $modelIds = array_column(
@@ -223,6 +321,12 @@ class ModelsManager
         $this->entriesModel->purgeDeleted();
     }
 
+    /**
+     * Restore soft-deleted models and their associated entries.
+     *
+     * @param array $ids
+     * @return void
+     */
     public function restore(array $ids): void
     {
         $this->modelDataModel->withDeleted()

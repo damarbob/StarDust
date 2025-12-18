@@ -1,6 +1,15 @@
 <?php
 
 if (!function_exists('locate_query_file')) {
+    /**
+     * Locates a SQL query file within the StarDust\Queries namespace.
+     *
+     * @param string $file The name of the SQL file (without extension).
+     *
+     * @return string The absolute path to the located SQL file.
+     *
+     * @throws \Exception If the file cannot be found.
+     */
     function locate_query_file($file)
     {
         // Call the CI4 Locator Service

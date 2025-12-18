@@ -4,6 +4,19 @@ namespace StarDust\Database\Migrations;
 
 use CodeIgniter\Database\Migration;
 
+/**
+ * Migration to create the core tables for the StarDust package.
+ *
+ * This migration establishes the foundational schema including:
+ * - `entries`: The main table for storing entry records.
+ * - `entry_data`: Stores the versioned data for each entry.
+ * - `models`: The main table for storing model definitions.
+ * - `model_data`: Stores the versioned data for each model.
+ *
+ * It also applies necessary constraints and initial configurations.
+ *
+ * @package StarDust\Database\Migrations
+ */
 class CreateHyperTables extends Migration
 {
     public function up()

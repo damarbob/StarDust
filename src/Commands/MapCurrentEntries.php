@@ -5,6 +5,15 @@ namespace StarDust\Commands;
 use CodeIgniter\CLI\BaseCommand;
 use CodeIgniter\CLI\CLI;
 
+/**
+ * Command to map the latest history ID to the parent table.
+ *
+ * This command iterates through entries and models to update the
+ * 'current_entry_data_id' and 'current_model_data_id' columns,
+ * enabling efficient O(1) joins for the current version of data.
+ *
+ * @package StarDust\Commands
+ */
 class MapCurrentEntries extends BaseCommand
 {
     /**

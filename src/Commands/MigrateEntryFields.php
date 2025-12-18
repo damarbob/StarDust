@@ -6,6 +6,15 @@ use CodeIgniter\CLI\BaseCommand;
 use CodeIgniter\CLI\CLI;
 use StarDust\Models\EntryDataModel;
 
+/**
+ * Command to convert entry fields to key-value pairs.
+ *
+ * This command migrates `entry_data.fields` from the legacy array-of-objects format
+ * to the new key-value (associative array) format. This conversion is mandatory for
+ * using virtual columns functionality introduced in version 0.2.0-alpha.
+ *
+ * @package StarDust\Commands
+ */
 class MigrateEntryFields extends BaseCommand
 {
     protected $group       = 'StarDust';

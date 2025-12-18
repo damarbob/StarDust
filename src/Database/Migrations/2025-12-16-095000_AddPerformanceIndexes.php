@@ -4,6 +4,15 @@ namespace StarDust\Database\Migrations;
 
 use CodeIgniter\Database\Migration;
 
+/**
+ * Migration to add performance-enhancing indexes.
+ *
+ * This migration adds composite indexes to `entries`, `entry_data`, and `model_data`
+ * tables to optimize common queries, specifically those involving filtering by
+ * soft-delete status and ordering by ID or looking up history.
+ *
+ * @package StarDust\Database\Migrations
+ */
 class AddPerformanceIndexes extends Migration
 {
     public function up()
