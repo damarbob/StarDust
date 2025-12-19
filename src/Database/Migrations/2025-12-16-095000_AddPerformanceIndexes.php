@@ -36,9 +36,9 @@ class AddPerformanceIndexes extends Migration
     public function down()
     {
         // Drop in reverse order
-        $this->db->query("ALTER TABLE model_data DROP INDEX idx_model_data_history");
-        $this->db->query("ALTER TABLE entry_data DROP INDEX idx_entry_data_history");
-        $this->db->query("ALTER TABLE entries DROP INDEX idx_entries_deleted_at");
-        $this->db->query("ALTER TABLE entries DROP INDEX idx_entries_model_history");
+        $this->db->query("ALTER TABLE model_data DROP INDEX IF EXISTS idx_model_data_history");
+        $this->db->query("ALTER TABLE entry_data DROP INDEX IF EXISTS idx_entry_data_history");
+        $this->db->query("ALTER TABLE entries DROP INDEX IF EXISTS idx_entries_deleted_at");
+        $this->db->query("ALTER TABLE entries DROP INDEX IF EXISTS idx_entries_model_history");
     }
 }
