@@ -121,7 +121,7 @@ class EntriesManager
     public function find(int $id): array|false
     {
         $result = $this->entriesModel->stardust()
-            ->where('id', $id)
+            ->where('entries.id', $id)
             ->get()
             ->getResultArray();
         return empty($result) ? false : $result[0];
@@ -137,7 +137,7 @@ class EntriesManager
     public function findEntries(array $ids): array|false
     {
         $result = $this->entriesModel->stardust()
-            ->whereIn('id', $ids)
+            ->whereIn('entries.id', $ids)
             ->get()
             ->getResultArray();
         return empty($result) ? false : $result;
@@ -153,7 +153,7 @@ class EntriesManager
     public function findDeleted(int $id): array|false
     {
         $result = $this->entriesModel->stardust(true)
-            ->where('id', $id)
+            ->where('entries.id', $id)
             ->get()
             ->getResultArray();
         return empty($result) ? false : $result[0];
@@ -169,7 +169,7 @@ class EntriesManager
     public function findDeletedEntries(array $ids): array|false
     {
         $result = $this->entriesModel->stardust(true)
-            ->whereIn('id', $ids)
+            ->whereIn('entries.id', $ids)
             ->get()
             ->getResultArray();
         return empty($result) ? false : $result;

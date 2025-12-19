@@ -116,7 +116,7 @@ class ModelsManager
      */
     public function find(int $id): array|false
     {
-        $modelResult = $this->modelsModel->stardust()->where('id', $id)->get()->getResultArray();
+        $modelResult = $this->modelsModel->stardust()->where('models.id', $id)->get()->getResultArray();
 
         if (empty($modelResult)) {
             return false;
@@ -133,7 +133,7 @@ class ModelsManager
      */
     public function findModels(array $ids): array|false
     {
-        $modelResult = $this->modelsModel->stardust()->whereIn('id', $ids)->get()->getResultArray();
+        $modelResult = $this->modelsModel->stardust()->whereIn('models.id', $ids)->get()->getResultArray();
 
         if (empty($modelResult)) {
             return false;
@@ -150,7 +150,7 @@ class ModelsManager
      */
     public function findDeleted(int $id): array|false
     {
-        $modelResult = $this->modelsModel->stardust(true)->where('id', $id)->get()->getResultArray();
+        $modelResult = $this->modelsModel->stardust(true)->where('models.id', $id)->get()->getResultArray();
 
         if (empty($modelResult)) {
             return false;
@@ -167,7 +167,7 @@ class ModelsManager
      */
     public function findDeletedModels(array $ids): array|false
     {
-        $modelResult = $this->modelsModel->stardust(true)->whereIn('id', $ids)->get()->getResultArray();
+        $modelResult = $this->modelsModel->stardust(true)->whereIn('models.id', $ids)->get()->getResultArray();
 
         if (empty($modelResult)) {
             return false;
