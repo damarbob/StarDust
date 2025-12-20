@@ -140,3 +140,4 @@ composer.lock
 **/.star-dev/
 /composer.phar
 /.phpunit.result.cache
+/.phpunit.cache/

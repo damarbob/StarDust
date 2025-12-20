@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/10.5/phpunit.xsd" bootstrap="tests/bootstrap.php" colors="true" displayDetailsOnTestsThatTriggerDeprecations="true" failOnRisky="true" failOnWarning="true" cacheDirectory=".phpunit.cache">
+  <testsuites>
+    <testsuite name="StarDust Test Suite">
+      <directory>tests/unit</directory>
+    </testsuite>
+  </testsuites>
+  <php>
+    <env name="CODEIGNITER_SCREAM_DEPRECATIONS" value="0"/>
+    <!-- Test database configuration -->
+    <env name="database.tests.hostname" value="localhost"/>
+    <env name="database.tests.database" value="stardust_test"/>
+    <env name="database.tests.username" value="root"/>
+    <env name="database.tests.password" value=""/>
+    <env name="database.tests.DBDriver" value="MySQLi"/>
+    <env name="database.tests.DBPrefix" value=""/>
+  </php>
+  <source>
+    <include>
+      <directory suffix=".php">src</directory>
+    </include>
+    <exclude>
+      <directory suffix=".php">src/Database/Migrations</directory>
+      <directory suffix=".php">src/Database/Seeds</directory>
+      <directory suffix=".php">src/Queries</directory>
+    </exclude>
+  </source>
+</phpunit>
