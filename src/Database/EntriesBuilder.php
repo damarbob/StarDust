@@ -29,12 +29,19 @@ final class EntriesBuilder extends BaseBuilder
             $conditionField = $condition['field'];
             $conditionValue = strtolower($condition['value']);
 
+            // Escape the field name without adding quotes (for use in JSON path)
+            // Since this is used in a string context within JSON_EXTRACT, we need to escape potential special chars
+            $escapedField = str_replace(['"', '\\'], ['\"', '\\\\'], $conditionField);
+
+            // Escape the LIKE value to prevent special characters from being interpreted
+            $escapedValue = $this->db->escapeLikeString($conditionValue);
+
             $sql = <<<SQL
                 LOWER(
                     JSON_UNQUOTE(
-                        JSON_EXTRACT(fields, '$."{$conditionField}"')
+                        JSON_EXTRACT(entry_data.fields, '$."{$escapedField}"')
                     )
-                ) LIKE '%{$conditionValue}%'
+                ) LIKE '%{$escapedValue}%'
                 SQL;
 
             $this->where($sql, null, false);
