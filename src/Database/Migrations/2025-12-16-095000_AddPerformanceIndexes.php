@@ -18,27 +18,48 @@ class AddPerformanceIndexes extends Migration
     public function up()
     {
         // Entries table
-        // Optimized for "Get all entries for Model X" (Condition Pushdown from Builder)
-        // Composite index allows filtering by model & soft-delete status, and sorting by ID (insertion order)
-        // without a filesort or extra table lookups for deleted rows.
-        $this->db->query("ALTER TABLE entries ADD INDEX idx_entries_model_history (model_id, deleted_at, id)");
-        $this->db->query("ALTER TABLE entries ADD INDEX idx_entries_deleted_at (deleted_at)");
+        $this->ensureIndex('entries', 'idx_entries_model_history', ['model_id', 'deleted_at', 'id']);
+        $this->ensureIndex('entries', 'idx_entries_deleted_at', ['deleted_at']);
 
-        // Entry Data table (Optimized for history lookup)
-        // This index allows the subquery "SELECT MAX(id) WHERE deleted_at IS NULL GROUP BY entry_id"
-        // to be satisfied entirely from the index (Covering Index).
-        $this->db->query("ALTER TABLE entry_data ADD INDEX idx_entry_data_history (entry_id, deleted_at, id)");
+        // Entry Data table
+        $this->ensureIndex('entry_data', 'idx_entry_data_history', ['entry_id', 'deleted_at', 'id']);
 
-        // Model Data table (Optimized for history lookup)
-        $this->db->query("ALTER TABLE model_data ADD INDEX idx_model_data_history (model_id, deleted_at, id)");
+        // Model Data table
+        $this->ensureIndex('model_data', 'idx_model_data_history', ['model_id', 'deleted_at', 'id']);
     }
 
     public function down()
     {
         // Drop in reverse order
-        $this->db->query("ALTER TABLE model_data DROP INDEX IF EXISTS idx_model_data_history");
-        $this->db->query("ALTER TABLE entry_data DROP INDEX IF EXISTS idx_entry_data_history");
-        $this->db->query("ALTER TABLE entries DROP INDEX IF EXISTS idx_entries_deleted_at");
-        $this->db->query("ALTER TABLE entries DROP INDEX IF EXISTS idx_entries_model_history");
+        $this->dropIndex('model_data', 'idx_model_data_history');
+        $this->dropIndex('entry_data', 'idx_entry_data_history');
+        $this->dropIndex('entries', 'idx_entries_deleted_at');
+        $this->dropIndex('entries', 'idx_entries_model_history');
+    }
+
+    private function ensureIndex(string $table, string $indexName, array $columns)
+    {
+        if (!$this->indexExists($table, $indexName)) {
+            $cols = implode(',', $columns);
+            $this->db->query("ALTER TABLE `$table` ADD INDEX `$indexName` ($cols)");
+        }
+    }
+
+    private function dropIndex(string $table, string $indexName)
+    {
+        if ($this->indexExists($table, $indexName)) {
+            $this->db->query("ALTER TABLE `$table` DROP INDEX `$indexName`");
+        }
+    }
+
+    private function indexExists(string $table, string $indexName): bool
+    {
+        // Check if table exists first using raw SQL to avoid method dependencies
+        $tableExists = $this->db->query("SHOW TABLES LIKE ?", [$table])->getResult();
+        if (empty($tableExists)) {
+            return false;
+        }
+        $result = $this->db->query("SHOW INDEX FROM `$table` WHERE Key_name = ?", [$indexName])->getResult();
+        return !empty($result);
     }
 }

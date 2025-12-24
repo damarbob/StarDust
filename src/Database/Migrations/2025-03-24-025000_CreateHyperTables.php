@@ -220,10 +220,24 @@ class CreateHyperTables extends Migration
         // Update "fields" columns to add character set/collation and JSON check constraint
         // ===============================================
         $db = \Config\Database::connect();
-        // Note: The following ALTER statements assume your MariaDB/MySQL version supports CHECK constraints.
-        // Adjust or remove these if your version does not support them.
-        $db->query("ALTER TABLE `entry_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
-        $db->query("ALTER TABLE `model_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
+
+        // Check and apply JSON validation for entry_data.fields (if not already applied)
+        $entryDataResult = $db->query("SHOW CREATE TABLE `entry_data`")->getRow();
+        if ($entryDataResult && isset($entryDataResult->{'Create Table'})) {
+            $entryDataCreate = $entryDataResult->{'Create Table'};
+            if (strpos($entryDataCreate, 'json_valid') === false) {
+                $db->query("ALTER TABLE `entry_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
+            }
+        }
+
+        // Check and apply JSON validation for model_data.fields (if not already applied)
+        $modelDataResult = $db->query("SHOW CREATE TABLE `model_data`")->getRow();
+        if ($modelDataResult && isset($modelDataResult->{'Create Table'})) {
+            $modelDataCreate = $modelDataResult->{'Create Table'};
+            if (strpos($modelDataCreate, 'json_valid') === false) {
+                $db->query("ALTER TABLE `model_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
+            }
+        }
     }
 
     public function down()
