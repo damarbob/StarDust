@@ -115,15 +115,10 @@ class SyntaxProcessor
         // Flag indicating whether we're executing a count query.
         $isCountQuery = !empty($queryParams['count']) && $queryParams['count'] === true;
 
-        // Process raw SQL if provided.
+        // RAW QUERY SUPPORT REMOVED FOR SECURITY (Hardening)
+        // if (!empty($queryParams['query'])) { ... }
         if (!empty($queryParams['query'])) {
-            $rawQuery = trim($queryParams['query']);
-            if (stripos($rawQuery, 'SELECT') !== 0) {
-                return ['error' => 'Only SELECT queries are allowed for raw SQL.'];
-            }
-            $query = $this->db->query($rawQuery);
-            $result = $query->getResultArray();
-            return $this->sanitizeData($result);
+            return ['error' => 'Raw SQL queries are no longer allowed for security reasons.'];
         }
 
         // Validate table: disallow empty or forbidden tables.
@@ -141,11 +136,15 @@ class SyntaxProcessor
         if ($table === 'models') {
             /** @var \StarDust\Models\ModelsModel */
             $model = model('StarDust\Models\ModelsModel');
-            $builder = $model->getCustomBuilder();
+            // Wrap the pre-compiled query as a subquery to preserve "flat table" column aliases (e.g. fields, model_fields)
+            $subQuery = $model->stardust()->getCompiledSelect();
+            $builder = $this->db->table("($subQuery) as sub");
         } elseif ($table === 'entries') {
             /** @var \StarDust\Models\EntriesModel */
             $model = model('StarDust\Models\EntriesModel');
-            $builder = $model->getCustomBuilder();
+            // Wrap the pre-compiled query as a subquery to preserve "flat table" column aliases (e.g. fields, model_fields)
+            $subQuery = $model->stardust()->getCompiledSelect();
+            $builder = $this->db->table("($subQuery) as sub");
         }
 
         // Process select clause with placeholders.
@@ -164,19 +163,44 @@ class SyntaxProcessor
                         is_array($condition) &&
                         isset($condition['column'], $condition['operator'], $condition['value'])
                     ) {
-                        $builder->where($condition['column'] . ' ' . $condition['operator'], $condition['value']);
+                        $op = strtoupper($condition['operator']);
+                        // Strict allowlist for operators
+                        $allowedOps = ['=', '>', '<', '>=', '<=', '!=', '<>', 'LIKE', 'IN', 'NOT IN', 'IS', 'IS NOT'];
+                        if (!in_array($op, $allowedOps, true)) {
+                            // For safety, fallback to '=' or ignore. Throwing error is safer.
+                            return ['error' => "Invalid operator: $op"];
+                        }
+                        // Process the column to resolve placeholders like {{field:ID}}
+                        $column = $this->processClausePlaceholders($condition['column']);
+                        $builder->where($column . ' ' . $op, $condition['value']);
                     } else {
-                        $builder->where($condition);
+                        // Handle simple key-value arrays or raw strings
+                        // Note: For key-value arrays, we can't easily iterate and modify keys for $builder->where($array).
+                        // So we should break them down if possible, or assume simple usage.
+                        // However, if $condition is a raw string like "id = 1", we must process it.
+
+                        if (is_string($condition)) {
+                            $builder->where($this->processClausePlaceholders($condition));
+                        } elseif (is_array($condition)) {
+                            // For ['col' => val], we need to rebuild it with processed keys
+                            foreach ($condition as $key => $val) {
+                                $processedKey = $this->processClausePlaceholders($key);
+                                $builder->where($processedKey, $val);
+                            }
+                        } else {
+                            $builder->where($condition);
+                        }
                     }
                 }
             } else {
-                $builder->where($queryParams['where']);
+                $builder->where($this->processClausePlaceholders($queryParams['where']));
             }
         }
 
         // Apply LIKE clauses.
         if (!empty($queryParams['like']) && is_array($queryParams['like'])) {
             foreach ($queryParams['like'] as $field => $value) {
+                // Since this is a subquery, simple column names are safe
                 $builder->like($field, $value);
             }
         }
@@ -199,7 +223,12 @@ class SyntaxProcessor
         if (!empty($queryParams['having']) && is_array($queryParams['having'])) {
             foreach ($queryParams['having'] as $condition) {
                 if (is_array($condition) && isset($condition['column'], $condition['operator'], $condition['value'])) {
-                    $builder->having($condition['column'] . ' ' . $condition['operator'], $condition['value']);
+                    $op = strtoupper($condition['operator']);
+                    $allowedOps = ['=', '>', '<', '>=', '<=', '!=', '<>', 'LIKE'];
+                    if (!in_array($op, $allowedOps, true)) {
+                        return ['error' => "Invalid HAVING operator: $op"];
+                    }
+                    $builder->having($condition['column'] . ' ' . $op, $condition['value']);
                 } else {
                     $builder->having($condition);
                 }
@@ -313,7 +342,18 @@ class SyntaxProcessor
      */
     private function getFieldsJsonValueExpression(string $fieldId): string
     {
-        $query = "(JSON_UNQUOTE(JSON_EXTRACT(fields, REPLACE(JSON_UNQUOTE(JSON_SEARCH(fields, 'one', '$fieldId', NULL, '\$[*].id')), '.id', '.value'))))";
+        // Enforce strict alphanumeric+ validation for field IDs to prevent injection
+        // If IDs can contain other chars, use $this->db->escapeString() but validating is safer.
+        // Assuming IDs are usually slug-like: a-z, 0-9, _, -
+        if (!preg_match('/^[a-zA-Z0-9_\-]+$/', $fieldId)) {
+            // If it fails validation, we can either error or escape aggressively.
+            // Let's escape aggressively to be safe but allow weird IDs if they exist.
+            $safeId = $this->db->escapeString($fieldId);
+        } else {
+            $safeId = $fieldId;
+        }
+
+        $query = "(JSON_UNQUOTE(JSON_EXTRACT(fields, '$.\"$safeId\"')))";
         return $query;
     }
 
@@ -322,7 +362,20 @@ class SyntaxProcessor
      */
     private function getModelFieldsJsonAttrExpression(string $fieldId, string $attr): string
     {
-        return "(JSON_UNQUOTE(JSON_EXTRACT(model_fields, REPLACE(JSON_UNQUOTE(JSON_SEARCH(model_fields, 'one', '$fieldId', NULL, '\$[*].id')), '.id', '.$attr'))))";
+        $safeId = $this->db->escapeString($fieldId);
+        // Attribute should also be safe, usually just 'type', 'label', etc.
+        // But if user controls it, we must escape or validate.
+        if (!preg_match('/^[a-zA-Z0-9_]+$/', $attr)) {
+            // Fallback default or error? stick to simplified escape.
+            $attr = preg_replace('/[^a-zA-Z0-9_]/', '', $attr);
+        }
+
+        // We need to safely inject $safeId into the JSON_SEARCH call and REPLACE call.
+        // JSON_SEARCH(model_fields, 'one', '$safeId', ...)
+        // If safeId has quotes, they are escaped by escapeString, e.g. foo\'bar
+        // In SQL string literal: '... \' ...' works.
+
+        return "(JSON_UNQUOTE(JSON_EXTRACT(model_fields, REPLACE(JSON_UNQUOTE(JSON_SEARCH(model_fields, 'one', '$safeId', NULL, '\$[*].id')), '.id', '.$attr'))))";
     }
 
     /**
