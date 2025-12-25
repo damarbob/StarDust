@@ -43,18 +43,10 @@ class RuntimeIndexer
      * Iterates through the provided field definitions and ensures that for every
      * indexable field, a corresponding Virtual Column and DB Index exists.
      *
-     * @param array $modelDefinition The 'fields' array from the Model JSON configuration.
-     * @return void
-     */
-    /**
-     * Main Entry Point.
-     * Synchronizes the physical database columns with the logical Model Definition.
-     *
-     * Iterates through the provided field definitions and ensures that for every
-     * indexable field, a corresponding Virtual Column and DB Index exists.
-     *
      * @param array      $modelDefinition The 'fields' array from the Model JSON configuration.
-     * @param array|null $existingColumns Optional cache of existing columns (key = column name) for bulk performance.
+     * @param array|null &$existingColumns Optional cache of existing columns (passed by reference
+     *                                      for performance - avoids copying large arrays between calls).
+     *                                      Key = column name. Updated in-place as new columns are created.
      * @return void
      */
     public function syncIndexes(array $modelDefinition, ?array &$existingColumns = null)
@@ -96,13 +88,22 @@ class RuntimeIndexer
      * This is an optimized batch operation that fetches all existing columns once
      * to avoid executing `SHOW COLUMNS` or `fieldExists` for every single field of every model.
      * 
-     * Usage: Call this from a CLI command or migration migration to repair indexes.
+     * Usage: Call this from a CLI command or migration to repair indexes.
+     * 
+     * @return array Statistics: ['models_processed' => int, 'columns_created' => int, 'columns_skipped' => int]
      */
-    public function indexAllModels()
+    public function indexAllModels(): array
     {
+        $stats = [
+            'models_processed' => 0,
+            'columns_created' => 0,
+            'columns_skipped' => 0,
+        ];
+
         // 1. Fetch all existing columns ONCE to avoid N*M queries
         //    We flip it to use isset() which is O(1)
-        $existingColumns = array_flip($this->db->getFieldNames($this->table));
+        $existingColumnsInitial = array_flip($this->db->getFieldNames($this->table));
+        $existingColumns = $existingColumnsInitial;
 
         // 2. Load all models
         //    We use the same scope 'stardust()' to ensure we get the JSON 'fields'
@@ -117,9 +118,157 @@ class RuntimeIndexer
             $fields = json_decode($model['fields'], true);
             if (json_last_error() !== JSON_ERROR_NONE) continue;
 
+            $stats['models_processed']++;
+
+            // Count columns before sync
+            $columnsBefore = count($existingColumns);
+
             // Pass the cache so syncIndexes checks memory instead of DB
             $this->syncIndexes($fields, $existingColumns);
+
+            // Track new columns created
+            $columnsAfter = count($existingColumns);
+            $newColumns = $columnsAfter - $columnsBefore;
+            $stats['columns_created'] += $newColumns;
+            $stats['columns_skipped'] += count($fields) - $newColumns;
         }
+
+        return $stats;
+    }
+
+    /**
+     * Identifies virtual columns that no longer correspond to any model field.
+     * 
+     * Scans all virtual columns in the entry_data table and compares them against
+     * the field definitions in ALL models (including soft-deleted ones).
+     * This ensures that temporarily deleted models don't cause their fields to be
+     * incorrectly identified as orphaned.
+     * 
+     * @return array List of orphaned virtual column names
+     */
+    public function findOrphanedColumns(): array
+    {
+        // 1. Get all existing virtual columns from the database
+        $allColumns = $this->db->getFieldNames($this->table);
+        $virtualColumns = array_filter($allColumns, function ($col) {
+            // Match pattern: v_{slug}_{suffix}
+            return preg_match('/^v_.+_(num|str|dt)$/', $col);
+        });
+
+        // 2. Get ALL models (including soft-deleted) to avoid false positives
+        //    A soft-deleted model might be restored, so its fields are NOT orphaned
+        /** @var \StarDust\Models\ModelsModel $modelsModel */
+        $modelsModel = model('StarDust\Models\ModelsModel');
+        $models = $modelsModel->withDeleted()->stardust(true)->get()->getResultArray();
+
+        $activeColumns = [];
+        foreach ($models as $model) {
+            if (empty($model['fields'])) continue;
+
+            $fields = json_decode($model['fields'], true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                log_message('warning', "RuntimeIndexer: Invalid JSON in model {$model['id']} fields");
+                continue;
+            }
+
+            // Validate that fields is actually an array
+            if (!is_array($fields)) {
+                log_message('warning', "RuntimeIndexer: Fields is not an array in model {$model['id']}");
+                continue;
+            }
+
+            foreach ($fields as $field) {
+                // Validate field structure
+                if (!is_array($field)) continue;
+                if (!isset($field['id']) || !isset($field['type'])) {
+                    log_message('warning', "RuntimeIndexer: Field missing 'id' or 'type' in model {$model['id']}");
+                    continue;
+                }
+
+                if ($this->shouldSkip($field)) continue;
+
+                $slug = $field['id'];
+                $type = $field['type'];
+                $suffix = $this->getSuffix($type);
+                $colName = "v_{$slug}_{$suffix}";
+                $activeColumns[$colName] = true;
+            }
+        }
+
+        // 3. Find the difference: columns that exist but are not in any model
+        $orphaned = [];
+        foreach ($virtualColumns as $virtualColumn) {
+            if (!isset($activeColumns[$virtualColumn])) {
+                $orphaned[] = $virtualColumn;
+            }
+        }
+
+        return $orphaned;
+    }
+
+    /**
+     * Get all virtual columns from the database (for statistics/reporting).
+     * 
+     * @return array List of all virtual column names
+     */
+    public function getAllVirtualColumns(): array
+    {
+        $allColumns = $this->db->getFieldNames($this->table);
+        return array_values(array_filter($allColumns, function ($col) {
+            return preg_match('/^v_.+_(num|str|dt)$/', $col);
+        }));
+    }
+
+    /**
+     * Removes orphaned virtual columns and their associated indexes.
+     * 
+     * This operation is destructive and should only be called after user confirmation.
+     * Returns statistics about the operation for reporting.
+     * 
+     * @param array $columnNames List of column names to remove
+     * @return array ['success' => string[], 'failed' => array<string, string>]
+     */
+    public function removeOrphanedColumns(array $columnNames): array
+    {
+        $results = [
+            'success' => [],
+            'failed' => []
+        ];
+
+        foreach ($columnNames as $colName) {
+            try {
+                // Defensive validation: ensure column name matches expected pattern
+                // This should always pass since findOrphanedColumns() pre-filters,
+                // but we add it as a safety guard against direct API calls
+                if (!preg_match('/^v_.+_(num|str|dt)$/', $colName)) {
+                    throw new \InvalidArgumentException("Invalid column name format: {$colName}");
+                }
+
+                $this->db->transStart();
+
+                // 1. Drop the index first
+                $indexName = "idx_{$colName}";
+                $this->db->query("DROP INDEX IF EXISTS `{$indexName}` ON `{$this->table}`");
+
+                // 2. Drop the virtual column
+                $this->db->query("ALTER TABLE `{$this->table}` DROP COLUMN IF EXISTS `{$colName}`");
+
+                $this->db->transComplete();
+
+                // Check if transaction actually succeeded
+                if ($this->db->transStatus() === false) {
+                    throw new \RuntimeException("Transaction failed for column {$colName}");
+                }
+
+                $results['success'][] = $colName;
+                log_message('info', "RuntimeIndexer removed orphaned column: {$colName}");
+            } catch (\Throwable $e) {
+                $results['failed'][$colName] = $e->getMessage();
+                log_message('error', "RuntimeIndexer failed to remove column {$colName}: " . $e->getMessage());
+            }
+        }
+
+        return $results;
     }
 
     // --- Rules & Logic ---
@@ -223,7 +372,10 @@ class RuntimeIndexer
     private function createVirtualColumn($colName, $sqlDef, $expression)
     {
         try {
-            // Transaction ensures we don't get a column without an index (or vice versa)
+            // NOTE: DDL statements in MySQL cause implicit commits (both before and after execution).
+            // This transaction wrapper does NOT provide atomicity for the DDL operations below.
+            // Instead, we rely on `IF NOT EXISTS` clauses for idempotency, allowing safe retries.
+            // If column creation fails, index creation won't be attempted due to error propagation.
             $this->db->transStart();
 
             // 1. Create the Virtual Column
