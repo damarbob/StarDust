@@ -4,6 +4,12 @@ namespace StarDust\Database;
 
 use CodeIgniter\Database\BaseBuilder;
 
+/**
+ * Query Builder for entry_data table.
+ * 
+ * @internal This builder is used internally by EntryDataModel.
+ *           For general entry queries, use EntriesModel->stardust() instead.
+ */
 final class EntryDataBuilder extends BaseBuilder
 {
     /**

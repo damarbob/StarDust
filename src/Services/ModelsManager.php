@@ -179,10 +179,14 @@ class ModelsManager
     /**
      * Create a new model and its data.
      *
+     * Virtual columns and indexes are automatically generated for fields defined in $data['fields'].
+     * If index synchronization fails (e.g., database permissions), the operation is logged but
+     * does not prevent model creation. Indexes can be regenerated later using:
+     * `php spark stardust:generate-indexes`
+     *
      * @param array $data
      * @param int $userId
      * @return int The ID of the created model.
-     * @todo If syncIndexes fails, the model will be created but without indexes
      */
     public function create(array $data, int $userId): int
     {
@@ -207,11 +211,15 @@ class ModelsManager
     /**
      * Update a model and its data.
      *
+     * Virtual columns and indexes are automatically synchronized for fields defined in $data['fields'].
+     * If index synchronization fails (e.g., database permissions), the operation is logged but
+     * does not prevent model updates. Indexes can be regenerated later using:
+     * `php spark stardust:generate-indexes`
+     *
      * @param int $modelId
      * @param array $data
      * @param int $userId
      * @return void
-     * @todo If syncIndexes fails, the model will be updated but not the indexes
      */
     public function update(int $modelId, array $data, int $userId): void
     {

@@ -18,8 +18,14 @@ final class EntriesBuilder extends BaseBuilder
     }
 
     /**
-     * The custom chainable method.
-     * @todo remove in the future
+     * Search non-indexed fields using LIKE pattern matching.
+     * 
+     * ⚠️ Performance Warning: This performs a full table scan inside the JSON blob
+     * and is significantly slower than indexed queries. Use only for fields not
+     * defined in model_fields or for full-text search requirements.
+     * 
+     * @param array $conditions Array of ['field' => 'field_name', 'value' => 'search_term']
+     * @return self
      */
     public function likeFields(array $conditions): self
     {

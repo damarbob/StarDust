@@ -4,6 +4,12 @@ namespace StarDust\Database;
 
 use CodeIgniter\Database\BaseBuilder;
 
+/**
+ * Query Builder for model_data table.
+ * 
+ * @internal This builder is used internally by ModelDataModel.
+ *           For general model queries, use ModelsModel->stardust() instead.
+ */
 final class ModelDataBuilder extends BaseBuilder
 {
     /**
