@@ -314,6 +314,16 @@ php spark stardust:map-current
 - New `current_entry_data_id` column in `entries` table
 - Virtual columns automatically generated in `entry_data` table
 
+### Deprecation Roadmap
+
+The following legacy methods are **deprecated** in v0.2.0 and will be **removed in v0.3.0**:
+
+- `EntriesModel::getCustomBuilder()`
+- `EntriesModel::getDeletedCustomBuilder()`
+- `EntriesModel::whereFields()`
+
+Please migrate your code to use the new `stardust()` builder and virtual columns before upgrading to v0.3.0.
+
 ---
 
 ## Troubleshooting

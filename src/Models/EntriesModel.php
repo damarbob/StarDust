@@ -91,7 +91,7 @@ final class EntriesModel extends Model
     /**
      * Load the SQL query from an external file and return a BaseBuilder.
      *
-     * @deprecated Since version 0.2.0-alpha
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0.
      * @return BaseBuilder
      * @throws \Exception if the SQL file is not found.
      */
@@ -119,7 +119,7 @@ final class EntriesModel extends Model
     /**
      * Load the SQL query from an external file and return a BaseBuilder.
      *
-     * @deprecated Since version 0.2.0-alpha
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0.
      * @return BaseBuilder
      * @throws \Exception if the SQL file is not found.
      */
@@ -166,7 +166,7 @@ final class EntriesModel extends Model
      *   $result = $builder->get()->getResult();
      * </code>
      *
-     * @deprecated Since version 0.2.0-alpha
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0.
      * @param BaseBuilder $builder The query builder instance.
      * @param array $conditions An array of associative arrays with keys 'field' and 'value'.
      *
