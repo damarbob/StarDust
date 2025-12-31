@@ -4,6 +4,14 @@ namespace StarDust\Database;
 
 use CodeIgniter\Database\BaseBuilder;
 
+/**
+ * Query Builder for entries table.
+ *
+ * This builder provides a fluent interface for querying entries with 
+ * automatic joining of related tables (entry_data, models, users).
+ * 
+ * It is primarily obtained via EntriesModel->stardust().
+ */
 final class EntriesBuilder extends BaseBuilder
 {
 
