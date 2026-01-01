@@ -14,12 +14,18 @@ class SyntaxProcessor
     protected BaseConnection $db;
 
     /**
+     * @var \StarDust\Config\StarDust
+     */
+    protected $config;
+
+    /**
      * SyntaxProcessor constructor.
      */
     public function __construct()
     {
         // Dependency injection: You could allow injecting a DB connection here.
         $this->db = Database::connect();
+        $this->config = config(\StarDust\Config\StarDust::class);
     }
 
     /**
@@ -124,7 +130,7 @@ class SyntaxProcessor
         // Validate table: disallow empty or forbidden tables.
         if (
             empty($queryParams['table']) ||
-            in_array($queryParams['table'], ['auth_identities', 'users'])
+            in_array($queryParams['table'], ['auth_identities', $this->config->usersTable])
         ) {
             return ['error' => 'Table name not specified/not allowed'];
         }

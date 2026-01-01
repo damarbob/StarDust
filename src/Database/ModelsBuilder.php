@@ -13,6 +13,16 @@ use CodeIgniter\Database\BaseBuilder;
 final class ModelsBuilder extends BaseBuilder
 {
     /**
+     * @var \StarDust\Config\StarDust
+     */
+    protected $config;
+
+    public function __construct($db, $options = null)
+    {
+        parent::__construct($db, $options);
+        $this->config = config(\StarDust\Config\StarDust::class);
+    }
+    /**
      * Join with model_data table
      *
      * @return self
@@ -29,7 +39,9 @@ final class ModelsBuilder extends BaseBuilder
      */
     public function joinCreator(): self
     {
-        return $this->join('users', 'models.creator_id = users.id', 'left');
+        $table = $this->config->usersTable;
+        $id = $this->config->usersIdColumn;
+        return $this->join($table, "models.creator_id = {$table}.{$id}", 'left');
     }
 
     /**
@@ -40,7 +52,9 @@ final class ModelsBuilder extends BaseBuilder
      */
     public function joinEditor(): self
     {
-        return $this->join('users as editors', 'model_data.creator_id = editors.id', 'left');
+        $table = $this->config->usersTable;
+        $id = $this->config->usersIdColumn;
+        return $this->join("{$table} as editors", "model_data.creator_id = editors.{$id}", 'left');
     }
 
     /**
@@ -50,7 +64,9 @@ final class ModelsBuilder extends BaseBuilder
      */
     public function joinDeleter(): self
     {
-        return $this->join('users as deleters', 'models.deleter_id = deleters.id', 'left');
+        $table = $this->config->usersTable;
+        $id = $this->config->usersIdColumn;
+        return $this->join("{$table} as deleters", "models.deleter_id = deleters.{$id}", 'left');
     }
 
     /**
@@ -121,10 +137,13 @@ final class ModelsBuilder extends BaseBuilder
      */
     public function selectUsers(): self
     {
+        $table = $this->config->usersTable;
+        $username = $this->config->usersUsernameColumn;
+
         return $this->select([
-            'users.username AS created_by',
-            'editors.username AS edited_by',
-            'deleters.username AS deleted_by'
+            "{$table}.{$username} AS created_by",
+            "editors.{$username} AS edited_by",
+            "deleters.{$username} AS deleted_by"
         ]);
     }
 

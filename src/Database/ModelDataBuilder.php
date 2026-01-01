@@ -13,6 +13,16 @@ use CodeIgniter\Database\BaseBuilder;
 final class ModelDataBuilder extends BaseBuilder
 {
     /**
+     * @var \StarDust\Config\StarDust
+     */
+    protected $config;
+
+    public function __construct($db, $options = null)
+    {
+        parent::__construct($db, $options);
+        $this->config = config(\StarDust\Config\StarDust::class);
+    }
+    /**
      * Join with models table
      *
      * @return self
@@ -29,7 +39,9 @@ final class ModelDataBuilder extends BaseBuilder
      */
     public function joinCreator(): self
     {
-        return $this->join('users', 'model_data.creator_id = users.id', 'left');
+        $table = $this->config->usersTable;
+        $id = $this->config->usersIdColumn;
+        return $this->join($table, "model_data.creator_id = {$table}.{$id}", 'left');
     }
 
     /**
@@ -94,8 +106,11 @@ final class ModelDataBuilder extends BaseBuilder
      */
     public function selectUsers(): self
     {
+        $table = $this->config->usersTable;
+        $username = $this->config->usersUsernameColumn;
+
         return $this->select([
-            'users.username AS created_by',
+            "{$table}.{$username} AS created_by",
         ]);
     }
 
