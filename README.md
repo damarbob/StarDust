@@ -46,12 +46,43 @@ StarDust revolves around three fundamental concepts:
 
 ### Database Schema Compatibility
 
-> ⚠️ **Important:** StarDust relies on a user table structure compatible with **CodeIgniter Shield**.
+StarDust communicates with your `users` table to track who created or modified data.
 
-You have two options:
+**Default Behavior:**
+StarDust is pre-configured to work with **[CodeIgniter Shield](https://shield.codeigniter.com/)** out of the box.
 
-1.  **Recommended:** Install [CodeIgniter Shield](https://shield.codeigniter.com/).
-2.  **Manual:** Manually create a users table that replicates the Shield schema.
+**Custom / Agnostic Setup:**
+You can use **ANY** authentication system or existing `users` table.
+
+**Option 1: ENV File (Easiest)**
+Add these to your `.env` file:
+
+```ini
+StarDust.usersTable = 'my_custom_users'
+StarDust.usersIdColumn = 'user_uuid'
+StarDust.usersUsernameColumn = 'display_name'
+```
+
+**Option 2: Config File (Recommended for teams)**
+Create a file at `app/Config/StarDust.php`:
+
+```php
+<?php
+
+namespace Config;
+
+use StarDust\Config\StarDust as BaseStarDust;
+
+class StarDust extends BaseStarDust
+{
+    public $usersTable          = 'my_custom_users';
+    public $usersIdColumn       = 'user_uuid';
+    public $usersUsernameColumn = 'display_name';
+}
+```
+
+**Automatic Polyfill:**
+For testing or fresh installations without an auth system, StarDust includes a **Polyfill Migration**. It will automatically create a minimal `users` table **ONLY IF** one does not already exist. This ensures you can get started immediately without setup friction.
 
 ---
 

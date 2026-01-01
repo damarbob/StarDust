@@ -28,6 +28,34 @@ $results = $entriesModel->stardust()
 
 ---
 
+## Configuration & Setup
+
+### Do I need to install CodeIgniter Shield?
+
+**No.** While Shield is the recommended authentication library for CodeIgniter 4, StarDust is completely agnostic.
+
+- **If you use Shield:** It works out of the box.
+- **If you use Myth:Auth or custom auth:** Configure it via `.env`:
+  ```ini
+  StarDust.usersTable = 'accounts'
+  StarDust.usersIdColumn = 'id'
+  StarDust.usersUsernameColumn = 'email'
+  ```
+  Or create `app/Config/StarDust.php` extending the base config.
+
+### How does the "Users Table Polyfill" work?
+
+StarDust includes a smart migration (`CreateAuthTablesPolyfill`) to solve the "empty database" problem during testing or initial setup.
+
+- **Scenario A: You have a users table.**
+  The migration detects it and **does nothing**. It assumes you (or your Auth lib) own the table.
+- **Scenario B: You have NO users table.**
+  The migration automatically creates a minimal `users` table with just the columns required by StarDust (`id` and `username` as configured).
+
+This prevents setup errors while respecting your existing application structure.
+
+---
+
 ## Advanced Features
 
 ### How do I search non-indexed fields?
