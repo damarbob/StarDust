@@ -25,7 +25,7 @@ class SyntaxProcessor
     {
         // Dependency injection: You could allow injecting a DB connection here.
         $this->db = Database::connect();
-        $this->config = config(\StarDust\Config\StarDust::class);
+        $this->config = config('StarDust');
     }
 
     /**

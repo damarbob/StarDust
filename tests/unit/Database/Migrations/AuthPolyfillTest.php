@@ -37,7 +37,7 @@ class AuthPolyfillTest extends CIUnitTestCase
         // Why manual cleanup? Because we manually load the migration file
         // AND the migration down() method does not drop the table.
         $forge = \Config\Database::forge();
-        $config = config(\StarDust\Config\StarDust::class);
+        $config = config('StarDust');
         $forge->dropTable($config->usersTable, true);
     }
 
@@ -45,7 +45,7 @@ class AuthPolyfillTest extends CIUnitTestCase
     {
         // 1. Ensure table does not exist
         $forge = \Config\Database::forge();
-        $config = config(\StarDust\Config\StarDust::class);
+        $config = config('StarDust');
         $tableName = $config->usersTable;
 
         $forge->dropTable($tableName, true);
@@ -66,7 +66,7 @@ class AuthPolyfillTest extends CIUnitTestCase
     {
         // 1. Create table manually with different schema
         $forge = \Config\Database::forge();
-        $config = config(\StarDust\Config\StarDust::class);
+        $config = config('StarDust');
         $tableName = $config->usersTable;
 
         $forge->dropTable($tableName, true);

@@ -8,7 +8,7 @@ class CreateAuthTablesPolyfill extends Migration
 {
     public function up()
     {
-        $config = config(\StarDust\Config\StarDust::class);
+        $config = config('StarDust');
         $tableName = $config->usersTable;
 
         // Diagnostic info

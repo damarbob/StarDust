@@ -22,7 +22,7 @@ final class EntriesBuilder extends BaseBuilder
     public function __construct($db, $options = null)
     {
         parent::__construct($db, $options);
-        $this->config = config(\StarDust\Config\StarDust::class);
+        $this->config = config('StarDust');
     }
 
     /**
