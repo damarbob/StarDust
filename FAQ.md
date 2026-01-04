@@ -281,6 +281,36 @@ php spark stardust:convert-fields
 
 ---
 
+---
+
+## 🛡️ Compliance
+
+### Is StarDust GDPR Compliant?
+
+**Yes, StarDust is GDPR-Ready.**
+
+It provides the technical capabilities required for compliance, but the responsibility for implementation lies with you:
+
+1.  **Right to Access**: You can easily retrieve all data for a user using `EntriesModel::stardust()->where('creator_id', $userId)->findAll()`.
+2.  **Right to Erasure (RTBF)**:
+    - **Default**: `delete()` uses "Soft Deletes" (sets `deleted_at`). This is **NOT** compliant for Erasure requests as the data still exists.
+    - **Compliant**: Use `EntriesManager::purgeDeleted($entryId)` to permanently wipe the entry and all its historical versions from the database.
+3.  **Audit Logs**: StarDust automatically versions every change, recording the _who_ (`creator_id`) and _when_ (`created_at`). This satisfies the requirement for data processing records.
+
+### Is StarDust HIPAA Compliant?
+
+**Not out of the box.**
+
+StarDust is a database abstraction layer, not a secured vault. If you store Protected Health Information (PHI), you need additional security layers:
+
+- **Encryption**: StarDust stores data in standard JSON columns and copies it to "Virtual Columns" for indexing. These are **PLAINTEXT** in the database. You **MUST** use database-level encryption (TDE) to secure this data at rest.
+- **Logging**: Be careful with `QueueWorker` logs. If an insert fails, the error message might contain PHI (e.g., "Duplicate entry 'J. Doe diagnosis...'"). Ensure your logger scrubs sensitive data.
+- **Access**: HIPAA requires strict access controls. StarDust relies on your application (e.g., CodeIgniter Shield) and your database configuration to prevent unauthorized access.
+
+**Recommendation:** Do not use StarDust for highly sensitive PHI fields that require field-level encryption (e.g., SSNs) unless you implement a custom `Encrypter` before passing data to `EntriesManager` (which would disable searching/indexing for those fields).
+
+---
+
 ## Migration & Upgrades
 
 ### How do I upgrade from v0.1.x to v0.2.0+?
@@ -470,3 +500,62 @@ Run `php spark stardust:cleanup-columns` when:
 - After major refactoring of your data models
 
 > 📝 The cleanup command is **optional** and **safe to skip**. Orphaned columns are harmless and don't affect performance. Only run cleanup when you're certain the fields won't be restored.
+
+### Why is saving new Models slow?
+
+StarDust performs database structure changes (`ALTER TABLE`) whenever you create or update a Model with new fields. By default, this happens synchronously (blocking):
+
+1.  User clicks "Save Model"
+2.  StarDust calculates needed columns
+3.  StarDust runs `ADD COLUMN` and `CREATE INDEX`
+4.  Database locks the table
+5.  Response is returned
+
+On large tables or slow hosting, this can cause a noticeable delay or even a timeout.
+
+**Solution: Enable Async Indexing**
+
+For production environments, you should offload this work to a background queue.
+
+1.  Install the Queue library: `composer require codeigniter4/queue`
+2.  Run migrations to create the jobs table:
+    ```bash
+    php spark migrate -n CodeIgniter\Queue
+    ```
+3.  Enable it in `app/Config/StarDust.php`:
+    ```php
+    public $asyncIndexing = true;
+    ```
+4.  Run the queue worker: `php spark queue:work stardust-indexes`
+
+This makes "Save Model" instant, as the heavy lifting happens in the background.
+
+> ⚠️ **Requirement:** If using the default Database Handler for queues, your database **MUST** support `SKIP LOCKED` (MySQL 8.0.1+ or MariaDB 10.6+). For older databases, consider using Redis or Predis handlers.
+
+---
+
+### How to use Async Indexing on free hosting (no CLI)?
+
+Free hosting providers (like InfinityFree) often do not support long-running CLI processes (`php spark queue:work`), making standard background jobs impossible.
+
+**Solution: The "Web Worker" Strategy**
+
+StarDust includes a special Queue Worker optimized for HTTP execution.
+
+1.  **Enable Async**: Set `$asyncIndexing = true` in config.
+2.  **Configure Security**: Add a secret token to your `.env` file to prevent unauthorized access.
+    ```ini
+    StarDust.workerToken = 'my-super-secret-token-123'
+    ```
+3.  **Setup External Cron**: Use a free service (like **cron-job.org**) to ping your worker URL every minute:
+    `https://yoursite.com/stardust/worker/my-super-secret-token-123`
+
+The worker automatically validates the token in the URL against your `.env` configuration.
+
+**Customizing the Path:**
+
+If you want to change the default URL path (`stardust/worker`), you can set `StarDust.workerPath` in your configuration (`app/Config/StarDust.php` or `.env`):
+
+```ini
+StarDust.workerPath = 'my-custom-app/worker'
+```

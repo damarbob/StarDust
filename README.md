@@ -41,8 +41,8 @@ StarDust revolves around three fundamental concepts:
 - **PHP**: 8.1 or later
 - **Framework**: CodeIgniter 4.0+
 - **Database**: Must support JSON and Generated Columns.
-  - MySQL 5.7+
-  - MariaDB 10.2+
+  - MySQL 5.7+ (MySQL 8.0+ required for Async Indexing)
+  - MariaDB 10.2+ (MariaDB 10.6+ required for Async Indexing)
 
 ### Database Schema Compatibility
 
@@ -257,6 +257,27 @@ php spark stardust:generate-indexes
 
 ---
 
+## ⚡ Production Optimization
+
+By default, StarDust creates indexes immediately (synchronously). For high-traffic sites, this can cause table locks.
+
+**Enable Async Indexing:**
+
+1. `composer require codeigniter4/queue`
+2. Run migrations to create the jobs table:
+   ```bash
+   php spark migrate -n CodeIgniter\Queue
+   ```
+3. Set `$asyncIndexing = true` in `app/Config/StarDust.php`
+
+This moves the heavy `ALTER TABLE` operations to a background worker, making your application feel instant even during complex updates.
+
+> 💡 **Free Hosting?** You can use Async Indexing too! See the "Web Worker" guide in the [FAQ](FAQ.md#how-to-use-async-indexing-on-free-hosting-no-cli).
+
+> ⚠️ **Requirement:** If using the default Database Handler for queues, your database **MUST** support `SKIP LOCKED` (MySQL 8.0.1+ or MariaDB 10.6+). For older databases, consider using Redis or Predis handlers.
+
+---
+
 ## 🧩 Global Helpers
 
 ### `syntax_processor()`
@@ -275,6 +296,28 @@ $result = $processor->process($jsonRequest);
 
 - **[FAQ](FAQ.md)** - Common questions, advanced usage, and troubleshooting
 - **[Migration Guide](FAQ.md#how-do-i-upgrade-from-v01x-to-v020)** - Upgrading from v0.1.x to v0.2.0+
+
+---
+
+## 🛡️ Compliance & Security
+
+### GDPR (General Data Protection Regulation)
+
+StarDust is **GDPR-Ready** and provides the necessary tools to help you reach compliance:
+
+- **Right to Erasure**: Use `EntriesManager::purgeDeleted($entryId)` to permanently remove data. (Default behavior is "Soft Delete", which is NOT sufficient for GDPR erasure requests).
+- **Audit Trails**: Every change is versioned with a timestamp and `creator_id`, providing a complete history of data processing.
+- **Data Minimization**: The schemaless nature allows you to store only exactly what is needed.
+
+### HIPAA (Health Insurance Portability and Accountability Act)
+
+> ⚠️ **StarDust is NOT HIPAA-compliant out of the box.**
+
+If you are storing Protected Health Information (PHI):
+
+1.  **Encryption at Rest**: You **MUST** enable Transparent Data Encryption (TDE) at the database level (e.g., MySQL Enterprise Encryption or MariaDB Data-at-Rest Encryption). StarDust stores data in standard JSON columns which are readable by anyone with database access.
+2.  **Search Index Risks**: The "Virtual Columns" used for indexing (`v_diagnosis_str`) contain **plaintext copies** of your data. If your database is not encrypted, these indexes are also exposed.
+3.  **Access Control**: You must implement strict access controls in your application layer (e.g., using CodeIgniter Shield). StarDust does not enforce row-level security.
 
 ---
 
