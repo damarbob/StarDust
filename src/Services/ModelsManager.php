@@ -53,6 +53,12 @@ class ModelsManager
      * @param EntryDataModel $entryDataModel
      * @param RuntimeIndexer $runtimeIndexer
      */
+    /**
+     * @var StarDust\Config\StarDust
+     */
+    protected $config;
+
+
     public function __construct(
         ModelsModel $modelsModel,
         ModelDataModel $modelDataModel,
@@ -65,6 +71,7 @@ class ModelsManager
         $this->entriesModel = $entriesModel;
         $this->entryDataModel = $entryDataModel;
         $this->runtimeIndexer = $runtimeIndexer;
+        $this->config = config('StarDust');
     }
 
     /**
@@ -180,9 +187,7 @@ class ModelsManager
      * Create a new model and its data.
      *
      * Virtual columns and indexes are automatically generated for fields defined in $data['fields'].
-     * If index synchronization fails (e.g., database permissions), the operation is logged but
-     * does not prevent model creation. Indexes can be regenerated later using:
-     * `php spark stardust:generate-indexes`
+     * If async indexing is enabled, this is offloaded to a queue.
      *
      * @param array $data
      * @param int $userId
@@ -203,7 +208,7 @@ class ModelsManager
 
         // Sync indexes
         $fields = json_decode($data['fields'], true);
-        $this->runtimeIndexer->syncIndexes($fields);
+        $this->handleIndexSync($fields, $modelId);
 
         return $modelId;
     }
@@ -212,9 +217,7 @@ class ModelsManager
      * Update a model and its data.
      *
      * Virtual columns and indexes are automatically synchronized for fields defined in $data['fields'].
-     * If index synchronization fails (e.g., database permissions), the operation is logged but
-     * does not prevent model updates. Indexes can be regenerated later using:
-     * `php spark stardust:generate-indexes`
+     * If async indexing is enabled, this is offloaded to a queue.
      *
      * @param int $modelId
      * @param array $data
@@ -233,7 +236,39 @@ class ModelsManager
 
         // Sync indexes
         $fields = json_decode($data['fields'], true);
-        $this->runtimeIndexer->syncIndexes($fields);
+        $this->handleIndexSync($fields, $modelId);
+    }
+
+    /**
+     * Handles index synchronization either synchronously or asynchronously based on config.
+     *
+     * @param array $fields
+     * @param int $modelId
+     * @return void
+     */
+    protected function handleIndexSync(array $fields, int $modelId)
+    {
+        // 1. Check Config
+        if ($this->config->asyncIndexing === false) {
+            // Default: Synchronous (Blocking)
+            $this->runtimeIndexer->syncIndexes($fields);
+            return;
+        }
+
+        // 2. Check Dependency
+        if (!service('queue')) {
+            throw new \RuntimeException(
+                "Async Indexing is enabled but 'codeigniter4/queue' is not installed. " .
+                    "Please run: composer require codeigniter4/queue"
+            );
+        }
+
+        // 3. Push to Queue
+        service('queue')->push(
+            $this->config->queueName,
+            'StarDust\Jobs\SyncIndexerJob',
+            ['modelDefinition' => $fields, 'modelId' => $modelId]
+        );
     }
 
     /**
