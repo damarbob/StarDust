@@ -41,7 +41,7 @@ class QueueWorker extends Controller
         }
 
         // 2. Check if Queue library is installed
-        if (!class_exists('CodeIgniter\Queue\Queue')) {
+        if (! $this->isQueueLibraryInstalled()) {
             return $this->response->setStatusCode(500)->setBody('Queue library not installed.');
         }
 
@@ -107,5 +107,15 @@ class QueueWorker extends Controller
             log_message('error', '[QueueWorker] ' . $e->getMessage());
             return $this->response->setStatusCode(500)->setBody('Worker error: ' . $e->getMessage());
         }
+    }
+    /**
+     * Check if the Queue library is installed.
+     * extracted for testing purposes.
+     *
+     * @return bool
+     */
+    protected function isQueueLibraryInstalled(): bool
+    {
+        return class_exists('CodeIgniter\Queue\Queue');
     }
 }
