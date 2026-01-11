@@ -3,6 +3,7 @@
 namespace StarDust\Database;
 
 use CodeIgniter\Database\BaseBuilder;
+use StarDust\Database\Traits\LegacyAliasTrait;
 
 /**
  * Query Builder for entries table.
@@ -19,10 +20,28 @@ final class EntriesBuilder extends BaseBuilder
      */
     protected $config;
 
-    public function __construct($db, $options = null)
+    use LegacyAliasTrait;
+
+    protected $legacyAliasMapping = [
+        'id'            => 'entries.id',
+        'model_id'      => 'model_data.model_id',
+        'model_name'    => 'model_data.name',
+        'fields'        => 'entry_data.fields',
+        'model_fields'  => 'model_data.fields',
+        'user_groups'   => 'model_data.user_groups',
+        'created_by'    => 'users.username',
+        'edited_by'     => 'editors.username',
+        'created_at'    => 'entries.created_at',
+        'date_modified' => 'entry_data.created_at',
+        'data_id'       => 'entry_data.id',
+        'deleted_by'    => 'deleters.username',
+        'date_deleted'  => 'entries.deleted_at',
+    ];
+
+    public function __construct($tableName, $db, ?array $options = null)
     {
-        parent::__construct($db, $options);
-        $this->config = config('StarDust');
+        parent::__construct($tableName, $db, $options);
+        $this->config = $options['config'] ?? config('StarDust');
     }
 
     /**
