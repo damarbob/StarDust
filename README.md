@@ -107,7 +107,7 @@ For testing or fresh installations without an auth system, StarDust includes a *
 
 Define your data structure using the `ModelsManager`.
 
-> **Key concept:** When you create or update a model, the **Runtime Indexer** automatically generates virtual columns and indexes for fields in `model_fields`.
+> **Key concept:** When you create or update a model, the **Runtime Indexer** automatically generates virtual columns and indexes for fields in `fields`.
 
 ```php
 use StarDust\Services\ModelsManager;
@@ -118,7 +118,7 @@ $modelData = [
     'name'        => 'Products',
     'slug'        => 'products',
     'description' => 'Main product catalog',
-    'model_fields' => json_encode([
+    'fields' => json_encode([
         // The 'type' determines the index suffix (_num, _str, _dt)
         ['id' => 'price_01', 'label' => 'Price', 'type' => 'number'], // Creates 'v_price_01_num'
         ['id' => 'sku_01',   'label' => 'SKU',   'type' => 'text']    // Creates 'v_sku_01_str'
