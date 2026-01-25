@@ -4,6 +4,7 @@ namespace StarDust\Services;
 
 use StarDust\Models\EntriesModel;
 use StarDust\Models\EntryDataModel;
+use StarDust\Database\EntriesBuilder;
 
 /**
  * Class EntriesManager
@@ -58,6 +59,8 @@ class EntriesManager
 
     /**
      * Retrieves all entries.
+     * 
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0. Use query()->get()->getResultArray() instead.
      *
      * @return array The entries as an array.
      */
@@ -67,13 +70,35 @@ class EntriesManager
     }
 
     /**
+     * Get the query builder for entries.
+     * 
+     * @return EntriesBuilder
+     */
+    public function query(): EntriesBuilder
+    {
+        return $this->entriesModel->stardust();
+    }
+
+    /**
      * Retrieves all deleted entries.
+     * 
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0. Use queryDeleted()->get()->getResultArray() instead.
      *
      * @return array The deleted entries as an array.
      */
     public function getDeleted(): array
     {
         return $this->entriesModel->stardust(true)->get()->getResultArray();
+    }
+
+    /**
+     * Get the query builder for deleted entries.
+     * 
+     * @return EntriesBuilder
+     */
+    public function queryDeleted(): EntriesBuilder
+    {
+        return $this->entriesModel->stardust(true);
     }
 
     /**

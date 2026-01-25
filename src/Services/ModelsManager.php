@@ -7,6 +7,7 @@ use StarDust\Models\EntriesModel;
 use StarDust\Models\EntryDataModel;
 use StarDust\Models\ModelsModel;
 use StarDust\Models\ModelDataModel;
+use StarDust\Database\ModelsBuilder;
 
 /**
  * Service class for managing Models and their associated data.
@@ -76,6 +77,8 @@ class ModelsManager
 
     /**
      * Retrieve all active models.
+     * 
+     * @deprecated Use query()->get()->getResultArray() instead to avoid memory issues with large datasets.
      *
      * @return array
      */
@@ -84,15 +87,37 @@ class ModelsManager
         return $this->modelsModel->stardust()->get()->getResultArray();
     }
 
+    /**
+     * Get the query builder for active models.
+     * 
+     * @return ModelsBuilder
+     */
+    public function query(): ModelsBuilder
+    {
+        return $this->modelsModel->stardust();
+    }
+
 
     /**
      * Retrieve all deleted models.
+     * 
+     * @deprecated Use queryDeleted()->get()->getResultArray() instead.
      *
      * @return array
      */
     public function getDeleted(): array
     {
         return $this->modelsModel->stardust(true)->get()->getResultArray();
+    }
+
+    /**
+     * Get the query builder for deleted models.
+     * 
+     * @return ModelsBuilder
+     */
+    public function queryDeleted(): ModelsBuilder
+    {
+        return $this->modelsModel->stardust(true);
     }
 
     /**
