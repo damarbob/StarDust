@@ -305,7 +305,7 @@ $result = $processor->process($jsonRequest);
 
 StarDust is **GDPR-Ready** and provides the necessary tools to help you reach compliance:
 
-- **Right to Erasure**: Use `EntriesManager::purgeDeleted($entryId)` to permanently remove data. (Default behavior is "Soft Delete", which is NOT sufficient for GDPR erasure requests).
+- **Right to Erasure**: Use `EntriesManager::purgeDeleted()` to permanently remove all soft-deleted data. (Default behavior is "Soft Delete", which is NOT sufficient for GDPR erasure requests).
 - **Audit Trails**: Every change is versioned with a timestamp and `creator_id`, providing a complete history of data processing.
 - **Data Minimization**: The schemaless nature allows you to store only exactly what is needed.
 

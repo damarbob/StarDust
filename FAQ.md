@@ -294,7 +294,7 @@ It provides the technical capabilities required for compliance, but the responsi
 1.  **Right to Access**: You can easily retrieve all data for a user using `EntriesModel::stardust()->where('creator_id', $userId)->findAll()`.
 2.  **Right to Erasure (RTBF)**:
     - **Default**: `delete()` uses "Soft Deletes" (sets `deleted_at`). This is **NOT** compliant for Erasure requests as the data still exists.
-    - **Compliant**: Use `EntriesManager::purgeDeleted($entryId)` to permanently wipe the entry and all its historical versions from the database.
+    - **Compliant**: Use `EntriesManager::purgeDeleted()` to permanently wipe all soft-deleted entries and their historical versions from the database.
 3.  **Audit Logs**: StarDust automatically versions every change, recording the _who_ (`creator_id`) and _when_ (`created_at`). This satisfies the requirement for data processing records.
 
 ### Is StarDust HIPAA Compliant?
@@ -379,6 +379,8 @@ The following legacy methods are **deprecated** in v0.2.0 and will be **removed 
 - `EntriesModel::getCustomBuilder()`
 - `EntriesModel::getDeletedCustomBuilder()`
 - `EntriesModel::whereFields()`
+- `ModelsManager::get()` and `ModelsManager::getDeleted()` (Use `query()` methods instead)
+- `EntriesManager::get()` and `EntriesManager::getDeleted()` (Use `query()` methods instead)
 
 Please migrate your code to use the new `stardust()` builder and virtual columns before upgrading to v0.3.0.
 
