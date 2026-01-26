@@ -543,7 +543,7 @@ class ModelsManagerTest extends CIUnitTestCase
         $this->assertFalse($this->modelsManager->findDeleted($modelId));
     }
 
-    public function testPurgeDeletedCascadesToEntries(): void
+    public function testPurgeDeletedWaitsForEntriesToClear(): void
     {
         $modelId = $this->modelsManager->create([
             'name' => 'Model With Entries',
@@ -555,12 +555,28 @@ class ModelsManagerTest extends CIUnitTestCase
             'fields' => json_encode(['field1' => 'value1'])
         ], $this->testUserId);
 
+        // Soft delete both
         $this->modelsManager->deleteModels([$modelId], $this->testUserId);
-        $this->modelsManager->purgeDeleted();
 
-        // Verify both model and entry are permanently deleted
+        // 1. Run Purge Models
+        // Should NOT purge the model because an entry (soft-deleted) still exists
+        $purgedCount = $this->modelsManager->purgeDeleted();
+        $this->assertEquals(0, $purgedCount, 'Should skip models that still have entries');
+
+        // Verify model still exists (as deleted)
+        $this->assertIsArray($this->modelsManager->findDeleted($modelId));
+
+        // 2. Run Purge Entries
+        // Now we really delete the entry
+        $this->entriesManager->purgeDeleted();
+
+        // 3. Run Purge Models again
+        // Now it should succeed
+        $purgedCount = $this->modelsManager->purgeDeleted();
+        $this->assertEquals(1, $purgedCount, 'Should purge model after entries are gone');
+
+        // Verify model is permanently deleted
         $this->assertFalse($this->modelsManager->findDeleted($modelId));
-        $this->assertFalse($this->entriesManager->findDeleted($entryId));
     }
 
     public function testPurgeDeletedDoesNotAffectActiveModels(): void
@@ -599,5 +615,34 @@ class ModelsManagerTest extends CIUnitTestCase
         ], $this->testUserId);
 
         $this->assertGreaterThan(0, $modelId);
+    }
+
+    public function testPurgeDeletedRespectsLimit(): void
+    {
+        // Create 5 models to delete
+        $ids = [];
+        for ($i = 0; $i < 5; $i++) {
+            $ids[] = $this->modelsManager->create([
+                'name' => "Model $i",
+                'fields' => json_encode([['id' => 'field1', 'type' => 'text']])
+            ], $this->testUserId);
+        }
+
+        // Delete all of them
+        $this->modelsManager->deleteModels($ids, $this->testUserId);
+
+        // Verify all 5 are deleted
+        $this->assertEquals(5, $this->modelsManager->countDeleted());
+
+        // Purge with limit = 3
+        $purgedCount = $this->modelsManager->purgeDeleted(3);
+
+        // Verify only 3 were purged
+        $this->assertEquals(3, $purgedCount);
+        $this->assertEquals(2, $this->modelsManager->countDeleted());
+
+        // Purge the remaining
+        $this->modelsManager->purgeDeleted();
+        $this->assertEquals(0, $this->modelsManager->countDeleted());
     }
 }

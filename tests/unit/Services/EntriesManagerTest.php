@@ -524,4 +524,33 @@ class EntriesManagerTest extends CIUnitTestCase
 
         $this->assertGreaterThan(0, $entryId);
     }
+
+    public function testPurgeDeletedRespectsLimit(): void
+    {
+        // Create 5 entries
+        $ids = [];
+        for ($i = 0; $i < 5; $i++) {
+            $ids[] = $this->entriesManager->create([
+                'model_id' => $this->testModelId,
+                'fields' => json_encode(['name' => "Entry $i"])
+            ], $this->testUserId);
+        }
+
+        // Delete all of them
+        $this->entriesManager->deleteEntries($ids, $this->testUserId);
+
+        // Verify all 5 are deleted
+        $this->assertEquals(5, $this->entriesManager->countDeleted());
+
+        // Purge with limit = 3
+        $purgedCount = $this->entriesManager->purgeDeleted(3);
+
+        // Verify only 3 were purged
+        $this->assertEquals(3, $purgedCount);
+        $this->assertEquals(2, $this->entriesManager->countDeleted());
+
+        // Purge the remaining
+        $this->entriesManager->purgeDeleted();
+        $this->assertEquals(0, $this->entriesManager->countDeleted());
+    }
 }
