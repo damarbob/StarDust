@@ -67,6 +67,19 @@ class StarDust extends BaseConfig
 
     /**
      * --------------------------------------------------------------------------
+     * Purge Limit
+     * --------------------------------------------------------------------------
+     *
+     * The number of items to purge per batch in the PurgeDeletedJob.
+     * Increase this if your server has high memory/timeout limits.
+     * Decrease if you encounter OOM or timeout errors.
+     *
+     * @var int
+     */
+    public $purgeLimit = 100;
+
+    /**
+     * --------------------------------------------------------------------------
      * Worker Path
      * --------------------------------------------------------------------------
      *

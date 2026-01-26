@@ -300,18 +300,37 @@ class EntriesManager
         $this->entriesModel->delete($ids);
     }
 
-    /**
-     * Permanently purges all soft-deleted entries and their related data.
-     *
-     * @return void
-     */
-    public function purgeDeleted(): void
+    public function purgeDeleted(?int $limit = null): int
     {
-        // Purge entry data for deleted records.
-        $this->entryDataModel->purgeDeleted();
+        $limit = $limit ?? config('StarDust')->purgeLimit ?? 100;
 
-        // Purge deleted entries.
-        $this->entriesModel->purgeDeleted();
+        $ids = array_column(
+            $this->entriesModel->select('id')->onlyDeleted()->findAll($limit),
+            'id'
+        );
+
+        if (empty($ids)) {
+            return 0;
+        }
+
+        $db = $this->entriesModel->db;
+        $db->transStart();
+
+        try {
+            // Purge entry data for deleted records.
+            $this->entryDataModel->whereIn('entry_id', $ids)->delete(purge: true);
+
+            // Purge deleted entries.
+            $this->entriesModel->delete($ids, purge: true);
+
+            $db->transComplete();
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            log_message('error', 'PurgeDeletedJob (Entries) Failed: ' . $e->getMessage());
+            throw $e;
+        }
+
+        return count($ids);
     }
 
     /**

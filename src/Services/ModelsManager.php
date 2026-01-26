@@ -364,29 +364,60 @@ class ModelsManager
      *
      * @return void
      */
-    public function purgeDeleted(): void
+    public function purgeDeleted(?int $limit = null): int
     {
-        $modelIds = array_column(
-            $this->modelsModel->select('id')->onlyDeleted()->findAll(),
+        $limit = $limit ?? config('StarDust')->purgeLimit ?? 100;
+
+        // 1. Fetch only purgeable models (No existing entries, even deleted ones)
+        // Solves N+1 Query Issue
+        // Select models.id WHERE entries.id IS NULL
+        $purgeableIds = array_column(
+            $this->modelsModel
+                ->select('models.id')
+                ->onlyDeleted()
+                ->join('entries', 'entries.model_id = models.id', 'left')
+                ->where('entries.id', null)
+                ->findAll($limit),
             'id'
         );
 
-        if (empty($modelIds))
-            return;
-
-        $entryIds = array_column(
-            $this->entriesModel->select('id')->withDeleted()->whereIn('model_id', $modelIds)->findAll(),
-            'id'
-        );
-
-        $this->modelDataModel->whereIn('model_id', $modelIds)->delete(purge: true);
-
-        if (!empty($entryIds)) {
-            $this->entryDataModel->whereIn('entry_id', $entryIds)->delete(purge: true);
+        if (empty($purgeableIds)) {
+            return 0;
         }
 
-        $this->modelsModel->purgeDeleted();
-        $this->entriesModel->purgeDeleted();
+        $db = $this->modelsModel->db;
+        $db->transStart();
+
+        try {
+            // Delete associated model data
+            $this->modelDataModel->whereIn('model_id', $purgeableIds)->delete(purge: true);
+
+            // Delete the models themselves
+            $this->modelsModel->delete($purgeableIds, purge: true);
+
+            $db->transComplete();
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            log_message('error', 'PurgeDeletedJob (Models) Failed: ' . $e->getMessage());
+            throw $e;
+        }
+
+        return count($purgeableIds);
+    }
+
+    /**
+     * Count deleted models that are ready to be purged (no child entries).
+     *
+     * @return int
+     */
+    public function countPurgeableDeleted(): int
+    {
+        return $this->modelsModel
+            ->select('models.id')
+            ->onlyDeleted()
+            ->join('entries', 'entries.model_id = models.id', 'left')
+            ->where('entries.id', null)
+            ->countAllResults();
     }
 
     /**
