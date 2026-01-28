@@ -61,6 +61,7 @@ Add these to your `.env` file:
 StarDust.usersTable = 'my_custom_users'
 StarDust.usersIdColumn = 'user_uuid'
 StarDust.usersUsernameColumn = 'display_name'
+StarDust.purgeLimit = 1000
 ```
 
 **Option 2: Config File (Recommended for teams)**

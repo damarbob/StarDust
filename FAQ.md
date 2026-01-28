@@ -561,3 +561,11 @@ If you want to change the default URL path (`stardust/worker`), you can set `Sta
 ```ini
 StarDust.workerPath = 'my-custom-app/worker'
 ```
+
+### Why does the Purge Models job finish without deleting everything?
+
+The `PurgeDeletedJob` uses a **"Smart Lazy"** strategy to protect data integrity.
+
+- **Safety First**: A Model _cannot_ be purged until all its child Entries are purged first.
+- **Dependency Check**: If the job runs for Models but sees that Entries still exist (even if they are deleted/scheduled for purge), it will **skip** those models and exit successfully.
+- **Not an Error**: This is _intentional_. It ensures no "orphan" entries are left behind. The Models will be purged automatically the next time the job runs, once the Entries are cleared.
