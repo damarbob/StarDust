@@ -6,6 +6,7 @@ use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\DatabaseTestTrait;
 use StarDust\Services\EntriesManager;
 use StarDust\Services\ModelsManager;
+use StarDust\Database\EntriesBuilder;
 
 /**
  * Test suite for EntriesManager service
@@ -57,6 +58,12 @@ class EntriesManagerTest extends CIUnitTestCase
     // ========================================
     // CREATE Tests
     // ========================================
+
+    public function testQueryReturnsEntriesBuilder(): void
+    {
+        $query = $this->entriesManager->query();
+        $this->assertInstanceOf(EntriesBuilder::class, $query);
+    }
 
     public function testCreate(): void
     {
