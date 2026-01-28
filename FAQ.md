@@ -73,11 +73,11 @@ $entriesModel->stardust()->likeFields([
 
 **When to use this:**
 
-- Searching text fields not defined in `model_fields`
+- Searching text fields not defined in the model's fields
 - Full-text search requirements
 - Temporary queries during development
 
-**Better alternative:** Define the field in `model_fields` and run `php spark stardust:generate-indexes` to create an indexed virtual column.
+**Better alternative:** Define the field in the model's fields and run `php spark stardust:generate-indexes` to create an indexed virtual column.
 
 ---
 
@@ -134,7 +134,7 @@ StarDust provides several CLI commands to help manage your dynamic data:
 
 #### `stardust:generate-indexes`
 
-Regenerates virtual columns and B-Tree indexes based on your `model_fields` definitions.
+Regenerates virtual columns and B-Tree indexes based on your model's fields definitions.
 
 ```bash
 php spark stardust:generate-indexes
@@ -339,7 +339,7 @@ php spark stardust:convert-fields
 
 #### Step 3: Generate Indexes
 
-Scans your `model_fields` and creates the necessary Virtual Columns and B-Tree Indexes in the database.
+Scans your models' fields and creates the necessary Virtual Columns and B-Tree Indexes in the database.
 
 ```bash
 php spark stardust:generate-indexes
@@ -408,7 +408,7 @@ This regenerates the version pointers to ensure queries return the latest data.
 
 1. **Incorrect virtual column name** - Ensure you're using the right suffix (`_num`, `_str`, `_dt`)
 2. **Index not generated** - Run `php spark stardust:generate-indexes`
-3. **Field not defined in model_fields** - Add the field definition and regenerate indexes
+3. **Field not defined in the model's fields** - Add the field definition and regenerate indexes
 4. **Using standard model methods** - Use `stardust()` method instead
 
 **Correct example:**
@@ -439,7 +439,7 @@ $manager = service('modelsManager');
 $modelId = $manager->create([
     'name' => 'Products',
     'slug' => 'products',
-    'model_fields' => json_encode([
+    'fields' => json_encode([
         ['id' => 'price_01', 'label' => 'Price', 'type' => 'number'], // Creates v_price_01_num
         ['id' => 'sku_01', 'label' => 'SKU', 'type' => 'text']         // Creates v_sku_01_str
     ])
@@ -474,12 +474,12 @@ The `RuntimeIndexer` uses an **addition-only strategy** for safety and reusabili
 
 ```php
 // Week 1: Create model with price field
-$manager->create(['model_fields' => json_encode([
+$manager->create(['fields' => json_encode([
     ['id' => 'price_01', 'type' => 'number'] // Creates v_price_01_num
 ])], $userId);
 
 // Week 2: Remove price field from model definition
-$manager->update($modelId, ['model_fields' => json_encode([
+$manager->update($modelId, ['fields' => json_encode([
     // price_01 removed
 ])], $userId);
 
