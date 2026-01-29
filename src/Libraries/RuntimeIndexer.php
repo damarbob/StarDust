@@ -51,6 +51,9 @@ class RuntimeIndexer
      */
     public function syncIndexes(array $modelDefinition, ?array &$existingColumns = null)
     {
+        $newColumns = [];
+        $newIndexes = [];
+
         foreach ($modelDefinition as $field) {
             if ($this->shouldSkip($field)) continue;
 
@@ -65,20 +68,58 @@ class RuntimeIndexer
                 if (isset($existingColumns[$colName])) continue;
             } else {
                 // Normal: Check against DB
-                if ($this->db->fieldExists($colName, $this->table)) continue;
+                // Optimization: We skip this check here and rely on IF NOT EXISTS in the batch DDL
+                // However, checking local cache if available is still good.
             }
 
-            // Generate DDL
+            // Generate DDL parts
             $sqlDef  = $this->getSqlDefinition($type);
             $extract = $this->getExtractionLogic($slug, $type);
 
-            // Execute safely
-            $this->createVirtualColumn($colName, $sqlDef, $extract);
+            $newColumns[] = "ADD COLUMN IF NOT EXISTS `{$colName}` {$sqlDef} GENERATED ALWAYS AS ({$extract}) VIRTUAL";
+            $newIndexes[] = "ADD INDEX IF NOT EXISTS `idx_{$colName}` (`{$colName}`)";
 
-            // Update cache after creation
+            // Update cache after creation (optimistic)
             if ($existingColumns !== null) {
                 $existingColumns[$colName] = true;
             }
+        }
+
+        // Execute Batch DDL
+        if (!empty($newColumns)) {
+            $this->executeBatchDDL($newColumns, $newIndexes);
+        }
+    }
+
+    /**
+     * Executes the batched DDL commands.
+     *
+     * @param array $columns List of ADD COLUMN statements
+     * @param array $indexes List of ADD INDEX statements
+     * @return void
+     */
+    private function executeBatchDDL(array $columns, array $indexes)
+    {
+        try {
+            // 1. Batch Create Virtual Columns
+            // MariaDB supports ADD COLUMN IF NOT EXISTS, making this safe for race conditions.
+            $sql = "ALTER TABLE `{$this->table}` " . implode(', ', $columns);
+            $sql .= ", ALGORITHM=INSTANT";
+            $this->db->query($sql);
+
+            // 2. Batch Create Indexes
+            // MariaDB also supports multiple ADD INDEX in one ALTER TABLE
+            // and supports ADD INDEX IF NOT EXISTS (MariaDB 10.0.2+)
+            if (!empty($indexes)) {
+                $sqlIndex = "ALTER TABLE `{$this->table}` " . implode(', ', $indexes);
+                $sqlIndex .= ", ALGORITHM=NOCOPY, LOCK=NONE";
+                $this->db->query($sqlIndex);
+            }
+        } catch (\Throwable $e) {
+            // Log failure but do not crash the request
+            log_message('error', "RuntimeIndexer Batch Failed: " . $e->getMessage());
+            // Rethrow so the job can retry if needed? Or just swallow?
+            // For now, consistent with previous behavior: log and swallow.
         }
     }
 
