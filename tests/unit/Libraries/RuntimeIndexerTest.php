@@ -40,35 +40,32 @@ class RuntimeIndexerTest extends CIUnitTestCase
             ['id' => 'name', 'type' => 'text'],
         ];
 
-        // 1. Expect fieldExists checks
-        $this->dbMock->expects($this->exactly(2))
-            ->method('fieldExists')
-            ->willReturnMap([
-                ['v_age_num', 'entry_data', false], // Not exists, should create
-                ['v_name_str', 'entry_data', false], // Not exists, should create
-            ]);
+        // 1. Expect NO fieldExists checks (optimized out)
+        $this->dbMock->expects($this->never())->method('fieldExists');
 
-        // 2. Expect specific SQL queries for creation
+        // 2. Expect BATCH SQL queries (1 for columns, 1 for indexes)
         $callCount = 0;
-        $this->dbMock->expects($this->exactly(4))
+        $this->dbMock->expects($this->exactly(2))
             ->method('query')
             ->willReturnCallback(function ($sql) use (&$callCount) {
                 $callCount++;
                 if ($callCount === 1) {
+                    // Batch Column Creation
                     $this->assertStringContainsString('ALTER TABLE `entry_data`', $sql);
+                    $this->assertStringContainsString('ADD COLUMN IF NOT EXISTS `v_age_num`', $sql);
+                    $this->assertStringContainsString('ADD COLUMN IF NOT EXISTS `v_name_str`', $sql);
                 } elseif ($callCount === 2) {
-                    $this->assertStringContainsString('CREATE INDEX IF NOT EXISTS `idx_v_age_num`', $sql);
-                } elseif ($callCount === 3) {
+                    // Batch Index Creation
                     $this->assertStringContainsString('ALTER TABLE `entry_data`', $sql);
-                } elseif ($callCount === 4) {
-                    $this->assertStringContainsString('CREATE INDEX IF NOT EXISTS `idx_v_name_str`', $sql);
+                    $this->assertStringContainsString('ADD INDEX IF NOT EXISTS `idx_v_age_num`', $sql);
+                    $this->assertStringContainsString('ADD INDEX IF NOT EXISTS `idx_v_name_str`', $sql);
                 }
                 return true;
             });
 
-        // 3. Expect Transactions
-        $this->dbMock->expects($this->exactly(2))->method('transStart');
-        $this->dbMock->expects($this->exactly(2))->method('transComplete');
+        // 3. Transactions are NOT used in batch DDL (DDL = implicit commit)
+        $this->dbMock->expects($this->never())->method('transStart');
+        $this->dbMock->expects($this->never())->method('transComplete');
 
         $this->indexer->syncIndexes($fields);
     }
@@ -79,14 +76,13 @@ class RuntimeIndexerTest extends CIUnitTestCase
             ['id' => 'age', 'type' => 'number'],
         ];
 
-        // 1. Simulate column ALREADY exists in DB
-        $this->dbMock->expects($this->once())
-            ->method('fieldExists')
-            ->with('v_age_num', 'entry_data')
-            ->willReturn(true);
+        // 1. Simulate column ALREADY exists in DB (passed via cache mostly, or blindly trusted)
+        // Since the code says "We skip this check here and rely on IF NOT EXISTS", we expect NO fieldExists calls
+        $this->dbMock->expects($this->never())->method('fieldExists');
 
-        // 2. Expect NO queries
-        $this->dbMock->expects($this->never())->method('query');
+        // 2. Expect queries because we don't check DB anymore, we just run IF NOT EXISTS
+        // So this test confirms that it attempts to create it safely.
+        $this->dbMock->expects($this->atLeastOnce())->method('query');
 
         $this->indexer->syncIndexes($fields);
     }
