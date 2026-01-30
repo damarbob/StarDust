@@ -196,11 +196,17 @@ class RuntimeIndexer
             return preg_match('/^v_.+_(num|str|dt)$/', $col);
         });
 
-        // 2. Get ALL models (including soft-deleted) to avoid false positives
-        //    A soft-deleted model might be restored, so its fields are NOT orphaned
+
+        // 2. Get ALL models (active AND soft-deleted) to avoid false positives
+        //    A soft-deleted model might be restored, so its fields are NOT orphaned.
+        //    ModelsModel::stardust() enforces a single state (active OR deleted), so we must query both.
         /** @var \StarDust\Models\ModelsModel $modelsModel */
         $modelsModel = model('StarDust\Models\ModelsModel');
-        $models = $modelsModel->withDeleted()->stardust(true)->get()->getResultArray();
+
+        $activeModels  = $modelsModel->stardust(false)->get()->getResultArray();
+        $deletedModels = $modelsModel->stardust(true)->get()->getResultArray();
+
+        $models = array_merge($activeModels, $deletedModels);
 
         $activeColumns = [];
         foreach ($models as $model) {
