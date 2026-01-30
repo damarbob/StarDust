@@ -92,9 +92,30 @@ class ModelsManager
      * 
      * @return ModelsBuilder
      */
+
+    /**
+     * Get the query builder for active models.
+     * 
+     * @return ModelsBuilder
+     */
     public function query(): ModelsBuilder
     {
         return $this->modelsModel->stardust();
+    }
+
+    /**
+     * Paginate active models.
+     *
+     * @param int $page
+     * @param int $perPage
+     * @return array
+     */
+    public function paginate(int $page = 1, int $perPage = 20): array
+    {
+        return $this->query()
+            ->orderBy('created_at', 'DESC')
+            ->limit($perPage, ($page - 1) * $perPage)
+            ->get()->getResultArray();
     }
 
 
@@ -233,6 +254,7 @@ class ModelsManager
 
         // Sync indexes
         $fields = json_decode($data['fields'], true);
+        $this->validateFields($fields); // Validate structure before syncing/saving
         $this->handleIndexSync($fields, $modelId);
 
         return $modelId;
@@ -241,6 +263,7 @@ class ModelsManager
     /**
      * Update a model and its data.
      *
+     * Performs a "Smart Update" by merging $data with the current version.
      * Virtual columns and indexes are automatically synchronized for fields defined in $data['fields'].
      * If async indexing is enabled, this is offloaded to a queue.
      *
@@ -251,17 +274,70 @@ class ModelsManager
      */
     public function update(int $modelId, array $data, int $userId): void
     {
-        $data['model_id'] = $modelId;
-        $data['creator_id'] = $userId;
-        $this->modelDataModel->save($data);
+        // 1. Fetch current model to get pointer
+        $model = $this->modelsModel->find($modelId);
+        if (!$model) {
+            throw new \RuntimeException("Model not found with ID $modelId");
+        }
+
+        // 2. Fetch current data to merge with
+        $currentData = [];
+        if (!empty($model['current_model_data_id'])) {
+            $found = $this->modelDataModel->find($model['current_model_data_id']);
+            if ($found) {
+                $currentData = $found;
+            }
+        }
+
+        // 3. Clean up metadata from current data to avoid pollution
+        unset(
+            $currentData['id'],
+            $currentData['created_at'],
+            $currentData['updated_at'],
+            $currentData['deleted_at'],
+            $currentData['creator_id'],
+            $currentData['model_id'] // We set this explicitly later
+        );
+
+        // 4. Merge: New data overwrites old data
+        $mergedData = array_merge($currentData, $data);
+
+        // 5. Save as new version
+        $mergedData['model_id'] = $modelId;
+        $mergedData['creator_id'] = $userId;
+
+        // Ensure we are inserting a NEW record
+        $this->modelDataModel->insert($mergedData);
         $modelDataId = $this->modelDataModel->getInsertID();
 
         // Update the current version pointer
         $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
 
-        // Sync indexes
-        $fields = json_decode($data['fields'], true);
-        $this->handleIndexSync($fields, $modelId);
+        // Sync indexes (Check merged data for fields)
+        if (isset($mergedData['fields'])) {
+            $fields = json_decode($mergedData['fields'], true);
+            if (is_array($fields)) {
+                $this->validateFields($fields); // Validate structure
+                $this->handleIndexSync($fields, $modelId);
+            }
+        }
+    }
+
+    /**
+     * Validates the structure of the fields array.
+     *
+     * @param array $fields
+     * @throws \InvalidArgumentException
+     */
+    protected function validateFields(array $fields): void
+    {
+        foreach ($fields as $field) {
+            if (!isset($field['id']) || !isset($field['type'])) {
+                throw new \InvalidArgumentException(
+                    "Invalid field definition. Each field must have an 'id' and 'type'."
+                );
+            }
+        }
     }
 
     /**
