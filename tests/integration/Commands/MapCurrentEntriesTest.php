@@ -1,6 +1,6 @@
 <?php
 
-namespace StarDust\Tests\Unit\Commands;
+namespace StarDust\Tests\Integration\Commands;
 
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\DatabaseTestTrait;
