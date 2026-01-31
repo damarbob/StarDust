@@ -59,8 +59,8 @@ class CreateHyperTables extends Migration
         $this->forge->addKey('id', true);
         $attributesEntries = [
             'ENGINE'  => 'InnoDB',
-            'CHARSET' => 'utf8mb3',
-            'COLLATE' => 'utf8mb3_general_ci',
+            'CHARSET' => 'utf8mb4',
+            'COLLATE' => 'utf8mb4_general_ci',
         ];
         $this->forge->createTable('entries', true, $attributesEntries);
 
@@ -108,8 +108,8 @@ class CreateHyperTables extends Migration
         $this->forge->addKey('id', true);
         $attributesEntryData = [
             'ENGINE'  => 'InnoDB',
-            'CHARSET' => 'utf8mb3',
-            'COLLATE' => 'utf8mb3_general_ci',
+            'CHARSET' => 'utf8mb4',
+            'COLLATE' => 'utf8mb4_general_ci',
         ];
         $this->forge->createTable('entry_data', true, $attributesEntryData);
 
@@ -147,8 +147,8 @@ class CreateHyperTables extends Migration
         $this->forge->addKey('id', true);
         $attributesModels = [
             'ENGINE'  => 'InnoDB',
-            'CHARSET' => 'utf8mb3',
-            'COLLATE' => 'utf8mb3_general_ci',
+            'CHARSET' => 'utf8mb4',
+            'COLLATE' => 'utf8mb4_general_ci',
         ];
         $this->forge->createTable('models', true, $attributesModels);
 
@@ -211,8 +211,8 @@ class CreateHyperTables extends Migration
         $this->forge->addKey('id', true);
         $attributesModelData = [
             'ENGINE'  => 'InnoDB',
-            'CHARSET' => 'utf8mb3',
-            'COLLATE' => 'utf8mb3_general_ci',
+            'CHARSET' => 'utf8mb4',
+            'COLLATE' => 'utf8mb4_general_ci',
         ];
         $this->forge->createTable('model_data', true, $attributesModelData);
 
