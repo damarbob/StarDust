@@ -1,6 +1,6 @@
 <?php
 
-namespace Tests\Unit\Libraries;
+namespace StarDust\Tests\Integration\Libraries;
 
 use CodeIgniter\Test\CIUnitTestCase;
 use RuntimeException;

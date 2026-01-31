@@ -1,6 +1,6 @@
 <?php
 
-namespace StarDust\Tests\Libraries;
+namespace StarDust\Tests\Integration\Libraries;
 
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Config\Factories;
