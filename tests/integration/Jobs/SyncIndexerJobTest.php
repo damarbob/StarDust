@@ -1,6 +1,6 @@
 <?php
 
-namespace StarDust\Tests\Jobs;
+namespace StarDust\Tests\Integration\Jobs;
 
 use CodeIgniter\Test\CIUnitTestCase;
 use StarDust\Jobs\SyncIndexerJob;
