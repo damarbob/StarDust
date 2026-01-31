@@ -1,6 +1,6 @@
 <?php
 
-namespace Tests\Unit\Database;
+namespace StarDust\Tests\Integration\Database;
 
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\Mock\MockConnection;

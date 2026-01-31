@@ -1,6 +1,6 @@
 <?php
 
-namespace StarDust\Tests\Unit\Database;
+namespace StarDust\Tests\Integration\Database;
 
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\DatabaseTestTrait;
@@ -24,8 +24,8 @@ class ModelDataBuilderTest extends CIUnitTestCase
     use DatabaseTestTrait;
 
     protected $migrate = true;
-    protected $migrateOnce = false;
-    protected $refresh = true;
+    protected $migrateOnce = true;
+    protected $refresh = false;
     protected $namespace = 'StarDust';
 
     private ModelDataModel $modelDataModel;

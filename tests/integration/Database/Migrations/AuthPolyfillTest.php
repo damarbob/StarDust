@@ -1,6 +1,6 @@
 <?php
 
-namespace StarDust\Tests\Unit\Database\Migrations;
+namespace StarDust\Tests\Integration\Database\Migrations;
 
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\DatabaseTestTrait;
