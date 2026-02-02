@@ -60,7 +60,7 @@ class ModelsManager
     protected $config;
 
 
-    public function __construct(
+    protected function __construct(
         ModelsModel $modelsModel,
         ModelDataModel $modelDataModel,
         EntriesModel $entriesModel,
@@ -108,11 +108,44 @@ class ModelsManager
      *
      * @param int $page
      * @param int $perPage
+     * @param \StarDust\Data\ModelSearchCriteria|null $criteria
      * @return array
      */
-    public function paginate(int $page = 1, int $perPage = 20): array
+    public function paginate(int $page = 1, int $perPage = 20, ?\StarDust\Data\ModelSearchCriteria $criteria = null): array
     {
-        return $this->query()
+        $builder = $this->query();
+
+        if ($criteria) {
+            if ($criteria->hasSearchTerm()) {
+                $builder->groupStart()
+                    ->like('models.name', $criteria->searchQuery)
+                    ->orLike('models.slug', $criteria->searchQuery)
+                    ->groupEnd();
+            }
+
+            if ($criteria->hasDateFilters()) {
+                if ($criteria->createdAfter) {
+                    $builder->where('models.created_at >=', $criteria->createdAfter);
+                }
+                if ($criteria->createdBefore) {
+                    $builder->where('models.created_at <=', $criteria->createdBefore);
+                }
+                if ($criteria->updatedAfter) {
+                    // Alias 'date_modified' maps to 'model_data.created_at' in ModelsBuilder
+                    // But we use explicit column for clarity and safety in WHERE clause
+                    $builder->where('model_data.created_at >=', $criteria->updatedAfter);
+                }
+                if ($criteria->updatedBefore) {
+                    $builder->where('model_data.created_at <=', $criteria->updatedBefore);
+                }
+            }
+
+            if ($criteria->hasIds()) {
+                $builder->whereIn('models.id', $criteria->ids);
+            }
+        }
+
+        return $builder
             ->orderBy('created_at', 'DESC')
             ->limit($perPage, ($page - 1) * $perPage)
             ->get()->getResultArray();
@@ -241,21 +274,36 @@ class ModelsManager
      */
     public function create(array $data, int $userId): int
     {
-        $this->modelsModel->save(['creator_id' => $userId]);
-        $modelId = $this->modelsModel->getInsertID();
-
-        $data['model_id'] = $modelId;
-        $data['creator_id'] = $userId;
-        $this->modelDataModel->save($data);
-        $modelDataId = $this->modelDataModel->getInsertID();
-
-        // Update the current version pointer
-        $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
-
-        // Sync indexes
+        // Strict JSON Validation
         $fields = json_decode($data['fields'], true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new \InvalidArgumentException('Invalid JSON in fields: ' . json_last_error_msg());
+        }
         $this->validateFields($fields); // Validate structure before syncing/saving
-        $this->handleIndexSync($fields, $modelId);
+
+        $db = $this->modelsModel->db;
+        $db->transStart();
+
+        try {
+            $this->modelsModel->save(['creator_id' => $userId]);
+            $modelId = $this->modelsModel->getInsertID();
+
+            $data['model_id'] = $modelId;
+            $data['creator_id'] = $userId;
+            $this->modelDataModel->save($data);
+            $modelDataId = $this->modelDataModel->getInsertID();
+
+            // Update the current version pointer
+            $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
+
+            // Sync indexes
+            $this->handleIndexSync($fields, $modelId);
+
+            $db->transComplete();
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            throw $e;
+        }
 
         return $modelId;
     }
@@ -280,46 +328,61 @@ class ModelsManager
             throw new \RuntimeException("Model not found with ID $modelId");
         }
 
-        // 2. Fetch current data to merge with
-        $currentData = [];
-        if (!empty($model['current_model_data_id'])) {
-            $found = $this->modelDataModel->find($model['current_model_data_id']);
-            if ($found) {
-                $currentData = $found;
+        $db = $this->modelsModel->db;
+        $db->transStart();
+
+        try {
+            // 2. Fetch current data to merge with
+            $currentData = [];
+            if (!empty($model['current_model_data_id'])) {
+                $found = $this->modelDataModel->find($model['current_model_data_id']);
+                if ($found) {
+                    $currentData = $found;
+                }
             }
-        }
 
-        // 3. Clean up metadata from current data to avoid pollution
-        unset(
-            $currentData['id'],
-            $currentData['created_at'],
-            $currentData['updated_at'],
-            $currentData['deleted_at'],
-            $currentData['creator_id'],
-            $currentData['model_id'] // We set this explicitly later
-        );
+            // 3. Clean up metadata from current data to avoid pollution
+            unset(
+                $currentData['id'],
+                $currentData['created_at'],
+                $currentData['updated_at'],
+                $currentData['deleted_at'],
+                $currentData['creator_id'],
+                $currentData['model_id'] // We set this explicitly later
+            );
 
-        // 4. Merge: New data overwrites old data
-        $mergedData = array_merge($currentData, $data);
+            // 4. Merge: New data overwrites old data
+            $mergedData = array_merge($currentData, $data);
 
-        // 5. Save as new version
-        $mergedData['model_id'] = $modelId;
-        $mergedData['creator_id'] = $userId;
+            // 5. Save as new version
+            $mergedData['model_id'] = $modelId;
+            $mergedData['creator_id'] = $userId;
 
-        // Ensure we are inserting a NEW record
-        $this->modelDataModel->insert($mergedData);
-        $modelDataId = $this->modelDataModel->getInsertID();
+            // Ensure we are inserting a NEW record
+            $this->modelDataModel->insert($mergedData);
+            $modelDataId = $this->modelDataModel->getInsertID();
 
-        // Update the current version pointer
-        $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
+            // Update the current version pointer
+            $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
 
-        // Sync indexes (Check merged data for fields)
-        if (isset($mergedData['fields'])) {
-            $fields = json_decode($mergedData['fields'], true);
-            if (is_array($fields)) {
-                $this->validateFields($fields); // Validate structure
-                $this->handleIndexSync($fields, $modelId);
+            // Sync indexes (Check merged data for fields)
+            if (isset($mergedData['fields'])) {
+                $fields = json_decode($mergedData['fields'], true);
+                // Strict JSON Check
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    throw new \InvalidArgumentException('Invalid JSON in fields: ' . json_last_error_msg());
+                }
+
+                if (is_array($fields)) {
+                    $this->validateFields($fields); // Validate structure
+                    $this->handleIndexSync($fields, $modelId);
+                }
             }
+
+            $db->transComplete();
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            throw $e;
         }
     }
 
@@ -411,28 +474,52 @@ class ModelsManager
      */
     public function deleteModels(array $ids, int $deleterId): void
     {
-        // Update models and data
-        $this->updateModels($ids, ['deleter_id' => $deleterId]);
-        $this->updateData($ids, ['deleter_id' => $deleterId]);
-
-        $this->modelDataModel->whereIn('model_id', $ids)->delete();
-
-        $entryIds = array_column(
-            $this->entriesModel->select('id')->whereIn('model_id', $ids)->findAll(),
-            'id'
-        );
-
-        if (!empty($entryIds)) {
-            $this->entryDataModel->whereIn('entry_id', $entryIds)
-                ->set(['deleter_id' => $deleterId])->update();
-            $this->entryDataModel->whereIn('entry_id', $entryIds)->delete();
-
-            $this->entriesModel->whereIn('model_id', $ids)
-                ->set(['deleter_id' => $deleterId])->update();
-            $this->entriesModel->whereIn('model_id', $ids)->delete();
+        if (empty($ids)) {
+            return;
         }
 
-        $this->modelsModel->delete($ids);
+        $db = $this->modelsModel->db;
+        $db->transStart();
+
+        try {
+            // 1. Update Deleter ID on Models and Model Data
+            $this->updateModels($ids, ['deleter_id' => $deleterId]);
+            $this->updateData($ids, ['deleter_id' => $deleterId]);
+
+            // 2. Soft Delete Model Data
+            $this->modelDataModel->whereIn('model_id', $ids)->delete();
+
+            // 3. Soft Delete Entries & Entry Data (Scalable Approach)
+            // We do NOT use findAll() here to avoid OOM with large datasets.
+            // Using subqueries to target entry_data without hydrating objects.
+
+            $subqueryEntryIds = $this->entriesModel->builder()
+                ->select('id')
+                ->whereIn('model_id', $ids)
+                ->getCompiledSelect();
+
+            $now = date('Y-m-d H:i:s');
+
+            // Update Entry Data: Set deleter_id and soft delete
+            $this->entryDataModel->builder()
+                ->where("entry_id IN ($subqueryEntryIds)", null, false)
+                ->set(['deleter_id' => $deleterId, 'deleted_at' => $now])
+                ->update();
+
+            // Update Entries: Set deleter_id and soft delete
+            $this->entriesModel->builder()
+                ->whereIn('model_id', $ids)
+                ->set(['deleter_id' => $deleterId, 'deleted_at' => $now])
+                ->update();
+
+            // 4. Soft Delete Models
+            $this->modelsModel->delete($ids);
+
+            $db->transComplete();
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            throw $e;
+        }
     }
 
     /**
@@ -504,21 +591,39 @@ class ModelsManager
      */
     public function restore(array $ids): void
     {
-        $this->modelDataModel->withDeleted()
-            ->whereIn('model_id', $ids)->set(['deleted_at' => null])->update();
-        $this->modelsModel->withDeleted()
-            ->whereIn('id', $ids)->set(['deleted_at' => null])->update();
+        if (empty($ids)) {
+            return;
+        }
 
-        $entryIds = array_column(
-            $this->entriesModel->withDeleted()->whereIn('model_id', $ids)->findAll(),
-            'id'
-        );
+        $db = $this->modelsModel->db;
+        $db->transStart();
 
-        if (!empty($entryIds)) {
-            $this->entryDataModel->withDeleted()
-                ->whereIn('entry_id', $entryIds)->set(['deleted_at' => null])->update();
-            $this->entriesModel->withDeleted()
-                ->whereIn('id', $entryIds)->set(['deleted_at' => null])->update();
+        try {
+            $this->modelDataModel->withDeleted()
+                ->whereIn('model_id', $ids)->set(['deleted_at' => null])->update();
+            $this->modelsModel->withDeleted()
+                ->whereIn('id', $ids)->set(['deleted_at' => null])->update();
+
+            // Use Builder to restore entries efficiently
+            $subqueryEntryIds = $this->entriesModel->builder()
+                ->select('id')
+                ->whereIn('model_id', $ids)
+                ->getCompiledSelect();
+
+            $this->entryDataModel->builder()
+                ->where("entry_id IN ($subqueryEntryIds)", null, false)
+                ->set(['deleted_at' => null])
+                ->update();
+
+            $this->entriesModel->builder()
+                ->whereIn('model_id', $ids)
+                ->set(['deleted_at' => null])
+                ->update();
+
+            $db->transComplete();
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            throw $e;
         }
     }
 }
