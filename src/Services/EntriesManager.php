@@ -46,6 +46,14 @@ class EntriesManager
     }
 
     /**
+     * Resets the singleton instance. (For testing purposes)
+     */
+    public static function resetInstance()
+    {
+        static::$instance = null;
+    }
+
+    /**
      * Constructor.
      *
      * @param EntriesModel   $entriesModel
