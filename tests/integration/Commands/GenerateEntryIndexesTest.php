@@ -2,8 +2,7 @@
 
 namespace StarDust\Tests\Integration\Commands;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Services\ModelsManager;
 use StarDust\Libraries\RuntimeIndexer;
 
@@ -16,18 +15,10 @@ use StarDust\Libraries\RuntimeIndexer;
  * Note: These tests focus on the logic and statistics of index generation
  * rather than testing actual DDL execution or CLI interface.
  */
-class GenerateEntryIndexesTest extends CIUnitTestCase
+class GenerateEntryIndexesTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
-
-    protected $migrate = true;
-    protected $migrateOnce = false;
-    protected $refresh = true;
-    protected $namespace = 'StarDust';
-
     private ModelsManager $modelsManager;
     private RuntimeIndexer $indexer;
-    private int $testUserId = 1;
 
     protected function setUp(): void
     {

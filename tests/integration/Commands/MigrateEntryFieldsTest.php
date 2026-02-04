@@ -2,8 +2,7 @@
 
 namespace StarDust\Tests\Integration\Commands;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Models\EntryDataModel;
 
 /**
@@ -14,15 +13,8 @@ use StarDust\Models\EntryDataModel;
  * 
  * Note: Tests focus on the conversion logic and handling of different data formats.
  */
-class MigrateEntryFieldsTest extends CIUnitTestCase
+class MigrateEntryFieldsTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
-
-    protected $migrate = true;
-    protected $migrateOnce = false;
-    protected $refresh = true;
-    protected $namespace = 'StarDust';
-
     private EntryDataModel $entryDataModel;
 
     protected function setUp(): void

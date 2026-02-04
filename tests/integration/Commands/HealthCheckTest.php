@@ -2,8 +2,7 @@
 
 namespace StarDust\Tests\Integration\Commands;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Commands\HealthCheck;
 use StarDust\Services\ModelsManager;
 use StarDust\Services\EntriesManager;
@@ -47,17 +46,10 @@ class TestHealthCheck extends HealthCheck
     }
 }
 
-class HealthCheckTest extends CIUnitTestCase
+class HealthCheckTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
-
-    protected $migrate = true;
-    protected $refresh = true;
-    protected $namespace = 'StarDust';
-
     private ModelsManager $modelsManager;
     private EntriesManager $entriesManager;
-    private int $testUserId = 1;
 
     protected function setUp(): void
     {

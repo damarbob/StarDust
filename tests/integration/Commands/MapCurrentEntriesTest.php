@@ -2,8 +2,7 @@
 
 namespace StarDust\Tests\Integration\Commands;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Services\EntriesManager;
 use StarDust\Services\ModelsManager;
 
@@ -16,18 +15,10 @@ use StarDust\Services\ModelsManager;
  * 
  * Note: Tests the database update logic that the command performs.
  */
-class MapCurrentEntriesTest extends CIUnitTestCase
+class MapCurrentEntriesTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
-
-    protected $migrate = true;
-    protected $migrateOnce = false;
-    protected $refresh = true;
-    protected $namespace = 'StarDust';
-
     private EntriesManager $entriesManager;
     private ModelsManager $modelsManager;
-    private int $testUserId = 1;
     private int $testModelId;
 
     protected function setUp(): void
