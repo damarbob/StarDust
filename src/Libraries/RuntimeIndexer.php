@@ -53,6 +53,7 @@ class RuntimeIndexer
     {
         $newColumns = [];
         $newIndexes = [];
+        $columnsToCache = [];
 
         foreach ($modelDefinition as $field) {
             if ($this->shouldSkip($field)) continue;
@@ -79,15 +80,20 @@ class RuntimeIndexer
             $newColumns[] = "ADD COLUMN IF NOT EXISTS `{$colName}` {$sqlDef} GENERATED ALWAYS AS ({$extract}) VIRTUAL";
             $newIndexes[] = "ADD INDEX IF NOT EXISTS `idx_{$colName}` (`{$colName}`)";
 
-            // Update cache after creation (optimistic)
-            if ($existingColumns !== null) {
-                $existingColumns[$colName] = true;
-            }
+            // Queue for cache update (only if successful)
+            $columnsToCache[] = $colName;
         }
 
         // Execute Batch DDL
         if (!empty($newColumns)) {
             $this->executeBatchDDL($newColumns, $newIndexes);
+
+            // Update cache ONLY after successful execution
+            if ($existingColumns !== null) {
+                foreach ($columnsToCache as $col) {
+                    $existingColumns[$col] = true;
+                }
+            }
         }
     }
 
@@ -105,7 +111,7 @@ class RuntimeIndexer
             // MariaDB supports ADD COLUMN IF NOT EXISTS, making this safe for race conditions.
             $sql = "ALTER TABLE `{$this->table}` " . implode(', ', $columns);
             $sql .= ", ALGORITHM=INSTANT";
-            $this->db->query($sql);
+            $this->tryExec($sql);
 
             // 2. Batch Create Indexes
             // MariaDB also supports multiple ADD INDEX in one ALTER TABLE
@@ -113,13 +119,16 @@ class RuntimeIndexer
             if (!empty($indexes)) {
                 $sqlIndex = "ALTER TABLE `{$this->table}` " . implode(', ', $indexes);
                 $sqlIndex .= ", ALGORITHM=NOCOPY, LOCK=NONE";
-                $this->db->query($sqlIndex);
+                $this->tryExec($sqlIndex);
             }
         } catch (\Throwable $e) {
-            // Log failure but do not crash the request
+            // Log failure
             log_message('error', "RuntimeIndexer Batch Failed: " . $e->getMessage());
-            // Rethrow so the job can retry if needed? Or just swallow?
-            // For now, consistent with previous behavior: log and swallow.
+
+            // Rethrow so the caller knows the operation failed.
+            // This is critical for ensuring that model creation/updates don't silently succeed 
+            // while the necessary database schema changes failed.
+            throw $e;
         }
     }
 
@@ -131,7 +140,7 @@ class RuntimeIndexer
      * 
      * Usage: Call this from a CLI command or migration to repair indexes.
      * 
-     * @return array Statistics: ['models_processed' => int, 'columns_created' => int, 'columns_skipped' => int]
+     * @return array Statistics: ['models_processed' => int, 'columns_created' => int, 'columns_skipped' => int, 'failures' => array]
      */
     public function indexAllModels(): array
     {
@@ -139,6 +148,7 @@ class RuntimeIndexer
             'models_processed' => 0,
             'columns_created' => 0,
             'columns_skipped' => 0,
+            'failures'        => [],
         ];
 
         // 1. Fetch all existing columns ONCE to avoid N*M queries
@@ -154,24 +164,29 @@ class RuntimeIndexer
 
         // 3. Sync each
         foreach ($models as $model) {
-            if (empty($model['fields'])) continue;
+            try {
+                if (empty($model['fields'])) continue;
 
-            $fields = json_decode($model['fields'], true);
-            if (json_last_error() !== JSON_ERROR_NONE) continue;
+                $fields = json_decode($model['fields'], true);
+                if (json_last_error() !== JSON_ERROR_NONE) continue;
 
-            $stats['models_processed']++;
+                $stats['models_processed']++;
 
-            // Count columns before sync
-            $columnsBefore = count($existingColumns);
+                // Count columns before sync
+                $columnsBefore = count($existingColumns);
 
-            // Pass the cache so syncIndexes checks memory instead of DB
-            $this->syncIndexes($fields, $existingColumns);
+                // Pass the cache so syncIndexes checks memory instead of DB
+                $this->syncIndexes($fields, $existingColumns);
 
-            // Track new columns created
-            $columnsAfter = count($existingColumns);
-            $newColumns = $columnsAfter - $columnsBefore;
-            $stats['columns_created'] += $newColumns;
-            $stats['columns_skipped'] += count($fields) - $newColumns;
+                // Track new columns created
+                $columnsAfter = count($existingColumns);
+                $newColumns = $columnsAfter - $columnsBefore;
+                $stats['columns_created'] += $newColumns;
+                $stats['columns_skipped'] += count($fields) - $newColumns;
+            } catch (\Throwable $e) {
+                $stats['failures'][$model['id'] ?? 'unknown'] = $e->getMessage();
+                log_message('error', "RuntimeIndexer failed for model {$model['id']}: " . $e->getMessage());
+            }
         }
 
         return $stats;
@@ -291,21 +306,15 @@ class RuntimeIndexer
                     throw new \InvalidArgumentException("Invalid column name format: {$colName}");
                 }
 
-                $this->db->transStart();
+                // NOTE: We do NOT use transactions here because MySQL DDL commits implicitly.
+                // Wrapping in transStart/Complete provides a false sense of atomicity.
 
                 // 1. Drop the index first
                 $indexName = "idx_{$colName}";
-                $this->db->query("DROP INDEX IF EXISTS `{$indexName}` ON `{$this->table}`");
+                $this->tryExec("DROP INDEX IF EXISTS `{$indexName}` ON `{$this->table}`");
 
                 // 2. Drop the virtual column
-                $this->db->query("ALTER TABLE `{$this->table}` DROP COLUMN IF EXISTS `{$colName}`");
-
-                $this->db->transComplete();
-
-                // Check if transaction actually succeeded
-                if ($this->db->transStatus() === false) {
-                    throw new \RuntimeException("Transaction failed for column {$colName}");
-                }
+                $this->tryExec("ALTER TABLE `{$this->table}` DROP COLUMN IF EXISTS `{$colName}`");
 
                 $results['success'][] = $colName;
                 log_message('info', "RuntimeIndexer removed orphaned column: {$colName}");
@@ -377,8 +386,8 @@ class RuntimeIndexer
     private function getSqlDefinition(string $type): string
     {
         return match ($type) {
-            'number', 'range'        => 'DECIMAL(20,4)',
-            'datetime-local', 'date' => 'DATETIME',
+            'number', 'range'        => 'DOUBLE',
+            'datetime-local', 'date' => 'VARCHAR(191)', // Changed from DATETIME due to strict SQL mode issues
             default                  => 'VARCHAR(191)', // 191 fits comfortably in utf8mb4 indexes
         };
     }
@@ -399,8 +408,8 @@ class RuntimeIndexer
         $raw = "JSON_UNQUOTE(JSON_EXTRACT(`fields`, '$.{$slug}'))";
 
         return match ($type) {
-            'number', 'range'        => "CAST({$raw} AS DECIMAL(20,4))",
-            'datetime-local', 'date' => "CAST(NULLIF({$raw}, '') AS DATETIME)",
+            'number', 'range'        => "CAST({$raw} AS DOUBLE)",
+            // Removed CAST to DATETIME for date/time types to avoid "cannot be used in GENERATED ALWAYS AS clause"
             default                  => $raw,
         };
     }
@@ -420,24 +429,61 @@ class RuntimeIndexer
     {
         try {
             // NOTE: DDL statements in MySQL cause implicit commits (both before and after execution).
-            // This transaction wrapper does NOT provide atomicity for the DDL operations below.
-            // Instead, we rely on `IF NOT EXISTS` clauses for idempotency, allowing safe retries.
-            // If column creation fails, index creation won't be attempted due to error propagation.
-            $this->db->transStart();
+            // We do NOT use transactions here.
 
             // 1. Create the Virtual Column
-            $this->db->query("ALTER TABLE `{$this->table}` 
+            $this->tryExec("ALTER TABLE `{$this->table}` 
                               ADD COLUMN IF NOT EXISTS `{$colName}` {$sqlDef} 
                               GENERATED ALWAYS AS ({$expression}) VIRTUAL");
 
             // 2. Index It
             // Naming convention: idx_{column_name}
-            $this->db->query("CREATE INDEX IF NOT EXISTS `idx_{$colName}` ON `{$this->table}`(`{$colName}`)");
-
-            $this->db->transComplete();
+            $this->tryExec("CREATE INDEX IF NOT EXISTS `idx_{$colName}` ON `{$this->table}`(`{$colName}`)");
         } catch (\Throwable $e) {
             // Log failure but do not crash the request
             log_message('error', "RuntimeIndexer Failed ($colName): " . $e->getMessage());
+        }
+    }
+
+
+    /**
+     * Executes a query with retry logic for Windows file locking issues.
+     * 
+     * @param string $sql
+     * @param int $maxAttempts
+     * @return mixed Query result
+     * @throws \Throwable
+     */
+    private function tryExec(string $sql, int $maxAttempts = 3)
+    {
+        $attempts = 0;
+
+        while ($attempts < $maxAttempts) {
+            try {
+                return $this->db->query($sql);
+            } catch (\CodeIgniter\Database\Exceptions\DatabaseException $e) {
+                // Retry only on specific transient errors:
+                // 1205: Lock wait timeout exceeded
+                // 1213: Deadlock found
+                // 13:   Can't get stat of file (OS error 13 - Permission denied, common on Windows)
+                $retryCodes = [1205, 1213, 13];
+
+                if (in_array($e->getCode(), $retryCodes, true)) {
+                    $attempts++;
+                    if ($attempts >= $maxAttempts) {
+                        throw $e;
+                    }
+                    // Log warning and wait
+                    log_message('warning', "RuntimeIndexer DDL Locked (Code {$e->getCode()}, Attempt $attempts/$maxAttempts): " . $e->getMessage());
+                    sleep(1);
+                    continue;
+                }
+
+                // For other errors (e.g., Syntax Error 1064), throw immediately
+                throw $e;
+            } catch (\Throwable $e) {
+                throw $e; // Don't retry other errors
+            }
         }
     }
 }

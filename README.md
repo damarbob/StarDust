@@ -157,7 +157,7 @@ This is where StarDust shines. Instead of slow JSON searching, you query the aut
 
 | Suffix | Field Types              | SQL Type      |
 | :----- | :----------------------- | :------------ |
-| `_num` | `number`, `range`        | DECIMAL(20,4) |
+| `_num` | `number`, `range`        | DOUBLE        |
 | `_dt`  | `date`, `datetime-local` | DATETIME      |
 | `_str` | `text`, `select`, etc.   | VARCHAR(191)  |
 
