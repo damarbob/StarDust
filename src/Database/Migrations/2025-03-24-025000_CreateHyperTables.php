@@ -226,7 +226,19 @@ class CreateHyperTables extends Migration
         if ($entryDataResult && isset($entryDataResult->{'Create Table'})) {
             $entryDataCreate = $entryDataResult->{'Create Table'};
             if (strpos($entryDataCreate, 'json_valid') === false) {
-                $db->query("ALTER TABLE `entry_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
+                // Retry logic for Windows file locking issues during tests
+                $attempts = 0;
+                $maxAttempts = 3;
+                while ($attempts < $maxAttempts) {
+                    try {
+                        $db->query("ALTER TABLE `entry_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
+                        break; // Success
+                    } catch (\Throwable $e) {
+                        $attempts++;
+                        if ($attempts >= $maxAttempts) throw $e;
+                        sleep(1); // Wait 1s before retry
+                    }
+                }
             }
         }
 
@@ -235,7 +247,19 @@ class CreateHyperTables extends Migration
         if ($modelDataResult && isset($modelDataResult->{'Create Table'})) {
             $modelDataCreate = $modelDataResult->{'Create Table'};
             if (strpos($modelDataCreate, 'json_valid') === false) {
-                $db->query("ALTER TABLE `model_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
+                // Retry logic for Windows file locking issues during tests
+                $attempts = 0;
+                $maxAttempts = 3;
+                while ($attempts < $maxAttempts) {
+                    try {
+                        $db->query("ALTER TABLE `model_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
+                        break; // Success
+                    } catch (\Throwable $e) {
+                        $attempts++;
+                        if ($attempts >= $maxAttempts) throw $e;
+                        sleep(1); // Wait 1s before retry
+                    }
+                }
             }
         }
     }
