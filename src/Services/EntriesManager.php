@@ -40,7 +40,8 @@ class EntriesManager
         if (is_null(static::$instance)) {
             $entriesModel = model('StarDust\Models\EntriesModel');
             $entryDataModel = model('StarDust\Models\EntryDataModel');
-            static::$instance = new static($entriesModel, $entryDataModel);
+            $config = config('StarDust');
+            static::$instance = new static($entriesModel, $entryDataModel, $config);
         }
         return static::$instance;
     }
@@ -54,15 +55,22 @@ class EntriesManager
     }
 
     /**
+     * @var \StarDust\Config\StarDust
+     */
+    protected $config;
+
+    /**
      * Constructor.
      *
-     * @param EntriesModel   $entriesModel
-     * @param EntryDataModel $entryDataModel
+     * @param EntriesModel          $entriesModel
+     * @param EntryDataModel        $entryDataModel
+     * @param \StarDust\Config\StarDust|null $config
      */
-    public function __construct(EntriesModel $entriesModel, EntryDataModel $entryDataModel)
+    public function __construct(EntriesModel $entriesModel, EntryDataModel $entryDataModel, ?\StarDust\Config\StarDust $config = null)
     {
         $this->entriesModel = $entriesModel;
         $this->entryDataModel = $entryDataModel;
+        $this->config = $config ?? config('StarDust');
     }
 
     /**
@@ -310,7 +318,7 @@ class EntriesManager
 
     public function purgeDeleted(?int $limit = null): int
     {
-        $limit = $limit ?? config('StarDust')->purgeLimit ?? 100;
+        $limit = $limit ?? $this->config->purgeLimit ?? 100;
 
         $ids = array_column(
             $this->entriesModel->select('id')->onlyDeleted()->findAll($limit),
