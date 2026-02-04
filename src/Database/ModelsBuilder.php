@@ -130,6 +130,7 @@ final class ModelsBuilder extends BaseBuilder
     {
         return $this->select([
             'models.id',
+            'models.current_model_data_id',
             'models.created_at',
             'models.deleted_at AS date_deleted'
         ]);
