@@ -48,6 +48,8 @@ class CreateAuthTablesPolyfill extends Migration
 
         $attributes = [
             'ENGINE' => 'InnoDB',
+            'CHARSET' => 'utf8mb4',
+            'COLLATE' => 'utf8mb4_general_ci',
         ];
 
         $this->forge->createTable($tableName, true, $attributes);
