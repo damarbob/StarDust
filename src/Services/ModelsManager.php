@@ -34,12 +34,14 @@ class ModelsManager
             $entriesModel = model('StarDust\Models\EntriesModel');
             $entryDataModel = model('StarDust\Models\EntryDataModel');
             $runtimeIndexer = service('runtimeIndexer');
+            $config = config('StarDust');
             static::$instance = new static(
                 $modelsModel,
                 $modelDataModel,
                 $entriesModel,
                 $entryDataModel,
-                $runtimeIndexer
+                $runtimeIndexer,
+                $config
             );
         }
         return static::$instance;
@@ -73,14 +75,15 @@ class ModelsManager
         ModelDataModel $modelDataModel,
         EntriesModel $entriesModel,
         EntryDataModel $entryDataModel,
-        RuntimeIndexer $runtimeIndexer
+        RuntimeIndexer $runtimeIndexer,
+        ?\StarDust\Config\StarDust $config = null
     ) {
         $this->modelsModel = $modelsModel;
         $this->modelDataModel = $modelDataModel;
         $this->entriesModel = $entriesModel;
         $this->entryDataModel = $entryDataModel;
         $this->runtimeIndexer = $runtimeIndexer;
-        $this->config = config('StarDust');
+        $this->config = $config ?? config('StarDust');
     }
 
     /**
@@ -537,7 +540,7 @@ class ModelsManager
      */
     public function purgeDeleted(?int $limit = null): int
     {
-        $limit = $limit ?? config('StarDust')->purgeLimit ?? 100;
+        $limit = $limit ?? $this->config->purgeLimit ?? 100;
 
         // 1. Fetch only purgeable models (No existing entries, even deleted ones)
         // Solves N+1 Query Issue
