@@ -41,7 +41,14 @@ class Services extends BaseService
         if ($getShared) {
             return self::getSharedInstance('modelsManager');
         }
-        return ModelsManager::getInstance();
+        return new ModelsManager(
+            model('StarDust\Models\ModelsModel'),
+            model('StarDust\Models\ModelDataModel'),
+            model('StarDust\Models\EntriesModel'),
+            model('StarDust\Models\EntryDataModel'),
+            service('runtimeIndexer'),
+            config('StarDust')
+        );
     }
 
     /**
@@ -52,7 +59,11 @@ class Services extends BaseService
         if ($getShared) {
             return self::getSharedInstance('entriesManager');
         }
-        return EntriesManager::getInstance();
+        return new EntriesManager(
+            model('StarDust\Models\EntriesModel'),
+            model('StarDust\Models\EntryDataModel'),
+            config('StarDust')
+        );
     }
 
     /**

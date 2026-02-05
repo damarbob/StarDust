@@ -27,6 +27,7 @@ class EntriesManager
 
     /**
      * @var self|null Cached singleton instance.
+     * @deprecated Since version 0.3.0. Use Dependency Injection via service('entriesManager') instead.
      */
     protected static ?self $instance = null;
 
@@ -34,6 +35,7 @@ class EntriesManager
      * Returns a shared instance of the EntriesManager.
      *
      * @return self
+     * @deprecated Since version 0.3.0. Use Dependency Injection via service('entriesManager') instead.
      */
     public static function getInstance(): self
     {
@@ -48,6 +50,7 @@ class EntriesManager
 
     /**
      * Resets the singleton instance. (For testing purposes)
+     * @deprecated Since version 0.3.0. Use Services::injectMock() instead.
      */
     public static function resetInstance()
     {

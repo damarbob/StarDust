@@ -19,12 +19,16 @@ class ModelsManager
     protected EntriesModel $entriesModel;
     protected EntryDataModel $entryDataModel;
     protected RuntimeIndexer $runtimeIndexer;
+    /**
+     * @deprecated Since version 0.3.0. Use Dependency Injection via service('modelsManager') instead.
+     */
     protected static $instance;
 
     /**
      * Get the singleton instance of the ModelsManager.
      *
      * @return static
+     * @deprecated Since version 0.3.0. Use Dependency Injection via service('modelsManager') instead.
      */
     public static function getInstance()
     {
@@ -49,6 +53,7 @@ class ModelsManager
 
     /**
      * Resets the singleton instance. (For testing purposes)
+     * @deprecated Since version 0.3.0. Use Services::injectMock() instead.
      */
     public static function resetInstance()
     {
@@ -70,7 +75,7 @@ class ModelsManager
     protected $config;
 
 
-    protected function __construct(
+    public function __construct(
         ModelsModel $modelsModel,
         ModelDataModel $modelDataModel,
         EntriesModel $entriesModel,
