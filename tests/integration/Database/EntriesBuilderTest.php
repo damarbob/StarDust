@@ -2,8 +2,7 @@
 
 namespace StarDust\Tests\Integration\Database;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Models\EntriesModel;
 use StarDust\Services\EntriesManager;
 use StarDust\Services\ModelsManager;
@@ -20,20 +19,12 @@ use StarDust\Services\ModelsManager;
  *
  * @internal
  */
-class EntriesBuilderTest extends CIUnitTestCase
+class EntriesBuilderTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
-
-    protected $migrate = true;
-    protected $migrateOnce = false;
-    protected $refresh = true;
-    protected $namespace = 'StarDust';
-
     private EntriesModel $entriesModel;
     private EntriesManager $entriesManager;
     private ModelsManager $modelsManager;
     private int $testModelId;
-    private int $testUserId = 1;
 
     protected function setUp(): void
     {
