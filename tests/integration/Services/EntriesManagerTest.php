@@ -2,8 +2,7 @@
 
 namespace StarDust\Tests\Integration\Services;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Services\EntriesManager;
 use StarDust\Services\ModelsManager;
 use StarDust\Database\EntriesBuilder;
@@ -23,19 +22,11 @@ use StarDust\Database\EntriesBuilder;
  * @todo Add data validation tests (empty fields, null values, required fields)
  * @todo Add tests for concurrent operations/race conditions
  */
-class EntriesManagerTest extends CIUnitTestCase
+class EntriesManagerTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
-
-    protected $migrate = true;
-    protected $migrateOnce = false;
-    protected $refresh = true;
-    protected $namespace = 'StarDust';
-
     private EntriesManager $entriesManager;
     private ModelsManager $modelsManager;
     private int $testModelId;
-    private int $testUserId = 1;
 
     protected function setUp(): void
     {

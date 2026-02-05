@@ -2,24 +2,15 @@
 
 namespace StarDust\Tests\Integration\Services;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Services\ModelsManager;
 
 /**
  * Test suite specifically for the new "Smart Update" (Merge) logic
  */
-class ModelsManagerSmartUpdateTest extends CIUnitTestCase
+class ModelsManagerSmartUpdateTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
-
-    protected $migrate = true;
-    protected $migrateOnce = false;
-    protected $refresh = true;
-    protected $namespace = 'StarDust';
-
     private ModelsManager $modelsManager;
-    private int $testUserId = 1;
 
     protected function setUp(): void
     {

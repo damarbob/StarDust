@@ -2,8 +2,7 @@
 
 namespace StarDust\Tests\Integration\Services;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Services\ModelsManager;
 use StarDust\Services\EntriesManager;
 use StarDust\Database\ModelsBuilder;
@@ -22,18 +21,10 @@ use StarDust\Database\ModelsBuilder;
  * @todo Add tests for concurrent operations/race conditions
  * @todo Add tests for syncIndexes failure scenarios (noted in create/update TODOs)
  */
-class ModelsManagerTest extends CIUnitTestCase
+class ModelsManagerTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
-
-    protected $migrate = true;
-    protected $migrateOnce = false;
-    protected $refresh = true;
-    protected $namespace = 'StarDust';
-
     private ModelsManager $modelsManager;
     private EntriesManager $entriesManager;
-    private int $testUserId = 1;
 
     protected function setUp(): void
     {
