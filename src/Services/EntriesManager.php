@@ -79,7 +79,7 @@ class EntriesManager
     /**
      * Retrieves all entries.
      * 
-     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0. Use query()->get()->getResultArray() instead.
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0. Use paginate() instead.
      *
      * @return array The entries as an array.
      */
@@ -92,6 +92,7 @@ class EntriesManager
      * Get the query builder for entries.
      * 
      * @return EntriesBuilder
+     * @deprecated Since version 0.3.0. The Service Layer should encapsulate queries.
      */
     public function query(): EntriesBuilder
     {
@@ -101,7 +102,7 @@ class EntriesManager
     /**
      * Retrieves all deleted entries.
      * 
-     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0. Use queryDeleted()->get()->getResultArray() instead.
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0. Use paginate() with deleted=true criteria.
      *
      * @return array The deleted entries as an array.
      */
@@ -114,6 +115,7 @@ class EntriesManager
      * Get the query builder for deleted entries.
      * 
      * @return EntriesBuilder
+     * @deprecated Since version 0.3.0. The Service Layer should encapsulate queries.
      */
     public function queryDeleted(): EntriesBuilder
     {

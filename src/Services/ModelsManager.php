@@ -94,7 +94,7 @@ class ModelsManager
     /**
      * Retrieve all active models.
      * 
-     * @deprecated Use query()->get()->getResultArray() instead to avoid memory issues with large datasets.
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0. Use paginate() instead.
      *
      * @return array
      */
@@ -113,6 +113,7 @@ class ModelsManager
      * Get the query builder for active models.
      * 
      * @return ModelsBuilder
+     * @deprecated Since version 0.3.0. The Service Layer should encapsulate queries.
      */
     public function query(): ModelsBuilder
     {
@@ -171,7 +172,7 @@ class ModelsManager
     /**
      * Retrieve all deleted models.
      * 
-     * @deprecated Use queryDeleted()->get()->getResultArray() instead.
+     * @deprecated Since version 0.2.0-alpha. Will be removed in v0.3.0. Use paginate() with deleted=true criteria.
      *
      * @return array
      */
@@ -184,6 +185,7 @@ class ModelsManager
      * Get the query builder for deleted models.
      * 
      * @return ModelsBuilder
+     * @deprecated Since version 0.3.0. The Service Layer should encapsulate queries.
      */
     public function queryDeleted(): ModelsBuilder
     {
