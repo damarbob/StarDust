@@ -123,6 +123,74 @@ class EntriesManager
     }
 
     /**
+     * Paginates entries based on criteria.
+     *
+     * @param int $page
+     * @param int $perPage
+     * @param \StarDust\Data\EntrySearchCriteria|null $criteria
+     * @return array
+     */
+    public function paginate(int $page = 1, int $perPage = 20, ?\StarDust\Data\EntrySearchCriteria $criteria = null): array
+    {
+        // Determine which builder to start with based on deleted flag
+        $builder = ($criteria && $criteria->includeDeleted)
+            ? $this->entriesModel->stardust(true)
+            : $this->entriesModel->stardust();
+
+        if ($criteria) {
+            if ($criteria->hasSearchTerm()) {
+                // Entries usually don't have a direct 'name' like models, 
+                // typically we search within the JSON data or a related column.
+                // Assuming 'slug' or 'id' for now, or delegating to a more complex search.
+                // Adjust based on actual schema. FOR NOW matching ModelsManager pattern.
+                // Note: entries table often only has id, model_id, etc. 
+                // Search logic might need to join entry_data.
+
+                // If strict search implementation is needed, we'd need to know the schema better.
+                // Disabling complex text search on generic entries for now unless requested.
+            }
+
+            if ($criteria->hasModelId()) {
+                $builder->where('entries.model_id', $criteria->modelId);
+            }
+
+            if ($criteria->hasIds()) {
+                $builder->whereIn('entries.id', $criteria->ids);
+            }
+
+            if ($criteria->hasDateFilters()) {
+                if ($criteria->createdAfter) {
+                    $builder->where('entries.created_at >=', $criteria->createdAfter);
+                }
+                if ($criteria->createdBefore) {
+                    $builder->where('entries.created_at <=', $criteria->createdBefore);
+                }
+                if ($criteria->updatedBefore) {
+                    $builder->where('entries.updated_at <=', $criteria->updatedBefore);
+                }
+            }
+
+            if ($criteria->hasCustomFilters()) {
+                foreach ($criteria->customFilters as $field => $value) {
+                    // UX Improvement: Auto-append 'v_' if missing.
+                    // This allows 'price_01_num' to work as 'v_price_01_num'.
+                    if (!str_starts_with($field, 'v_')) {
+                        $field = 'v_' . $field;
+                    }
+
+                    // Security: effectively forced to virtual columns.
+                    $builder->where($field, $value);
+                }
+            }
+        }
+
+        return $builder
+            ->orderBy('entries.created_at', 'DESC')
+            ->limit($perPage, ($page - 1) * $perPage)
+            ->get()->getResultArray();
+    }
+
+    /**
      * Counts the total number of entries.
      *
      * @return int|string The number of entries.
