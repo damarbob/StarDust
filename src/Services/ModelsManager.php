@@ -135,8 +135,7 @@ class ModelsManager
         if ($criteria) {
             if ($criteria->hasSearchTerm()) {
                 $builder->groupStart()
-                    ->like('models.name', $criteria->searchQuery)
-                    ->orLike('models.slug', $criteria->searchQuery)
+                    ->like('model_data.name', $criteria->searchQuery)
                     ->groupEnd();
             }
 
