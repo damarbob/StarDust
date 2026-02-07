@@ -299,21 +299,36 @@ class EntriesManager
      */
     public function create(array $data, int $userId): int
     {
-        $this->entriesModel->save([
-            'model_id' => $data['model_id'],
-            'creator_id' => $userId,
-        ]);
+        $db = $this->entriesModel->db;
+        $db->transStart();
 
-        $id = $this->entriesModel->getInsertID();
+        try {
+            $this->entriesModel->save([
+                'model_id' => $data['model_id'],
+                'creator_id' => $userId,
+            ]);
 
-        // Set the foreign key for entry data.
-        $data['entry_id'] = $id;
-        $data['creator_id'] = $userId;
-        $this->entryDataModel->save($data);
-        $entryDataId = $this->entryDataModel->getInsertID();
+            $id = $this->entriesModel->getInsertID();
 
-        // Update the current version pointer
-        $this->entriesModel->update($id, ['current_entry_data_id' => $entryDataId]);
+            // Set the foreign key for entry data.
+            $data['entry_id'] = $id;
+            $data['creator_id'] = $userId;
+            $this->entryDataModel->save($data);
+            $entryDataId = $this->entryDataModel->getInsertID();
+
+            // Update the current version pointer
+            $this->entriesModel->update($id, ['current_entry_data_id' => $entryDataId]);
+
+            $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during create.');
+            }
+        } catch (\Throwable $e) {
+            // If we caught an exception, we should rethrow it.
+            throw $e;
+        }
 
         return $id;
     }
@@ -329,13 +344,27 @@ class EntriesManager
      */
     public function update(int $entryId, array $data, int $userId): void
     {
-        $data['entry_id'] = $entryId;
-        $data['creator_id'] = $userId;
-        $this->entryDataModel->save($data);
-        $entryDataId = $this->entryDataModel->getInsertID();
+        $db = $this->entriesModel->db;
+        $db->transStart();
 
-        // Update the current version pointer
-        $this->entriesModel->update($entryId, ['current_entry_data_id' => $entryDataId]);
+        try {
+            $data['entry_id'] = $entryId;
+            $data['creator_id'] = $userId;
+            $this->entryDataModel->save($data);
+            $entryDataId = $this->entryDataModel->getInsertID();
+
+            // Update the current version pointer
+            $this->entriesModel->update($entryId, ['current_entry_data_id' => $entryDataId]);
+
+            $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during update.');
+            }
+        } catch (\Throwable $e) {
+            throw $e;
+        }
     }
 
     /**
@@ -378,15 +407,29 @@ class EntriesManager
      */
     public function deleteEntries(array $ids, int $deleterId): void
     {
-        // Update deleter info.
-        $this->updateEntries($ids, ['deleter_id' => $deleterId]);
-        $this->updateData($ids, ['deleter_id' => $deleterId]);
+        $db = $this->entriesModel->db;
+        $db->transStart();
 
-        // Delete associated entry data.
-        $this->entryDataModel->whereIn('entry_id', $ids)->delete();
+        try {
+            // Update deleter info.
+            $this->updateEntries($ids, ['deleter_id' => $deleterId]);
+            $this->updateData($ids, ['deleter_id' => $deleterId]);
 
-        // Soft delete entries.
-        $this->entriesModel->delete($ids);
+            // Delete associated entry data.
+            $this->entryDataModel->whereIn('entry_id', $ids)->delete();
+
+            // Soft delete entries.
+            $this->entriesModel->delete($ids);
+
+            $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during deletion.');
+            }
+        } catch (\Throwable $e) {
+            throw $e;
+        }
     }
 
     public function purgeDeleted(?int $limit = null): int
@@ -413,6 +456,11 @@ class EntriesManager
             $this->entriesModel->delete($ids, purge: true);
 
             $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during purge.');
+            }
         } catch (\Throwable $e) {
             $db->transRollback();
             log_message('error', 'PurgeDeletedJob (Entries) Failed: ' . $e->getMessage());
@@ -431,16 +479,30 @@ class EntriesManager
      */
     public function restore(array $ids): void
     {
-        // Restore entry data by nullifying the deleted_at timestamps.
-        $this->entryDataModel->withDeleted()
-            ->whereIn('entry_id', $ids)
-            ->set(['deleted_at' => null])
-            ->update();
+        $db = $this->entriesModel->db;
+        $db->transStart();
 
-        // Restore the entries themselves.
-        $this->entriesModel->withDeleted()
-            ->whereIn('id', $ids)
-            ->set(['deleted_at' => null])
-            ->update();
+        try {
+            // Restore entry data by nullifying the deleted_at timestamps.
+            $this->entryDataModel->withDeleted()
+                ->whereIn('entry_id', $ids)
+                ->set(['deleted_at' => null])
+                ->update();
+
+            // Restore the entries themselves.
+            $this->entriesModel->withDeleted()
+                ->whereIn('id', $ids)
+                ->set(['deleted_at' => null])
+                ->update();
+
+            $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during restore.');
+            }
+        } catch (\Throwable $e) {
+            throw $e;
+        }
     }
 }
