@@ -60,7 +60,6 @@ abstract class StarDustTestCase extends CIUnitTestCase
         parent::tearDown();
 
         // Reset Singletons to avoid test pollution
-        \StarDust\Services\ModelsManager::resetInstance();
-        \StarDust\Services\EntriesManager::resetInstance();
+        \Config\Services::reset();
     }
 }
