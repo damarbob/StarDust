@@ -52,7 +52,8 @@ class RuntimeIndexerTest extends CIUnitTestCase
                 if ($callCount === 1) {
                     // Batch Column Creation
                     $this->assertStringContainsString('ALTER TABLE `entry_data`', $sql);
-                    $this->assertStringContainsString('ADD COLUMN IF NOT EXISTS `v_age_num`', $sql);
+                    $this->assertStringContainsString('ADD COLUMN IF NOT EXISTS `v_age_num` DOUBLE', $sql);
+                    $this->assertStringContainsString('CAST(JSON_UNQUOTE(JSON_EXTRACT(`fields`, \'$.age\')) AS DOUBLE)', $sql);
                     $this->assertStringContainsString('ADD COLUMN IF NOT EXISTS `v_name_str`', $sql);
                 } elseif ($callCount === 2) {
                     // Batch Index Creation
@@ -253,17 +254,14 @@ class RuntimeIndexerTest extends CIUnitTestCase
         // 1. Valid columns
         $cols = ['v_old_num'];
 
-        $this->dbMock->expects($this->once())->method('transStart');
+        // Method removeOrphanedColumns no longer uses transactions (implicit commit in MySQL DDL)
+        $this->dbMock->expects($this->never())->method('transStart');
+        $this->dbMock->expects($this->never())->method('transComplete');
 
         // SQLs: DROP INDEX ..., DROP COLUMN ...
         // We use query callback in other tests, but here we expect calls.
-        // Ideally we should be consistent. If we configure 'query' method with willReturnCallback multiple times in setUp, it persists?
-        // No, we configure in each test.
 
         $this->dbMock->expects($this->exactly(2))->method('query');
-
-        $this->dbMock->expects($this->once())->method('transComplete');
-        $this->dbMock->method('transStatus')->willReturn(true);
 
         $result = $this->indexer->removeOrphanedColumns($cols);
 
@@ -296,6 +294,49 @@ class RuntimeIndexerTest extends CIUnitTestCase
         $this->assertContains('v_active_num', $columns);
         $this->assertContains('v_orphan_str', $columns);
         $this->assertNotContains('id', $columns);
+    }
+
+    public function testTryExecRetriesOnSpecificErrors()
+    {
+        // Reflection to make tryExec accessible
+        $reflection = new \ReflectionClass($this->indexer);
+        $method = $reflection->getMethod('tryExec');
+        $method->setAccessible(true);
+
+        // Mock DB Exception with code 13 (Permission Denied)
+        $exception = new \CodeIgniter\Database\Exceptions\DatabaseException('Locked', 13);
+
+        // Expect 2 failures then success -> 3 calls total
+        $this->dbMock->expects($this->exactly(3))
+            ->method('query')
+            ->willReturnOnConsecutiveCalls(
+                $this->throwException($exception),
+                $this->throwException($exception),
+                true // Success on 3rd attempt
+            );
+
+        $result = $method->invoke($this->indexer, 'SELECT 1');
+        $this->assertTrue($result);
+    }
+
+    public function testTryExecFailsFastOnSyntaxError()
+    {
+        $reflection = new \ReflectionClass($this->indexer);
+        $method = $reflection->getMethod('tryExec');
+        $method->setAccessible(true);
+
+        // Mock DB Exception with code 1064 (Syntax Error)
+        $exception = new \CodeIgniter\Database\Exceptions\DatabaseException('Syntax Error', 1064);
+
+        // Expect EXACTLY 1 call, no retries
+        $this->dbMock->expects($this->once())
+            ->method('query')
+            ->willThrowException($exception);
+
+        $this->expectException(\CodeIgniter\Database\Exceptions\DatabaseException::class);
+        $this->expectExceptionCode(1064);
+
+        $method->invoke($this->indexer, 'SELECT BROKEN SQL');
     }
 
     protected function tearDown(): void
