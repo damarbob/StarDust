@@ -313,12 +313,25 @@ class ModelsManager
             // Update the current version pointer
             $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
 
-            // Sync indexes
-            $this->handleIndexSync($fields, $modelId);
-
             $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during model creation.');
+            }
         } catch (\Throwable $e) {
             $db->transRollback();
+            throw $e;
+        }
+
+        // Sync indexes AFTER transaction to prevent DDL implicit commits from breaking the transaction
+        try {
+            $this->handleIndexSync($fields, $modelId);
+        } catch (\Throwable $e) {
+            // If indexing fails, we should probably warn or try to rollback the model?
+            // For now, rethrowing ensures the caller knows it wasn't fully successful.
+            // Ideally, we might delete the model here to ensure atomicity, but DDL failure is rare.
+            log_message('error', 'Index Sync Failed for Model ' . $modelId . ': ' . $e->getMessage());
             throw $e;
         }
 
@@ -343,6 +356,16 @@ class ModelsManager
         $model = $this->modelsModel->find($modelId);
         if (!$model) {
             throw new \RuntimeException("Model not found with ID $modelId");
+        }
+
+        // Validate and decode fields if present
+        $fields = null;
+        if (isset($data['fields'])) {
+            $fields = json_decode($data['fields'], true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new \InvalidArgumentException('Invalid JSON in fields: ' . json_last_error_msg());
+            }
+            $this->validateFields($fields);
         }
 
         $db = $this->modelsModel->db;
@@ -382,24 +405,25 @@ class ModelsManager
             // Update the current version pointer
             $this->modelsModel->update($modelId, ['current_model_data_id' => $modelDataId]);
 
-            // Sync indexes (Check merged data for fields)
-            if (isset($mergedData['fields'])) {
-                $fields = json_decode($mergedData['fields'], true);
-                // Strict JSON Check
-                if (json_last_error() !== JSON_ERROR_NONE) {
-                    throw new \InvalidArgumentException('Invalid JSON in fields: ' . json_last_error_msg());
-                }
-
-                if (is_array($fields)) {
-                    $this->validateFields($fields); // Validate structure
-                    $this->handleIndexSync($fields, $modelId);
-                }
-            }
-
             $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during model update.');
+            }
         } catch (\Throwable $e) {
             $db->transRollback();
             throw $e;
+        }
+
+        // Sync indexes AFTER transaction
+        if ($fields !== null) {
+            try {
+                $this->handleIndexSync($fields, $modelId);
+            } catch (\Throwable $e) {
+                log_message('error', 'Index Sync Failed for Model ' . $modelId . ': ' . $e->getMessage());
+                throw $e;
+            }
         }
     }
 
@@ -533,6 +557,11 @@ class ModelsManager
             $this->modelsModel->delete($ids);
 
             $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during model deletion.');
+            }
         } catch (\Throwable $e) {
             $db->transRollback();
             throw $e;
@@ -576,6 +605,11 @@ class ModelsManager
             $this->modelsModel->delete($purgeableIds, purge: true);
 
             $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during purge.');
+            }
         } catch (\Throwable $e) {
             $db->transRollback();
             log_message('error', 'PurgeDeletedJob (Models) Failed: ' . $e->getMessage());
@@ -638,6 +672,11 @@ class ModelsManager
                 ->update();
 
             $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during restore.');
+            }
         } catch (\Throwable $e) {
             $db->transRollback();
             throw $e;
