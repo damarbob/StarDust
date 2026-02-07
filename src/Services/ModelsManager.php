@@ -358,6 +358,16 @@ class ModelsManager
             throw new \RuntimeException("Model not found with ID $modelId");
         }
 
+        // Optimistic Locking Check
+        // If the client provides 'current_model_data_id', it MUST match the database state.
+        if (isset($data['current_model_data_id']) && $data['current_model_data_id'] != $model['current_model_data_id']) {
+            throw \StarDust\Exceptions\ConcurrencyException::forLostUpdate(
+                $modelId,
+                (int)$data['current_model_data_id'],
+                (int)$model['current_model_data_id']
+            );
+        }
+
         // Validate and decode fields if present
         $fields = null;
         if (isset($data['fields'])) {
