@@ -15,6 +15,14 @@ class ModelsManagerSmartUpdateTest extends StarDustTestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // Mock RuntimeIndexer to avoid DDL execution failures (especially on SQLite or if DB locked)
+        // We are testing ModelsManager logic, not the Indexer itself here.
+        $indexerMock = $this->createMock(\StarDust\Libraries\RuntimeIndexer::class);
+        $indexerMock->method('syncIndexes')->willReturn(null);
+        \Config\Services::injectMock('runtimeIndexer', $indexerMock);
+
+        \StarDust\Services\ModelsManager::resetInstance();
         $this->modelsManager = ModelsManager::getInstance();
     }
 
@@ -120,6 +128,36 @@ class ModelsManagerSmartUpdateTest extends StarDustTestCase
             'fields' => json_encode([
                 ['id' => 'missing_type'] // Invalid: missing 'type'
             ])
+        ], $this->testUserId);
+    }
+
+    public function testOptimisticLockingThrowsException(): void
+    {
+        // 1. Create Model (Version 1)
+        $modelId = $this->modelsManager->create([
+            'name' => 'Concurrency Test',
+            'fields' => json_encode([])
+        ], $this->testUserId);
+
+        $v1Model = $this->modelsManager->find($modelId);
+        $v1DataId = $v1Model['current_model_data_id'];
+
+        // 2. User A updates to Version 2
+        $this->modelsManager->update($modelId, [
+            'name' => 'User A Update'
+        ], $this->testUserId);
+
+        $v2Model = $this->modelsManager->find($modelId);
+        $v2DataId = $v2Model['current_model_data_id'];
+
+        $this->assertNotEquals($v1DataId, $v2DataId, 'Model should have a new version ID');
+
+        // 3. User B tries to update based on Version 1 (Conflict!)
+        $this->expectException(\StarDust\Exceptions\ConcurrencyException::class);
+
+        $this->modelsManager->update($modelId, [
+            'name' => 'User B Update',
+            'current_model_data_id' => $v1DataId // Stale version
         ], $this->testUserId);
     }
 }
