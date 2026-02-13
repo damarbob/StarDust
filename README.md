@@ -10,7 +10,7 @@ Unlike other solutions that rely on slow software-side filtering or complex JOIN
 
 ---
 
-## 🚀 Features
+## Features
 
 - **Runtime Indexer**: Automatically maintains virtual columns (`v_price_num`, `v_sku_str`) and indexes for your dynamic fields, ensuring high-performance `WHERE` and `ORDER BY` operations.
 - **Dual Versioning**: Complete change history for both models and entries—every update creates a new version while maintaining instant access to current data. Perfect for audit trails, compliance, and data recovery.
@@ -21,7 +21,7 @@ Unlike other solutions that rely on slow software-side filtering or complex JOIN
 
 ---
 
-## ℹ️ Core Concepts
+## Core Concepts
 
 StarDust revolves around three fundamental concepts:
 
@@ -36,7 +36,7 @@ StarDust revolves around three fundamental concepts:
 
 ---
 
-## 📋 Requirements
+## Requirements
 
 - **PHP**: 8.1 or later
 - **Framework**: CodeIgniter 4.0+
@@ -87,7 +87,7 @@ For testing or fresh installations without an auth system, StarDust includes a *
 
 ---
 
-## 📦 Installation
+## Installation
 
 1.  **Install via Composer:**
 
@@ -102,7 +102,7 @@ For testing or fresh installations without an auth system, StarDust includes a *
 
 ---
 
-## 💻 Usage
+## Usage
 
 ### 1\. Managing Models ( The Blueprint )
 
@@ -236,7 +236,7 @@ $result = $processor->process($jsonRequest);
 
 ---
 
-## 🛠️ CLI Tools
+## CLI Tools
 
 ### Regenerating Indexes
 
@@ -258,7 +258,7 @@ php spark stardust:generate-indexes
 
 ---
 
-## ⚡ Production Optimization
+## Production Optimization
 
 By default, StarDust creates indexes immediately (synchronously). For high-traffic sites, this can cause table locks.
 
@@ -279,7 +279,7 @@ This moves the heavy `ALTER TABLE` operations to a background worker, making you
 
 ---
 
-## 🧩 Global Helpers
+## Global Helpers
 
 ### `syntax_processor()`
 
@@ -293,14 +293,14 @@ $result = $processor->process($jsonRequest);
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 - **[FAQ](FAQ.md)** - Common questions, advanced usage, and troubleshooting
 - **[Migration Guide](FAQ.md#how-do-i-upgrade-from-v01x-to-v020)** - Upgrading from v0.1.x to v0.2.0+
 
 ---
 
-## 🛡️ Compliance & Security
+## Compliance & Security
 
 ### GDPR (General Data Protection Regulation)
 
@@ -322,6 +322,6 @@ If you are storing Protected Health Information (PHI):
 
 ---
 
-## 📄 License
+## License
 
 MIT License.
