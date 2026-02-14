@@ -48,7 +48,7 @@ final class ModelsBuilder extends BaseBuilder
      */
     public function joinModelData(): self
     {
-        return $this->join('model_data', 'models.current_model_data_id = model_data.id', 'left');
+        return $this->join('model_data as model_data', 'models.current_model_data_id = model_data.id', 'left');
     }
 
     /**
@@ -60,7 +60,7 @@ final class ModelsBuilder extends BaseBuilder
     {
         $table = $this->config->usersTable;
         $id = $this->config->usersIdColumn;
-        return $this->join($table, "models.creator_id = {$table}.{$id}", 'left');
+        return $this->join("{$table} as {$table}", "models.creator_id = {$table}.{$id}", 'left');
     }
 
     /**
@@ -133,7 +133,7 @@ final class ModelsBuilder extends BaseBuilder
             'models.current_model_data_id',
             'models.created_at',
             'models.deleted_at AS date_deleted'
-        ]);
+        ], null, false);
     }
 
     /**
@@ -149,7 +149,7 @@ final class ModelsBuilder extends BaseBuilder
             'model_data.icon',
             'model_data.created_at AS date_modified',
             'model_data.id as data_id'
-        ]);
+        ], null, false);
     }
 
     /**
@@ -164,7 +164,7 @@ final class ModelsBuilder extends BaseBuilder
             "{$table}.{$username} AS created_by",
             "editors.{$username} AS edited_by",
             "deleters.{$username} AS deleted_by"
-        ]);
+        ], null, false);
     }
 
     /**
