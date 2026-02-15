@@ -70,7 +70,7 @@ class ModelsModel extends Model
         // to ensure a fresh, isolated query state. Using the shared builder instance
         // could lead to query contamination if previous conditions weren't cleared,
         // or duplication of joins/selects if this method were called multiple times.
-        $builder = new ModelsBuilder($this->table, $this->db);
+        $builder = new ModelsBuilder("{$this->table} as models", $this->db);
 
         $builder->default();
 
