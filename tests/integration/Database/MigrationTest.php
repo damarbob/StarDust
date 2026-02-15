@@ -2,15 +2,14 @@
 
 namespace StarDust\Tests\Integration\Database;
 
-use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\StarDustTestCase;
 
-class MigrationTest extends CIUnitTestCase
+class MigrationTest extends StarDustTestCase
 {
-    use DatabaseTestTrait;
+    // Inherits SafeMigrationTrait from StarDustTestCase
 
     protected $migrate = true;
-    protected $migrateOnce = false;
+    protected $migrateOnce = false; // Always migrate for this test to verify structure
     protected $refresh = true;
     protected $namespace = 'StarDust';
 
@@ -53,5 +52,73 @@ class MigrationTest extends CIUnitTestCase
             'created_at' => date('Y-m-d H:i:s'),
             'updated_at' => date('Y-m-d H:i:s'),
         ]);
+    }
+    /**
+     * @testdox The migration successfully creates performance indexes.
+     */
+    public function testPerformanceIndexesExist(): void
+    {
+        $db = \Config\Database::connect();
+        $db->resetDataCache();
+
+
+        $expectedIndexes = [
+            'entries'    => ['idx_entries_model_history', 'idx_entries_deleted_at'],
+            'entry_data' => ['idx_entry_data_history'],
+            'model_data' => ['idx_model_data_history'],
+        ];
+
+        foreach ($expectedIndexes as $table => $indexes) {
+            $existingIndexes = $db->getIndexData($table);
+            $existingIndexNames = array_map(function ($index) {
+                return $index->name;
+            }, $existingIndexes);
+
+            foreach ($indexes as $indexName) {
+                $this->assertContains(
+                    $indexName,
+                    $existingIndexNames,
+                    sprintf('Index "%s" is missing from table "%s".', $indexName, $table)
+                );
+            }
+        }
+    }
+
+    /**
+     * @testdox The migration successfully creates current version columns and indexes.
+     */
+    public function testCurrentVersionColumnsExist(): void
+    {
+        $db = \Config\Database::connect();
+        $db->resetDataCache();
+
+        $expectedColumns = [
+            'entries' => 'current_entry_data_id',
+            'models'  => 'current_model_data_id',
+        ];
+
+        foreach ($expectedColumns as $table => $column) {
+            $this->assertTrue($db->fieldExists($column, $table), sprintf('Column "%s" is missing from table "%s".', $column, $table));
+        }
+
+        $expectedIndexes = [
+            'entries' => ['idx_entries_current_data'],
+            'models'  => ['idx_models_current_data'],
+        ];
+
+        foreach ($expectedIndexes as $table => $indexes) {
+            $existingIndexes = $db->getIndexData($table);
+            $existingIndexNames = array_map(function ($index) {
+                return $index->name;
+            }, $existingIndexes);
+
+            foreach ($indexes as $indexName) {
+                $this->assertContains(
+                    $indexName,
+                    $existingIndexNames,
+                    sprintf('Index "%s" is missing from table "%s".', $indexName, $table)
+                );
+            }
+        }
     }
 }

@@ -3,7 +3,7 @@
 namespace StarDust\Tests\Integration;
 
 use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\DatabaseTestTrait;
+use StarDust\Tests\Integration\Traits\SafeMigrationTrait;
 
 /**
  * Base test class for StarDust Integration Tests.
@@ -14,7 +14,7 @@ use CodeIgniter\Test\DatabaseTestTrait;
  */
 abstract class StarDustTestCase extends CIUnitTestCase
 {
-    use DatabaseTestTrait;
+    use SafeMigrationTrait;
 
     protected $migrate = true;
     protected $migrateOnce = true;
