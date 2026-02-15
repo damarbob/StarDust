@@ -8,116 +8,96 @@ use CodeIgniter\Database\Migration;
  * Migration to add performance-enhancing indexes.
  *
  * This migration adds composite indexes to `entries`, `entry_data`, and `model_data`
- * tables to optimize common queries, specifically those involving filtering by
- * soft-delete status and ordering by ID or looking up history.
+ * tables to optimize common queries.
  *
- * @package StarDust\Database\Migrations
+ * Updates:
+ * - Refactored to support both MySQL and SQLite (standard CREATE INDEX).
+ * - Removed ad-hoc retry logic for file locking (handled by infrastructure/safe-traits).
+ *
+ * @property \CodeIgniter\Database\BaseConnection $db
+ * @property \CodeIgniter\Database\Forge $forge
  */
 class AddPerformanceIndexes extends Migration
 {
     public function up()
     {
-        // Entries table
-        $this->ensureIndex('entries', 'idx_entries_model_history', ['model_id', 'deleted_at', 'id']);
-        $this->ensureIndex('entries', 'idx_entries_deleted_at', ['deleted_at']);
+        $indexes = [
+            'entries'    => [
+                'idx_entries_model_history' => ['model_id', 'deleted_at', 'id'],
+                'idx_entries_deleted_at'    => ['deleted_at'],
+            ],
+            'entry_data' => [
+                'idx_entry_data_history'    => ['entry_id', 'deleted_at', 'id'],
+            ],
+            'model_data' => [
+                'idx_model_data_history'    => ['model_id', 'deleted_at', 'id'],
+            ],
+        ];
 
-        // Entry Data table
-        $this->ensureIndex('entry_data', 'idx_entry_data_history', ['entry_id', 'deleted_at', 'id']);
+        foreach ($indexes as $table => $keys) {
+            foreach ($keys as $keyName => $fields) {
+                // Check if index exists to ensure idempotency
+                if ($this->indexExists($table, $keyName)) {
+                    continue;
+                }
 
-        // Model Data table
-        $this->ensureIndex('model_data', 'idx_model_data_history', ['model_id', 'deleted_at', 'id']);
+                // Standard SQL for creating indexes works on both MySQL and SQLite
+                $cols = implode(',', $fields);
+                $sql  = "CREATE INDEX $keyName ON $table ($cols)";
+
+                try {
+                    $this->db->query($sql);
+                } catch (\Throwable $e) {
+                    // If creation fails (e.g. race condition), log warning but don't crash
+                    log_message('warning', "Index creation failed for $keyName: " . $e->getMessage());
+                }
+            }
+        }
     }
 
     public function down()
     {
-        // Drop in reverse order
-        $this->dropIndex('model_data', 'idx_model_data_history');
-        $this->dropIndex('entry_data', 'idx_entry_data_history');
-        $this->dropIndex('entries', 'idx_entries_deleted_at');
-        $this->dropIndex('entries', 'idx_entries_model_history');
-    }
+        $indexes = [
+            'entries'    => ['idx_entries_model_history', 'idx_entries_deleted_at'],
+            'entry_data' => ['idx_entry_data_history'],
+            'model_data' => ['idx_model_data_history'],
+        ];
 
-    private function ensureIndex(string $table, string $indexName, array $columns)
-    {
-        // Check if table exists first
-        if (!$this->tryTableExists($table)) {
-            return;
-        }
-
-        if (!$this->indexExists($table, $indexName)) {
-            $cols = implode(',', $columns);
-            $this->tryExec("ALTER TABLE `$table` ADD INDEX `$indexName` ($cols)");
-        }
-    }
-
-    private function dropIndex(string $table, string $indexName)
-    {
-        if ($this->indexExists($table, $indexName)) {
-            $this->tryExec("ALTER TABLE `$table` DROP INDEX `$indexName`");
-        }
-    }
-
-    private function indexExists(string $table, string $indexName): bool
-    {
-        if (!$this->tryTableExists($table)) {
-            return false;
-        }
-
-        try {
-            $result = $this->db->query("SHOW INDEX FROM `$table` WHERE Key_name = ?", [$indexName])->getResult();
-            return !empty($result);
-        } catch (\Throwable $e) {
-            // If table doesn't exist or other error, assume index doesn't exist (or can't be checked)
-            return false;
-        }
-    }
-
-    private function tryTableExists(string $table): bool
-    {
-        $attempts = 0;
-        $maxAttempts = 3;
-
-        while ($attempts < $maxAttempts) {
-            try {
-                // resetDataCache is sometimes needed if table was just dropped/created
-                $this->db->resetDataCache();
-                $result = $this->db->query("SHOW TABLES LIKE ?", [$table])->getResult();
-                return !empty($result);
-            } catch (\Throwable $e) {
-                // If "doesn't exist in engine" (errno 1932) or other locks
-                $attempts++;
-                if ($attempts >= $maxAttempts) {
-                    // If repeated failure, assume false or throw?
-                    // Returning false is safer for migration checks (it just means we skip adding index)
-                    return false;
+        foreach ($indexes as $table => $keys) {
+            foreach ($keys as $keyName) {
+                try {
+                    // Handle syntax differences for dropping indexes
+                    if ($this->db->DBDriver === 'SQLite3') {
+                        $this->db->query("DROP INDEX IF EXISTS $keyName");
+                    } else {
+                        // MySQL/MariaDB
+                        $this->db->query("DROP INDEX $keyName ON $table");
+                    }
+                } catch (\Throwable $e) {
+                    // Ignore errors during rollback (e.g. index doesn't exist)
                 }
-                sleep(1);
             }
         }
-        return false;
     }
 
     /**
-     * Executes a query with retry logic for Windows file locking issues.
+     * Checks if an index exists strictly by name.
      */
-    private function tryExec(string $sql)
+    private function indexExists(string $table, string $indexName): bool
     {
-        $attempts = 0;
-        $maxAttempts = 3;
+        if (! $this->db->tableExists($table)) {
+            return false;
+        }
 
-        while ($attempts < $maxAttempts) {
-            try {
-                $this->db->query($sql);
-                return; // Success
-            } catch (\Throwable $e) {
-                $attempts++;
-                // Check if it's a permission/locking error (errno 13 or similar)
-                // However, we retry on any error during migration for robustness in tests
-                if ($attempts >= $maxAttempts) {
-                    throw $e;
-                }
-                sleep(1); // Wait for lock release
+        // getIndexData is supported by CI4 for MySQL and SQLite
+        $indexes = $this->db->getIndexData($table);
+
+        foreach ($indexes as $idx) {
+            if ($idx->name === $indexName) {
+                return true;
             }
         }
+
+        return false;
     }
 }
