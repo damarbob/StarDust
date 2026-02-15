@@ -22,6 +22,11 @@
   "require-dev": {
     "phpunit/phpunit": "^10.5"
   },
+  "autoload-dev": {
+    "psr-4": {
+      "StarDust\\Tests\\": "tests/"
+    }
+  },
   "scripts": {
     "test": "phpunit"
   }
