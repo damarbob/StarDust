@@ -130,39 +130,12 @@ class ModelsManager
      */
     public function paginate(int $page = 1, int $perPage = 20, ?\StarDust\Data\ModelSearchCriteria $criteria = null): array
     {
-        $builder = $this->query();
+        $builder = $this->modelsModel->stardust();
 
-        if ($criteria) {
-            if ($criteria->hasSearchTerm()) {
-                $builder->groupStart()
-                    ->like('model_data.name', $criteria->searchQuery)
-                    ->groupEnd();
-            }
-
-            if ($criteria->hasDateFilters()) {
-                if ($criteria->createdAfter) {
-                    $builder->where('models.created_at >=', $criteria->createdAfter);
-                }
-                if ($criteria->createdBefore) {
-                    $builder->where('models.created_at <=', $criteria->createdBefore);
-                }
-                if ($criteria->updatedAfter) {
-                    // Alias 'date_modified' maps to 'model_data.created_at' in ModelsBuilder
-                    // But we use explicit column for clarity and safety in WHERE clause
-                    $builder->where('model_data.created_at >=', $criteria->updatedAfter);
-                }
-                if ($criteria->updatedBefore) {
-                    $builder->where('model_data.created_at <=', $criteria->updatedBefore);
-                }
-            }
-
-            if ($criteria->hasIds()) {
-                $builder->whereIn('models.id', $criteria->ids);
-            }
-        }
+        $this->applyCriteria($builder, $criteria);
 
         return $builder
-            ->orderBy('created_at', 'DESC')
+            ->orderBy('models.created_at', 'DESC')
             ->limit($perPage, ($page - 1) * $perPage)
             ->get()->getResultArray();
     }
@@ -194,21 +167,68 @@ class ModelsManager
     /**
      * Count total active models.
      *
+     * @param \StarDust\Data\ModelSearchCriteria|null $criteria
      * @return int|string
      */
-    public function count(): int|string
+    public function count(?\StarDust\Data\ModelSearchCriteria $criteria = null): int|string
     {
-        return $this->modelsModel->stardust()->countAllResults();
+        $builder = $this->modelsModel->stardust();
+        $this->applyCriteria($builder, $criteria);
+        return $builder->countAllResults();
     }
 
     /**
      * Count total deleted models.
      *
+     * @param \StarDust\Data\ModelSearchCriteria|null $criteria
      * @return int|string
      */
-    public function countDeleted(): int|string
+    public function countDeleted(?\StarDust\Data\ModelSearchCriteria $criteria = null): int|string
     {
-        return $this->modelsModel->stardust(true)->countAllResults();
+        $builder = $this->modelsModel->stardust(true);
+        $this->applyCriteria($builder, $criteria);
+        return $builder->countAllResults();
+    }
+
+    /**
+     * Applies search criteria to the query builder.
+     *
+     * @param ModelsBuilder $builder
+     * @param \StarDust\Data\ModelSearchCriteria|null $criteria
+     * @return void
+     */
+    protected function applyCriteria(ModelsBuilder $builder, ?\StarDust\Data\ModelSearchCriteria $criteria): void
+    {
+        if (!$criteria) {
+            return;
+        }
+
+        if ($criteria->hasSearchTerm()) {
+            $builder->groupStart()
+                ->like('model_data.name', $criteria->searchQuery)
+                ->groupEnd();
+        }
+
+        if ($criteria->hasDateFilters()) {
+            if ($criteria->createdAfter) {
+                $builder->where('models.created_at >=', $criteria->createdAfter);
+            }
+            if ($criteria->createdBefore) {
+                $builder->where('models.created_at <=', $criteria->createdBefore);
+            }
+            if ($criteria->updatedAfter) {
+                // Alias 'date_modified' maps to 'model_data.created_at' in ModelsBuilder
+                // But we use explicit column for clarity and safety in WHERE clause
+                $builder->where('model_data.created_at >=', $criteria->updatedAfter);
+            }
+            if ($criteria->updatedBefore) {
+                $builder->where('model_data.created_at <=', $criteria->updatedBefore);
+            }
+        }
+
+        if ($criteria->hasIds()) {
+            $builder->whereIn('models.id', $criteria->ids);
+        }
     }
 
     /**
@@ -627,6 +647,61 @@ class ModelsManager
         }
 
         return count($purgeableIds);
+    }
+
+    /**
+     * Permanently remove specific models and their associated data.
+     *
+     * @param array $ids
+     * @return int
+     */
+    public function purgeModels(array $ids): int
+    {
+        if (empty($ids)) {
+            return 0;
+        }
+
+        $db = $this->modelsModel->db;
+        $db->transStart();
+
+        try {
+            // 1. Delete associated Model Data and Entries
+            // This is a "Force Purge", so we remove everything related to these models.
+
+            // Get entry IDs first to delete entry data
+            $entryIds = array_column(
+                $this->entriesModel->builder()
+                    ->select('id')
+                    ->whereIn('model_id', $ids)
+                    ->get()
+                    ->getResultArray(),
+                'id'
+            );
+
+            if (!empty($entryIds)) {
+                $this->entryDataModel->whereIn('entry_id', $entryIds)->delete(purge: true);
+                $this->entriesModel->delete($entryIds, purge: true);
+            }
+
+            // Delete model data
+            $this->modelDataModel->whereIn('model_id', $ids)->delete(purge: true);
+
+            // Delete the models
+            $this->modelsModel->delete($ids, purge: true);
+
+            $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                $error = $db->error();
+                throw new \RuntimeException($error['message'] ?: 'Database transaction failed during model purge.');
+            }
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            log_message('error', 'PurgeModels (Models) Failed: ' . $e->getMessage());
+            throw $e;
+        }
+
+        return count($ids);
     }
 
     /**
