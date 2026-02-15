@@ -57,11 +57,14 @@ class CreateHyperTables extends Migration
             ],
         ]);
         $this->forge->addKey('id', true);
-        $attributesEntries = [
-            'ENGINE'  => 'InnoDB',
-            'CHARSET' => 'utf8mb4',
-            'COLLATE' => 'utf8mb4_general_ci',
-        ];
+        $attributesEntries = [];
+        if ($this->db->DBDriver === 'MySQLi') {
+            $attributesEntries = [
+                'ENGINE'  => 'InnoDB',
+                'CHARSET' => 'utf8mb4',
+                'COLLATE' => 'utf8mb4_general_ci',
+            ];
+        }
         $this->forge->createTable('entries', true, $attributesEntries);
 
         // ===============================================
@@ -77,8 +80,8 @@ class CreateHyperTables extends Migration
                 'type'            => 'INT',
                 'constraint'      => 11,
             ],
-            // We initially create "fields" as LONGTEXT. We'll update it below with the proper
-            // character set/collation and a CHECK constraint.
+            // Using LONGTEXT because MariaDB aliases JSON to this, and we apply strict constraints manually.
+            // We use utf8mb4_bin for strict JSON case sensitivity.
             'fields' => [
                 'type'            => 'LONGTEXT',
                 'null'            => false,
@@ -106,11 +109,14 @@ class CreateHyperTables extends Migration
             ],
         ]);
         $this->forge->addKey('id', true);
-        $attributesEntryData = [
-            'ENGINE'  => 'InnoDB',
-            'CHARSET' => 'utf8mb4',
-            'COLLATE' => 'utf8mb4_general_ci',
-        ];
+        $attributesEntryData = [];
+        if ($this->db->DBDriver === 'MySQLi') {
+            $attributesEntryData = [
+                'ENGINE'  => 'InnoDB',
+                'CHARSET' => 'utf8mb4',
+                'COLLATE' => 'utf8mb4_general_ci',
+            ];
+        }
         $this->forge->createTable('entry_data', true, $attributesEntryData);
 
         // ===============================================
@@ -145,11 +151,14 @@ class CreateHyperTables extends Migration
             ],
         ]);
         $this->forge->addKey('id', true);
-        $attributesModels = [
-            'ENGINE'  => 'InnoDB',
-            'CHARSET' => 'utf8mb4',
-            'COLLATE' => 'utf8mb4_general_ci',
-        ];
+        $attributesModels = [];
+        if ($this->db->DBDriver === 'MySQLi') {
+            $attributesModels = [
+                'ENGINE'  => 'InnoDB',
+                'CHARSET' => 'utf8mb4',
+                'COLLATE' => 'utf8mb4_general_ci',
+            ];
+        }
         $this->forge->createTable('models', true, $attributesModels);
 
         // ===============================================
@@ -169,7 +178,8 @@ class CreateHyperTables extends Migration
                 'type'            => 'VARCHAR',
                 'constraint'      => 255,
             ],
-            // Create "fields" column initially
+            // Using LONGTEXT because MariaDB aliases JSON to this, and we apply strict constraints manually.
+            // We use utf8mb4_bin for strict JSON case sensitivity.
             'fields' => [
                 'type'            => 'LONGTEXT',
                 'null'            => false,
@@ -209,56 +219,38 @@ class CreateHyperTables extends Migration
             ],
         ]);
         $this->forge->addKey('id', true);
-        $attributesModelData = [
-            'ENGINE'  => 'InnoDB',
-            'CHARSET' => 'utf8mb4',
-            'COLLATE' => 'utf8mb4_general_ci',
-        ];
+        $attributesModelData = [];
+        if ($this->db->DBDriver === 'MySQLi') {
+            $attributesModelData = [
+                'ENGINE'  => 'InnoDB',
+                'CHARSET' => 'utf8mb4',
+                'COLLATE' => 'utf8mb4_general_ci',
+            ];
+        }
         $this->forge->createTable('model_data', true, $attributesModelData);
 
         // ===============================================
         // Update "fields" columns to add character set/collation and JSON check constraint
         // ===============================================
-        $db = \Config\Database::connect();
+        // Only run this on MySQL/MariaDB
+        if ($this->db->DBDriver === 'MySQLi') {
+            $db = \Config\Database::connect();
 
-        // Check and apply JSON validation for entry_data.fields (if not already applied)
-        $entryDataResult = $db->query("SHOW CREATE TABLE `entry_data`")->getRow();
-        if ($entryDataResult && isset($entryDataResult->{'Create Table'})) {
-            $entryDataCreate = $entryDataResult->{'Create Table'};
-            if (strpos($entryDataCreate, 'json_valid') === false) {
-                // Retry logic for Windows file locking issues during tests
-                $attempts = 0;
-                $maxAttempts = 3;
-                while ($attempts < $maxAttempts) {
-                    try {
-                        $db->query("ALTER TABLE `entry_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
-                        break; // Success
-                    } catch (\Throwable $e) {
-                        $attempts++;
-                        if ($attempts >= $maxAttempts) throw $e;
-                        sleep(1); // Wait 1s before retry
-                    }
+            // Check and apply JSON validation for entry_data.fields (if not already applied)
+            $entryDataResult = $db->query("SHOW CREATE TABLE `entry_data`")->getRow();
+            if ($entryDataResult && isset($entryDataResult->{'Create Table'})) {
+                $entryDataCreate = $entryDataResult->{'Create Table'};
+                if (strpos($entryDataCreate, 'json_valid') === false) {
+                    $db->query("ALTER TABLE `entry_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
                 }
             }
-        }
 
-        // Check and apply JSON validation for model_data.fields (if not already applied)
-        $modelDataResult = $db->query("SHOW CREATE TABLE `model_data`")->getRow();
-        if ($modelDataResult && isset($modelDataResult->{'Create Table'})) {
-            $modelDataCreate = $modelDataResult->{'Create Table'};
-            if (strpos($modelDataCreate, 'json_valid') === false) {
-                // Retry logic for Windows file locking issues during tests
-                $attempts = 0;
-                $maxAttempts = 3;
-                while ($attempts < $maxAttempts) {
-                    try {
-                        $db->query("ALTER TABLE `model_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
-                        break; // Success
-                    } catch (\Throwable $e) {
-                        $attempts++;
-                        if ($attempts >= $maxAttempts) throw $e;
-                        sleep(1); // Wait 1s before retry
-                    }
+            // Check and apply JSON validation for model_data.fields (if not already applied)
+            $modelDataResult = $db->query("SHOW CREATE TABLE `model_data`")->getRow();
+            if ($modelDataResult && isset($modelDataResult->{'Create Table'})) {
+                $modelDataCreate = $modelDataResult->{'Create Table'};
+                if (strpos($modelDataCreate, 'json_valid') === false) {
+                    $db->query("ALTER TABLE `model_data` MODIFY `fields` LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`fields`))");
                 }
             }
         }
