@@ -11,9 +11,9 @@ class ConcurrencyException extends \RuntimeException implements HTTPExceptionInt
      */
     protected $code = 409; // Conflict
 
-    public static function forLostUpdate(int $modelId, ?int $clientVersion, int $serverVersion)
+    public static function forModelLostUpdate(int $modelId, ?int $clientVersion, int $serverVersion)
     {
-        return new static(lang('StarDust.concurrencyLostUpdate', [
+        return new static(lang('StarDust.concurrencyModelLostUpdate', [
             'id' => $modelId,
             'client' => $clientVersion ?? 'null',
             'server' => $serverVersion

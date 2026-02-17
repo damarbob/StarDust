@@ -381,7 +381,7 @@ class ModelsManager
         // Optimistic Locking Check
         // If the client provides 'current_model_data_id', it MUST match the database state.
         if (isset($data['current_model_data_id']) && $data['current_model_data_id'] != $model['current_model_data_id']) {
-            throw \StarDust\Exceptions\ConcurrencyException::forLostUpdate(
+            throw \StarDust\Exceptions\ConcurrencyException::forModelLostUpdate(
                 $modelId,
                 (int)$data['current_model_data_id'],
                 (int)$model['current_model_data_id']
