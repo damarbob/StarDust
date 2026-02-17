@@ -12,6 +12,7 @@ class EntrySearchCriteria
     public ?string $updatedAfter = null;
     public ?string $updatedBefore = null;
     public bool $includeDeleted = false;
+    /** @var VirtualColumnFilter[] */
     public array $customFilters = [];
 
     public function __construct(
@@ -61,8 +62,8 @@ class EntrySearchCriteria
         return !empty($this->customFilters);
     }
 
-    public function addCustomFilter(string $field, mixed $value): void
+    public function addCustomFilter(string $field, mixed $value, string $operator = '='): void
     {
-        $this->customFilters[$field] = $value;
+        $this->customFilters[] = new VirtualColumnFilter($field, $value, $operator);
     }
 }
