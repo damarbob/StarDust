@@ -212,6 +212,102 @@ class EntriesManagerPaginationTest extends StarDustTestCase
         $this->entriesManager->paginate(1, 10, $criteriaUnknown);
     }
 
+    public function testPaginateFiltersByVirtualColumnWithGreaterThan(): void
+    {
+        $priceFieldId = 'price_01';
+
+        $modelId = $this->modelsManager->create([
+            'name' => 'Range Filter Model',
+            'fields' => json_encode([
+                ['id' => $priceFieldId, 'type' => 'number', 'label' => 'Price']
+            ])
+        ], $this->testUserId);
+
+        $id50  = $this->entriesManager->create([
+            'model_id' => $modelId,
+            'fields' => json_encode([$priceFieldId => 50])
+        ], $this->testUserId);
+
+        $id100 = $this->entriesManager->create([
+            'model_id' => $modelId,
+            'fields' => json_encode([$priceFieldId => 100])
+        ], $this->testUserId);
+
+        $id200 = $this->entriesManager->create([
+            'model_id' => $modelId,
+            'fields' => json_encode([$priceFieldId => 200])
+        ], $this->testUserId);
+
+        // Filter: price > 100, scoped to this model → only entry with 200
+        $criteria = new EntrySearchCriteria(modelId: $modelId);
+        $criteria->addCustomFilter("{$priceFieldId}_num", 100, '>');
+
+        $result = $this->entriesManager->paginate(1, 10, $criteria);
+
+        $this->assertCount(1, $result);
+        $this->assertEquals($id200, $result[0]['id']);
+    }
+
+    public function testPaginateFiltersByVirtualColumnWithLessThanOrEqual(): void
+    {
+        $priceFieldId = 'price_01';
+
+        $modelId = $this->modelsManager->create([
+            'name' => 'Range Filter Model LTE',
+            'fields' => json_encode([
+                ['id' => $priceFieldId, 'type' => 'number', 'label' => 'Price']
+            ])
+        ], $this->testUserId);
+
+        $id50  = $this->entriesManager->create([
+            'model_id' => $modelId,
+            'fields' => json_encode([$priceFieldId => 50])
+        ], $this->testUserId);
+
+        $id100 = $this->entriesManager->create([
+            'model_id' => $modelId,
+            'fields' => json_encode([$priceFieldId => 100])
+        ], $this->testUserId);
+
+        $id200 = $this->entriesManager->create([
+            'model_id' => $modelId,
+            'fields' => json_encode([$priceFieldId => 200])
+        ], $this->testUserId);
+
+        // Filter: price <= 100, scoped to this model → entries with 50 and 100
+        $criteria = new EntrySearchCriteria(modelId: $modelId);
+        $criteria->addCustomFilter("{$priceFieldId}_num", 100, '<=');
+
+        $result = $this->entriesManager->paginate(1, 10, $criteria);
+
+        $this->assertCount(2, $result);
+        $resultIds = array_column($result, 'id');
+        $this->assertTrue(in_array($id50, $resultIds), "Result should contain ID $id50");
+        $this->assertTrue(in_array($id100, $resultIds), "Result should contain ID $id100");
+    }
+
+    public function testCountWithCriteria(): void
+    {
+        $this->createEntries(3, $this->testModelId);
+
+        // Create another model and entries
+        $otherModelId = $this->modelsManager->create([
+            'name' => 'Count Test Model',
+            'fields' => json_encode([])
+        ], $this->testUserId);
+
+        $this->createEntries(2, $otherModelId);
+
+        // Without criteria — all entries
+        $totalCount = $this->entriesManager->count();
+        $this->assertEquals(5, $totalCount);
+
+        // With criteria — only our model
+        $criteria = new EntrySearchCriteria(modelId: $this->testModelId);
+        $filteredCount = $this->entriesManager->count($criteria);
+        $this->assertEquals(3, $filteredCount);
+    }
+
     private function createEntries(int $count, ?int $modelId = null): void
     {
         $modelId = $modelId ?? $this->testModelId;

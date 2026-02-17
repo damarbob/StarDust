@@ -6,6 +6,7 @@ use StarDust\Tests\Integration\StarDustTestCase;
 use StarDust\Services\EntriesManager;
 use StarDust\Services\ModelsManager;
 use StarDust\Database\EntriesBuilder;
+use StarDust\Exceptions\ConcurrencyException;
 
 /**
  * Test suite for EntriesManager service
@@ -550,5 +551,87 @@ class EntriesManagerTest extends StarDustTestCase
         // Purge the remaining
         $this->entriesManager->purgeDeleted();
         $this->assertEquals(0, $this->entriesManager->countDeleted());
+    }
+
+    // ========================================
+    // SMART MERGE & OPTIMISTIC LOCKING Tests
+    // ========================================
+
+    public function testUpdateMergesPartialData(): void
+    {
+        $entryId = $this->entriesManager->create([
+            'model_id' => $this->testModelId,
+            'fields' => json_encode(['name' => 'Original', 'email' => 'original@test.com'])
+        ], $this->testUserId);
+
+        // Send a partial update — only change 'fields', but the merge
+        // ensures the new version row still carries 'model_id' from the old data.
+        $this->entriesManager->update($entryId, [
+            'fields' => json_encode(['name' => 'Updated', 'email' => 'original@test.com'])
+        ], $this->testUserId);
+
+        $entry = $this->entriesManager->find($entryId);
+        $this->assertIsArray($entry);
+
+        $decoded = json_decode($entry['fields'], true);
+        $this->assertEquals('Updated', $decoded['name']);
+        // The model_id on the entry itself should still be intact
+        $this->assertEquals($this->testModelId, $entry['model_id']);
+    }
+
+    public function testUpdateThrowsConcurrencyException(): void
+    {
+        $entryId = $this->entriesManager->create([
+            'model_id' => $this->testModelId,
+            'fields' => json_encode(['name' => 'Concurrent'])
+        ], $this->testUserId);
+
+        $entry = $this->entriesManager->find($entryId);
+        $realVersionId = (int)$entry['data_id'];
+
+        // Send a stale version id
+        $this->expectException(ConcurrencyException::class);
+        $this->entriesManager->update($entryId, [
+            'current_entry_data_id' => $realVersionId + 999,
+            'fields' => json_encode(['name' => 'Should Fail'])
+        ], $this->testUserId);
+    }
+
+    public function testUpdateWithoutVersionIdDoesNotThrow(): void
+    {
+        $entryId = $this->entriesManager->create([
+            'model_id' => $this->testModelId,
+            'fields' => json_encode(['name' => 'No Lock'])
+        ], $this->testUserId);
+
+        // Omit current_entry_data_id — should proceed without exception
+        $this->entriesManager->update($entryId, [
+            'fields' => json_encode(['name' => 'Updated Without Lock'])
+        ], $this->testUserId);
+
+        $entry = $this->entriesManager->find($entryId);
+        $this->assertEquals('Updated Without Lock', json_decode($entry['fields'], true)['name']);
+    }
+
+    // ========================================
+    // EMPTY-ARRAY GUARD Tests
+    // ========================================
+
+    public function testDeleteEntriesWithEmptyArrayDoesNothing(): void
+    {
+        // Should not throw or execute any SQL
+        $this->entriesManager->deleteEntries([], $this->testUserId);
+
+        // Verify database state is unchanged
+        $this->assertEquals(0, $this->entriesManager->count());
+    }
+
+    public function testRestoreWithEmptyArrayDoesNothing(): void
+    {
+        // Should not throw or execute any SQL
+        $this->entriesManager->restore([]);
+
+        // Verify database state is unchanged
+        $this->assertEquals(0, $this->entriesManager->count());
     }
 }

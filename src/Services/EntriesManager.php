@@ -132,57 +132,11 @@ class EntriesManager
      */
     public function paginate(int $page = 1, int $perPage = 20, ?\StarDust\Data\EntrySearchCriteria $criteria = null): array
     {
-        // Determine which builder to start with based on deleted flag
         $builder = ($criteria && $criteria->includeDeleted)
             ? $this->entriesModel->stardust(true)
             : $this->entriesModel->stardust();
 
-        if ($criteria) {
-            if ($criteria->hasSearchTerm()) {
-                // Entries usually don't have a direct 'name' like models, 
-                // typically we search within the JSON data or a related column.
-                // Assuming 'slug' or 'id' for now, or delegating to a more complex search.
-                // Adjust based on actual schema. FOR NOW matching ModelsManager pattern.
-                // Note: entries table often only has id, model_id, etc. 
-                // Search logic might need to join entry_data.
-
-                // If strict search implementation is needed, we'd need to know the schema better.
-                // Disabling complex text search on generic entries for now unless requested.
-            }
-
-            if ($criteria->hasModelId()) {
-                $builder->where('entries.model_id', $criteria->modelId);
-            }
-
-            if ($criteria->hasIds()) {
-                $builder->whereIn('entries.id', $criteria->ids);
-            }
-
-            if ($criteria->hasDateFilters()) {
-                if ($criteria->createdAfter) {
-                    $builder->where('entries.created_at >=', $criteria->createdAfter);
-                }
-                if ($criteria->createdBefore) {
-                    $builder->where('entries.created_at <=', $criteria->createdBefore);
-                }
-                if ($criteria->updatedBefore) {
-                    $builder->where('entries.updated_at <=', $criteria->updatedBefore);
-                }
-            }
-
-            if ($criteria->hasCustomFilters()) {
-                foreach ($criteria->customFilters as $field => $value) {
-                    // UX Improvement: Auto-append 'v_' if missing.
-                    // This allows 'price_01_num' to work as 'v_price_01_num'.
-                    if (!str_starts_with($field, 'v_')) {
-                        $field = 'v_' . $field;
-                    }
-
-                    // Security: effectively forced to virtual columns.
-                    $builder->where($field, $value);
-                }
-            }
-        }
+        $this->applyCriteria($builder, $criteria);
 
         return $builder
             ->orderBy('entries.created_at', 'DESC')
@@ -191,13 +145,72 @@ class EntriesManager
     }
 
     /**
+     * Applies search criteria to the query builder.
+     *
+     * @param EntriesBuilder $builder
+     * @param \StarDust\Data\EntrySearchCriteria|null $criteria
+     * @return void
+     */
+    protected function applyCriteria(EntriesBuilder $builder, ?\StarDust\Data\EntrySearchCriteria $criteria): void
+    {
+        if (!$criteria) {
+            return;
+        }
+
+        // @todo Entry search requires knowing which field to search.
+        // Entries are schema-less; a generic text search is not meaningful
+        // without a target field. Consider adding a `searchField` property
+        // to EntrySearchCriteria and using likeFields() here.
+
+        if ($criteria->hasModelId()) {
+            $builder->where('entries.model_id', $criteria->modelId);
+        }
+
+        if ($criteria->hasIds()) {
+            $builder->whereIn('entries.id', $criteria->ids);
+        }
+
+        if ($criteria->hasDateFilters()) {
+            if ($criteria->createdAfter) {
+                $builder->where('entries.created_at >=', $criteria->createdAfter);
+            }
+            if ($criteria->createdBefore) {
+                $builder->where('entries.created_at <=', $criteria->createdBefore);
+            }
+            if ($criteria->updatedAfter) {
+                $builder->where('entry_data.created_at >=', $criteria->updatedAfter);
+            }
+            if ($criteria->updatedBefore) {
+                $builder->where('entry_data.created_at <=', $criteria->updatedBefore);
+            }
+        }
+
+        if ($criteria->hasCustomFilters()) {
+            foreach ($criteria->customFilters as $filter) {
+                $field = $filter->field;
+
+                // UX: Auto-append 'v_' if missing.
+                if (!str_starts_with($field, 'v_')) {
+                    $field = 'v_' . $field;
+                }
+
+                // Table-qualify + operator; value is parameterized by CI4.
+                $builder->where("entry_data.{$field} {$filter->operator}", $filter->value);
+            }
+        }
+    }
+
+    /**
      * Counts the total number of entries.
      *
+     * @param \StarDust\Data\EntrySearchCriteria|null $criteria
      * @return int|string The number of entries.
      */
-    public function count(): int|string
+    public function count(?\StarDust\Data\EntrySearchCriteria $criteria = null): int|string
     {
-        return $this->entriesModel->stardust()->countAllResults();
+        $builder = $this->entriesModel->stardust();
+        $this->applyCriteria($builder, $criteria);
+        return $builder->countAllResults();
     }
 
     /**
@@ -218,11 +231,14 @@ class EntriesManager
     /**
      * Counts the total number of deleted entries.
      *
+     * @param \StarDust\Data\EntrySearchCriteria|null $criteria
      * @return int|string The number of deleted entries.
      */
-    public function countDeleted(): int|string
+    public function countDeleted(?\StarDust\Data\EntrySearchCriteria $criteria = null): int|string
     {
-        return $this->entriesModel->stardust(true)->countAllResults();
+        $builder = $this->entriesModel->stardust(true);
+        $this->applyCriteria($builder, $criteria);
+        return $builder->countAllResults();
     }
 
     /**
@@ -326,7 +342,7 @@ class EntriesManager
                 throw new \RuntimeException($error['message'] ?: 'Database transaction failed during create.');
             }
         } catch (\Throwable $e) {
-            // If we caught an exception, we should rethrow it.
+            $db->transRollback();
             throw $e;
         }
 
@@ -336,6 +352,10 @@ class EntriesManager
     /**
      * Updates entry data for a given entry.
      *
+     * Performs a "Smart Update" by merging $data with the current version.
+     * Supports optimistic locking: if $data contains 'current_entry_data_id',
+     * it must match the server's value or a ConcurrencyException is thrown.
+     *
      * @param int   $entryId The entry ID.
      * @param array $data    The data to update.
      * @param int   $userId  The ID of the user performing the update.
@@ -344,13 +364,57 @@ class EntriesManager
      */
     public function update(int $entryId, array $data, int $userId): void
     {
+        // 1. Fetch current entry to get pointer
+        $entry = $this->entriesModel->find($entryId);
+        if (!$entry) {
+            throw new \RuntimeException("Entry not found with ID $entryId");
+        }
+
+        // Optimistic Locking Check
+        if (isset($data['current_entry_data_id']) && $data['current_entry_data_id'] != $entry['current_entry_data_id']) {
+            throw \StarDust\Exceptions\ConcurrencyException::forEntryLostUpdate(
+                $entryId,
+                (int)$data['current_entry_data_id'],
+                (int)$entry['current_entry_data_id']
+            );
+        }
+
         $db = $this->entriesModel->db;
         $db->transStart();
 
         try {
-            $data['entry_id'] = $entryId;
-            $data['creator_id'] = $userId;
-            $this->entryDataModel->save($data);
+            // 2. Fetch current data to merge with
+            $currentData = [];
+            if (!empty($entry['current_entry_data_id'])) {
+                $found = $this->entryDataModel->find($entry['current_entry_data_id']);
+                if ($found) {
+                    $currentData = $found;
+                }
+            }
+
+            // 3. Clean up metadata from current data to avoid pollution
+            unset(
+                $currentData['id'],
+                $currentData['created_at'],
+                $currentData['updated_at'],
+                $currentData['deleted_at'],
+                $currentData['creator_id'],
+                $currentData['deleter_id'],
+                $currentData['entry_id']
+            );
+
+            // 4. Merge: New data overwrites old data
+            $mergedData = array_merge($currentData, $data);
+
+            // Strip locking key — it's not a data field
+            unset($mergedData['current_entry_data_id']);
+
+            // 5. Save as new version
+            $mergedData['entry_id'] = $entryId;
+            $mergedData['creator_id'] = $userId;
+
+            // Ensure we are inserting a NEW record
+            $this->entryDataModel->insert($mergedData);
             $entryDataId = $this->entryDataModel->getInsertID();
 
             // Update the current version pointer
@@ -363,6 +427,7 @@ class EntriesManager
                 throw new \RuntimeException($error['message'] ?: 'Database transaction failed during update.');
             }
         } catch (\Throwable $e) {
+            $db->transRollback();
             throw $e;
         }
     }
@@ -377,6 +442,10 @@ class EntriesManager
      */
     public function updateEntries(array $entryIds, array $data): void
     {
+        if (empty($entryIds)) {
+            return;
+        }
+
         $this->entriesModel->whereIn('id', $entryIds)
             ->set($data)
             ->update();
@@ -392,6 +461,10 @@ class EntriesManager
      */
     public function updateData(array $entryIds, array $data): void
     {
+        if (empty($entryIds)) {
+            return;
+        }
+
         $this->entryDataModel->whereIn('entry_id', $entryIds)
             ->set($data)
             ->update();
@@ -407,18 +480,30 @@ class EntriesManager
      */
     public function deleteEntries(array $ids, int $deleterId): void
     {
+        if (empty($ids)) {
+            return;
+        }
+
         $db = $this->entriesModel->db;
         $db->transStart();
 
         try {
-            // Update deleter info.
+            $now = date('Y-m-d H:i:s');
+
+            // Compile subquery for entry IDs to avoid parameter limit issues
+            $subqueryEntryIds = $this->entriesModel->builder()
+                ->select('id')
+                ->whereIn('id', $ids)
+                ->getCompiledSelect();
+
+            // Soft delete entry data via subquery
+            $this->entryDataModel->builder()
+                ->where("entry_id IN ($subqueryEntryIds)", null, false)
+                ->set(['deleter_id' => $deleterId, 'deleted_at' => $now])
+                ->update();
+
+            // Update deleter info and soft delete entries
             $this->updateEntries($ids, ['deleter_id' => $deleterId]);
-            $this->updateData($ids, ['deleter_id' => $deleterId]);
-
-            // Delete associated entry data.
-            $this->entryDataModel->whereIn('entry_id', $ids)->delete();
-
-            // Soft delete entries.
             $this->entriesModel->delete($ids);
 
             $db->transComplete();
@@ -428,6 +513,7 @@ class EntriesManager
                 throw new \RuntimeException($error['message'] ?: 'Database transaction failed during deletion.');
             }
         } catch (\Throwable $e) {
+            $db->transRollback();
             throw $e;
         }
     }
@@ -479,6 +565,10 @@ class EntriesManager
      */
     public function restore(array $ids): void
     {
+        if (empty($ids)) {
+            return;
+        }
+
         $db = $this->entriesModel->db;
         $db->transStart();
 
@@ -502,6 +592,7 @@ class EntriesManager
                 throw new \RuntimeException($error['message'] ?: 'Database transaction failed during restore.');
             }
         } catch (\Throwable $e) {
+            $db->transRollback();
             throw $e;
         }
     }
