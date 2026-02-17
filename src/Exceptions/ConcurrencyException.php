@@ -19,4 +19,13 @@ class ConcurrencyException extends \RuntimeException implements HTTPExceptionInt
             'server' => $serverVersion
         ]));
     }
+
+    public static function forEntryLostUpdate(int $entryId, ?int $clientVersion, int $serverVersion)
+    {
+        return new static(lang('StarDust.concurrencyEntryLostUpdate', [
+            'id' => $entryId,
+            'client' => $clientVersion ?? 'null',
+            'server' => $serverVersion
+        ]));
+    }
 }
