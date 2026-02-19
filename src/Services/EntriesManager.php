@@ -130,6 +130,14 @@ class EntriesManager
      * @param \StarDust\Data\EntrySearchCriteria|null $criteria
      * @return array
      */
+    /**
+     * Paginates entries based on criteria.
+     *
+     * @param int $page
+     * @param int $perPage
+     * @param \StarDust\Data\EntrySearchCriteria|null $criteria
+     * @return array
+     */
     public function paginate(int $page = 1, int $perPage = 20, ?\StarDust\Data\EntrySearchCriteria $criteria = null): array
     {
         $builder = ($criteria && $criteria->includeDeleted)
@@ -138,8 +146,25 @@ class EntriesManager
 
         $this->applyCriteria($builder, $criteria);
 
+        // Apply Sorting
+        if ($criteria && !empty($criteria->sort)) {
+            foreach ($criteria->sort as $field => $direction) {
+                // Determine table prefix based on field
+                // Standard fields are in 'entries', virtual/data fields in 'entry_data'
+                // For now, simple mapping.
+                if (in_array($field, ['created_at', 'updated_at', 'id', 'model_id'])) {
+                    $builder->orderBy("entries.$field", $direction);
+                } else {
+                    // Try entry_data for others (virtual columns)
+                    $builder->orderBy("entry_data.$field", $direction);
+                }
+            }
+        } else {
+            // Default Sort
+            $builder->orderBy('entries.created_at', 'DESC');
+        }
+
         return $builder
-            ->orderBy('entries.created_at', 'DESC')
             ->limit($perPage, ($page - 1) * $perPage)
             ->get()->getResultArray();
     }
@@ -178,24 +203,27 @@ class EntriesManager
                 $builder->where('entries.created_at <=', $criteria->createdBefore);
             }
             if ($criteria->updatedAfter) {
-                $builder->where('entry_data.created_at >=', $criteria->updatedAfter);
+                $builder->where('entries.updated_at >=', $criteria->updatedAfter);
             }
             if ($criteria->updatedBefore) {
-                $builder->where('entry_data.created_at <=', $criteria->updatedBefore);
+                $builder->where('entries.updated_at <=', $criteria->updatedBefore);
             }
         }
 
         if ($criteria->hasCustomFilters()) {
             foreach ($criteria->customFilters as $filter) {
-                $field = $filter->field;
+                if ($filter instanceof \StarDust\Data\VirtualColumnFilter) {
+                    $field = $filter->field;
+                    $value = $filter->value;
+                    $operator = $filter->operator;
 
-                // UX: Auto-append 'v_' if missing.
-                if (!str_starts_with($field, 'v_')) {
-                    $field = 'v_' . $field;
+                    // UX: Auto-append 'v_' if missing.
+                    if (!str_starts_with($field, 'v_')) {
+                        $field = 'v_' . $field;
+                    }
+
+                    $builder->where("$field $operator", $value);
                 }
-
-                // Table-qualify + operator; value is parameterized by CI4.
-                $builder->where("entry_data.{$field} {$filter->operator}", $filter->value);
             }
         }
     }

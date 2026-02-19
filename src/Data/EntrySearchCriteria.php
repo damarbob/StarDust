@@ -24,7 +24,8 @@ class EntrySearchCriteria
         ?string $updatedAfter = null,
         ?string $updatedBefore = null,
         bool $includeDeleted = false,
-        array $customFilters = []
+        array $customFilters = [],
+        public ?array $sort = null
     ) {
         $this->searchQuery = $searchQuery;
         $this->ids = $ids;
@@ -35,6 +36,7 @@ class EntrySearchCriteria
         $this->updatedBefore = $updatedBefore;
         $this->includeDeleted = $includeDeleted;
         $this->customFilters = $customFilters;
+        $this->sort = $sort;
     }
 
     public function hasSearchTerm(): bool
