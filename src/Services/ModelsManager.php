@@ -134,8 +134,25 @@ class ModelsManager
 
         $this->applyCriteria($builder, $criteria);
 
+        // Apply Sorting
+        if ($criteria && !empty($criteria->sort)) {
+            foreach ($criteria->sort as $field => $direction) {
+                if (in_array($field, ['created_at', 'updated_at', 'id', 'name'])) {
+                    // Models table columns
+                    $builder->orderBy("models.$field", $direction);
+                } else {
+                    // Virtual columns or model_data fields
+                    // model_data has: name, description, fields, etc.
+                    // For now, let's assume if it's not a models table column, try model_data
+                    // Or check specific allowed fields.
+                    $builder->orderBy("model_data.$field", $direction);
+                }
+            }
+        } else {
+            $builder->orderBy('models.created_at', 'DESC');
+        }
+
         return $builder
-            ->orderBy('models.created_at', 'DESC')
             ->limit($perPage, ($page - 1) * $perPage)
             ->get()->getResultArray();
     }

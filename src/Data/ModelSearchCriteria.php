@@ -14,7 +14,8 @@ readonly class ModelSearchCriteria
         public ?string $createdBefore = null,
         public ?string $updatedAfter = null,
         public ?string $updatedBefore = null,
-        public ?array $ids = null
+        public ?array $ids = null,
+        public ?array $sort = null
     ) {}
 
     public function hasSearchTerm(): bool
