@@ -146,6 +146,16 @@ class EntriesManager
 
         $this->applyCriteria($builder, $criteria);
 
+        // Apply Projection (Sparse Fieldsets)
+        if ($criteria && $criteria->selectedFields !== null) {
+            // If the user requested specific fields, check if they requested the heavy JSON 'fields'
+            if (!in_array('fields', $criteria->selectedFields, true)) {
+                // They didn't request 'fields', so only select the structural columns.
+                // This prevents Premature Materialization of the massive JSON blob.
+                $builder->select('entries.id, entries.model_id, entries.created_at, entries.updated_at');
+            }
+        }
+
         // Apply Sorting
         if ($criteria && !empty($criteria->sort)) {
             foreach ($criteria->sort as $field => $direction) {
