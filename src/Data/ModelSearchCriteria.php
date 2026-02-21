@@ -15,7 +15,8 @@ readonly class ModelSearchCriteria
         public ?string $updatedAfter = null,
         public ?string $updatedBefore = null,
         public ?array $ids = null,
-        public ?array $sort = null
+        public ?array $sort = null,
+        public ?array $selectedFields = null
     ) {}
 
     public function hasSearchTerm(): bool
@@ -34,5 +35,19 @@ readonly class ModelSearchCriteria
     public function hasIds(): bool
     {
         return !empty($this->ids);
+    }
+
+    public function withSelectedFields(array $fields): self
+    {
+        return new self(
+            searchQuery: $this->searchQuery,
+            createdAfter: $this->createdAfter,
+            createdBefore: $this->createdBefore,
+            updatedAfter: $this->updatedAfter,
+            updatedBefore: $this->updatedBefore,
+            ids: $this->ids,
+            sort: $this->sort,
+            selectedFields: $fields
+        );
     }
 }

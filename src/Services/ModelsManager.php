@@ -130,9 +130,18 @@ class ModelsManager
      */
     public function paginate(int $page = 1, int $perPage = 20, ?\StarDust\Data\ModelSearchCriteria $criteria = null): array
     {
+        // ModelSearchCriteria does not have includeDeleted, it's only active models for now unless overridden via specific queryDeleted() calls (legacy)
         $builder = $this->modelsModel->stardust();
 
         $this->applyCriteria($builder, $criteria);
+
+        // Apply Projection (Sparse Fieldsets)
+        if ($criteria && $criteria->selectedFields !== null) {
+            if (!in_array('fields', $criteria->selectedFields, true)) {
+                // Strip out the heavy fields column.
+                $builder->select('models.id, models.created_at, models.updated_at, model_data.model_id, model_data.name, model_data.user_groups, users.username as created_by, editors.username as edited_by, deleters.username as deleted_by');
+            }
+        }
 
         // Apply Sorting
         if ($criteria && !empty($criteria->sort)) {
