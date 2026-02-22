@@ -149,11 +149,13 @@ $entryData = [
 $entriesManager->create($entryData, $currentUserId);
 ```
 
-### 3\. High-Performance Querying
+> **💡 Smart Merge Updates:** When updating an entry, `EntriesManager::update()` performs a deep "Smart Merge". Modifying a single key (e.g., `price_01`) will *not* overwrite or destroy the unmentioned keys (e.g., `sku_01`).
 
-This is where StarDust shines. Instead of slow JSON searching, you query the auto-generated virtual columns directly.
+### 3\. High-Performance Querying & Filtering
 
-**Naming Convention:** `v_{field_id}_{suffix}`
+This is where StarDust shines. Instead of slow JSON searching, you query the auto-generated virtual columns directly using the **DTO-driven Managers**. 
+
+**Virtual Column Naming Convention:** `v_{field_id}_{suffix}`
 
 | Suffix | Field Types              | SQL Type      |
 | :----- | :----------------------- | :------------ |
@@ -161,32 +163,53 @@ This is where StarDust shines. Instead of slow JSON searching, you query the aut
 | `_dt`  | `date`, `datetime-local` | DATETIME      |
 | `_str` | `text`, `select`, etc.   | VARCHAR(191)  |
 
-**Example:**
+**Querying with `EntriesManager`:**
+
+```php
+use StarDust\DTOs\EntrySearchCriteria;
+use StarDust\DTOs\VirtualColumnFilter;
+
+$entriesManager = service('entriesManager');
+
+$criteria = new EntrySearchCriteria();
+
+// Native SQL speed! Validated by B-Tree Indexes.
+$criteria->addCustomFilter(new VirtualColumnFilter('v_price_01_num', '1000', '>'));
+$criteria->addCustomFilter(new VirtualColumnFilter('v_sku_01_str', 'PROD-001'));
+
+$results = $entriesManager->paginate($criteria);
+```
+
+> 🔒 **Security Notice:** `VirtualColumnFilter` explicitly whitelists operators (`=`, `!=`, `>`, `>=`, `<`, `<=`, `LIKE`) to prevent SQL-injection vulnerabilities caused by passing raw frontend strings to the query builder.
+
+### 4\. Projection & Sparse Fieldsets 
+
+**By default, `EntriesManager` and `ModelsManager` do NOT return the heavy JSON `fields` column when listing/paginating.**
+
+This prevents the "Premature Materialization" of massive JSON payloads that can cause Out-Of-Memory (OOM) crashes on large datasets. To retrieve the data within the `fields` column, you **must** explicitly request the specific keys you need:
+
+```php
+// Only extract 'price_01' and 'sku_01' from the JSON blob
+$criteria->selectFields(['price_01', 'sku_01']);
+
+$results = $entriesManager->paginate($criteria);
+```
+
+### 5\. Advanced: Using the Custom Builder
+
+Use the `stardust()` method to query entries with pre-configured JOINs and virtual column support. This bypasses the Manager-level DTO validation and is typically only used for internal complex queries.
 
 ```php
 $entriesModel = model('StarDust\Models\EntriesModel');
 
-$results = $entriesModel->stardust()
-    // Native SQL speed! Validated by B-Tree Indexes.
-    ->where('v_price_01_num >', 1000)
-    ->where('v_sku_01_str', 'PROD-001')
-    ->get()
-    ->getResultArray();
-```
-
-### 4\. Using the Custom Builder
-
-Use the `stardust()` method to query entries with pre-configured JOINs and virtual column support:
-
-```php
 $entriesModel->stardust()
     ->where('v_price_01_num >', 1000)
     ->get();
 ```
 
-> **Note:** See [FAQ](FAQ.md#why-use-stardust-instead-of-standard-model-methods) for why `stardust()` is recommended over standard Model methods.
+> **Note:** See [FAQ](FAQ.md#why-use-stardust-instead-of-standard-model-methods) for why `stardust()` is recommended over standard Model methods when not using the `EntriesManager`.
 
-### 5\. Searching Non-Indexed Fields
+### 6\. Searching Non-Indexed Fields
 
 For fields not indexed (e.g., `textarea` types), use `likeFields()`:
 

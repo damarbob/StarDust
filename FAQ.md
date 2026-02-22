@@ -126,6 +126,51 @@ $result = $processor->process($jsonRequest);
 
 ---
 
+### How does StarDust handle parallel updates to the same entry or model?
+
+StarDust relies on **Optimistic Locking** to prevent "Lost Updates" when multiple requests try to modify the same entry or model simultaneously. 
+
+Because StarDust is completely versioned, each update creates a new row in `entry_data` or `model_data` and updates the canonical `current_entry_data_id` (or model equivalent) pointer on the main record. 
+
+When you call `update()` on `EntriesManager` or `ModelsManager`, it checks if the provided `current` ID matches the database. If another process has updated the entry since you loaded it, StarDust will immediately throw a `ConcurrencyException`.
+
+**Example:**
+
+```php
+use StarDust\Exceptions\ConcurrencyException;
+
+try {
+    $entriesManager->update($entryId, $updatedFieldsData, $userId);
+} catch (ConcurrencyException $e) {
+    // The entry was modified by someone else!
+    // -> Rollback your transaction
+    // -> Prompt the user to reload, OR automatically retry the merge.
+    log_message('error', $e->getMessage());
+}
+```
+
+> ⚠️ Always wrap updates in a standard `try...catch` and handle concurrency cleanly, rather than letting it cause an unhandled 500 error.
+
+---
+
+### What operators can I use when filtering virtual columns?
+
+When using `VirtualColumnFilter` with `EntrySearchCriteria`, the operators are strictly limited to an explicit whitelist:
+
+`=` , `!=` , `>` , `>=` , `<` , `<=` , `LIKE`
+
+If you attempt to pass an invalid operator (e.g., from an unvalidated frontend payload), it will gracefully fail with a `StarDust.unsupportedFilterOperator` translation error rather than causing a database syntax error or SQL injection vulnerability.
+
+```php
+// Allowed:
+$criteria->addCustomFilter(new VirtualColumnFilter('v_price_01_num', '1000', '>'));
+
+// Throws Exception:
+$criteria->addCustomFilter(new VirtualColumnFilter('v_price_01_num', '1000', 'DROP TABLE'));
+```
+
+---
+
 ## Maintenance & CLI Tools
 
 ### What CLI commands are available for maintenance?
@@ -379,10 +424,10 @@ The following legacy methods are **deprecated** in v0.2.0 and will be **removed 
 - `EntriesModel::getCustomBuilder()`
 - `EntriesModel::getDeletedCustomBuilder()`
 - `EntriesModel::whereFields()`
-- `ModelsManager::get()` and `ModelsManager::getDeleted()` (Use `query()` methods instead)
-- `EntriesManager::get()` and `EntriesManager::getDeleted()` (Use `query()` methods instead)
+- `ModelsManager::get()` and `ModelsManager::getDeleted()` (Use `paginate()` with `ModelSearchCriteria` instead)
+- `EntriesManager::get()` and `EntriesManager::getDeleted()` (Use `paginate()` with `EntrySearchCriteria` instead)
 
-Please migrate your code to use the new `stardust()` builder and virtual columns before upgrading to v0.3.0.
+Please migrate your code to use the new `stardust()` builder (for complex queries) and the strict DTO-driven `paginate()` methods (for standard collection endpoints) before upgrading to v0.3.0.
 
 ---
 
