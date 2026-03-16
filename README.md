@@ -1,5 +1,11 @@
 # StarDust
 
+> **🚧 UNDER ACTIVE DEVELOPMENT (v0.3.0) 🚧**
+> 
+> StarDust is currently undergoing a major architectural migration to **Vertical Schema Partitioning** to address scalability limits and OOM vulnerabilities found in the Virtual Column architecture. The current `main` branch and upcoming `0.3.x` pre-releases represent a breaking change. 
+> 
+> We strongly advise consumers and developers to remain locked to the `^0.2.0-alpha.x` release line until the v0.3.0 API contract and migration paths are finalized. Critical fixes and backports for the `0.2.x` line will be maintained in the `support/v0.2` branch.
+
 ### Dynamic Fields with Native SQL Speed + Enterprise-grade Dual Versioning
 
 **StarDust** is a high-performance library for CodeIgniter 4 that allows you to add **dynamic data models** to your application without the performance cost usually associated with EAV (Entity-Attribute-Value) or JSON storage.
