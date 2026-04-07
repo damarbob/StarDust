@@ -5,10 +5,11 @@
   "type": "library",
   "autoload": {
     "psr-4": {
-      "StarDust\\": "src/"
+      "StarDust\\": "src_legacy/",
+      "StarDust\\Next\\": "src/"
     },
     "files": [
-      "src/Helpers/stardust_helper.php"
+      "src_legacy/Helpers/stardust_helper.php"
     ]
   },
   "require": {
