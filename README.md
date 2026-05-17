@@ -1,353 +1,134 @@
 # StarDust
 
 > **🚧 UNDER ACTIVE DEVELOPMENT (v0.3.0) 🚧**
-> 
-> StarDust is currently undergoing a major architectural migration to **Vertical Schema Partitioning** to address scalability limits and OOM vulnerabilities found in the Virtual Column architecture. The current `main` branch and upcoming `0.3.x` pre-releases represent a breaking change. 
-> 
+>
+> StarDust is currently undergoing a major architectural migration to **Vertical Schema Partitioning** to address scalability limits and OOM vulnerabilities found in the previous Virtual Column architecture. The current `main` branch and upcoming `0.3.x` pre-releases represent a breaking change.
+>
 > We strongly advise consumers and developers to remain locked to the `^0.2.0-alpha.x` release line until the v0.3.0 API contract and migration paths are finalized. Critical fixes and backports for the `0.2.x` line will be maintained in the `support/v0.2` branch.
 
-### Dynamic Fields with Native SQL Speed + Enterprise-grade Dual Versioning
+## MySQL-Native, Framework-Neutral Engine for Dynamic Data Models
 
-**StarDust** is a high-performance library for CodeIgniter 4 that allows you to add **dynamic data models** to your application without the performance cost usually associated with EAV (Entity-Attribute-Value) or JSON storage.
+**StarDust** is a high-performance PHP engine that gives applications schemaless dynamic fields with the query speed of a native SQL table — without bolting on a separate search service. The v0.3.0 architecture (**Vertical Schema Partitioning**) stores every entry's full JSON payload as the system of record and mirrors filterable fields into pre-provisioned slot columns on immutable extension pages, so consumer reads hit indexed columns directly while writes remain available even when slot capacity is exhausted.
 
-Unlike other solutions that rely on slow software-side filtering or complex JOINs, StarDust uses a **Runtime Indexer** to automatically generate **MySQL Virtual Columns** and **B-Tree Indexes** for your JSON fields. Plus, every change is automatically versioned—giving you a complete audit trail without extra work.
-
-**The result?** You get the flexibility of NoSQL (add fields on the fly) with the query speed of a native SQL table, plus enterprise-grade change tracking built-in.
+Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer library** with zero runtime framework dependencies. Adapters for specific frameworks (CodeIgniter 4 first) are opt-in companion packages, not core requirements.
 
 ---
 
-## Features
+## Status
 
-- **Runtime Indexer**: Automatically maintains virtual columns (`v_price_num`, `v_sku_str`) and indexes for your dynamic fields, ensuring high-performance `WHERE` and `ORDER BY` operations.
-- **Dual Versioning**: Complete change history for both models and entries—every update creates a new version while maintaining instant access to current data. Perfect for audit trails, compliance, and data recovery.
-- **Dynamic Modeling**: Create new entities (Products, Pages, Tickets) and define their fields in JSON at runtime.
-- **Optimized Storage**: Uses a "Flat Table" approach enhanced by JSON columns, avoiding the "EAV Join Hell".
-- **Syntax Processor**: A recursive processor to parse nested data queries within JSON content (ideal for API-driven architectures).
-- **Unified Managers**: Simple `ModelsManager` and `EntriesManager` services to handle CRUD.
+**This is a v0.3.0 pre-release.** Phase 0 (operating-environment verification and the package skeleton) is the only phase implemented at the time of this README. There is **no engine functionality yet** — no schema bootstrap, no entry ingestion, no read path. Construct the engine class today and you get a logger plus a PDO accessor.
 
----
+The full build sequence — Schema Registry, Slot & Page System, Write Path, Read Path, Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
-## Core Concepts
-
-StarDust revolves around three fundamental concepts:
-
-- **Models** (The Blueprint):
-  Think of a **Model** as a dynamic table definition (e.g., "Products", "Tickets"). It defines the structure and settings for a collection of data.
-
-- **Entries** (The Record):
-  An **Entry** is a single instance of a Model (e.g., a specific Product). Data is stored logically as JSON but physically optimized for SQL performance.
-
-- **Fields** (The Attribute):
-  **Fields** are the data points defined within a Model (e.g., `price`, `sku`). StarDust maps these JSON fields to **Virtual Columns**, giving you the query performance of native SQL columns.
+If you need a working library today, stay on `^0.2.0-alpha.x`.
 
 ---
 
 ## Requirements
 
-- **PHP**: 8.1 or later
-- **Framework**: CodeIgniter 4.0+
-- **Database**: Must support JSON and Generated Columns.
-  - MySQL 5.7+ (MySQL 8.0+ required for Async Indexing)
-  - MariaDB 10.2+ (MariaDB 10.6+ required for Async Indexing)
+- **PHP:** 8.1 or later
+- **PHP extensions:** `ext-pdo`, `ext-pdo_mysql`
+- **Database:** MySQL 8.0.13+ **or** Percona Server 8.0.13+
 
-### Database Schema Compatibility
+The 8.0.13 floor is non-negotiable. StarDust relies on functional/conditional unique indexes and common table expressions, both of which require 8.0.13.
 
-StarDust communicates with your `users` table to track who created or modified data.
+**Explicitly unsupported:**
 
-**Default Behavior:**
-StarDust is pre-configured to work with **[CodeIgniter Shield](https://shield.codeigniter.com/)** out of the box.
+- **MariaDB** — partial-index syntax and `SKIP LOCKED` semantics diverge from MySQL. The Phase 0 smoke suite is intentionally inhospitable to MariaDB and the CI pipeline asserts the rejection on every push.
+- **MySQL 5.7 and older** — missing the partial-unique-index feature the schema registry depends on.
 
-**Custom / Agnostic Setup:**
-You can use **ANY** authentication system or existing `users` table.
+---
 
-**Option 1: ENV File (Easiest)**
-Add these to your `.env` file:
+## Deployment Requirements
 
-```ini
-StarDust.usersTable = 'my_custom_users'
-StarDust.usersIdColumn = 'user_uuid'
-StarDust.usersUsernameColumn = 'display_name'
-StarDust.purgeLimit = 1000
-```
+StarDust v0.3.0 ships with four background daemons (Watcher, Reconciler, Liberator, Chronicler) arriving in Phases 5–7. A supported deployment target MUST provide all of the following — these requirements are binding once daemons ship, but you can plan against them today.
 
-**Option 2: Config File (Recommended for teams)**
-Create a file at `app/Config/StarDust.php`:
+1. **Persistent background processes or long-running containers** — systemd, supervisor, Docker / Kubernetes / ECS, or equivalent. Cron-only invocation is not supported in v1; a future `--once` mode is deliberately deferred but not foreclosed.
+2. **MySQL 8.0.13+ or Percona 8.0.13+** (also covered by the Requirements section above).
+3. **PHP 8.x with CLI access** for the `bin/stardust` entry point.
+4. **Local filesystem write access** for the Chronicler's async export artifacts (a mounted volume in container deployments).
+5. **PID-file or orchestrator-level Watcher singleton enforcement** — the in-database advisory lock is a safety net, not the primary enforcement mechanism.
 
-```php
-<?php
+**Supported deployment tiers:**
 
-namespace Config;
-
-use StarDust\Config\StarDust as BaseStarDust;
-
-class StarDust extends BaseStarDust
-{
-    public $usersTable          = 'my_custom_users';
-    public $usersIdColumn       = 'user_uuid';
-    public $usersUsernameColumn = 'display_name';
-}
-```
-
-**Automatic Polyfill:**
-For testing or fresh installations without an auth system, StarDust includes a **Polyfill Migration**. It will automatically create a minimal `users` table **ONLY IF** one does not already exist. This ensures you can get started immediately without setup friction.
+| Tier | Verdict |
+| :--- | :--- |
+| Free shared hosting (no shell, no cron, no persistent processes) | Unsupported. |
+| Paid shared hosting (cron only) | Unsupported in v1; awaits a future `--once`-mode ADR. |
+| VPS with systemd / supervisor | Supported — reference deployment. |
+| Containerized (Docker Compose, Kubernetes, ECS) | Supported — recommended for production at scale. |
 
 ---
 
 ## Installation
 
-1.  **Install via Composer:**
+```bash
+composer require damarbob/stardust
+```
 
-    ```bash
-    composer require damarbob/stardust
-    ```
-
-2.  **Run Migrations:**
-    ```bash
-    php spark migrate -n StarDust
-    ```
+The package's only runtime dependencies are `psr/log` and `psr/clock` (both interface-only packages). It does not pull in a framework, an ORM, a query builder, or a logging implementation.
 
 ---
 
-## Usage
-
-### 1\. Managing Models ( The Blueprint )
-
-Define your data structure using the `ModelsManager`.
-
-> **Key concept:** When you create or update a model, the **Runtime Indexer** automatically generates virtual columns and indexes for fields in `fields`.
+## Construction (Phase 0 surface)
 
 ```php
-use StarDust\Services\ModelsManager;
+use StarDust\Config\Config;
+use StarDust\StarDust;
 
-$manager = service('modelsManager');
+$pdo = new PDO('mysql:host=127.0.0.1;dbname=app', $user, $pass, [
+    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+]);
 
-$modelData = [
-    'name'        => 'Products',
-    'slug'        => 'products',
-    'description' => 'Main product catalog',
-    'fields' => json_encode([
-        // The 'type' determines the index suffix (_num, _str, _dt)
-        ['id' => 'price_01', 'label' => 'Price', 'type' => 'number'], // Creates 'v_price_01_num'
-        ['id' => 'sku_01',   'label' => 'SKU',   'type' => 'text']    // Creates 'v_sku_01_str'
-    ])
-];
+$engine = new StarDust(new Config(pdo: $pdo));
 
-$modelId = $manager->create($modelData, $currentUserId);
+// $engine->logger() returns StarDust\Logging\StdoutNdjsonLogger
+// (NDJSON to stdout per ADR 0020) unless you inject your own
+// PSR-3 logger via Config.
 ```
 
-### 2\. Managing Entries ( The Data )
-
-Add records using `EntriesManager`. Data is stored as JSON but mirrored into the virtual columns for speed.
-
-```php
-use StarDust\Services\EntriesManager;
-
-$entriesManager = service('entriesManager');
-
-$entryData = [
-    'model_id' => $modelId,
-    'fields'   => json_encode([
-        'price_01' => '15000',
-        'sku_01'   => 'PROD-001'
-    ])
-];
-
-$entriesManager->create($entryData, $currentUserId);
-```
-
-> **💡 Smart Merge Updates:** When updating an entry, `EntriesManager::update()` performs a deep "Smart Merge". Modifying a single key (e.g., `price_01`) will *not* overwrite or destroy the unmentioned keys (e.g., `sku_01`).
-
-### 3\. High-Performance Querying & Filtering
-
-This is where StarDust shines. Instead of slow JSON searching, you query the auto-generated virtual columns directly using the **DTO-driven Managers**. 
-
-**Virtual Column Naming Convention:** `v_{field_id}_{suffix}`
-
-| Suffix | Field Types              | SQL Type      |
-| :----- | :----------------------- | :------------ |
-| `_num` | `number`, `range`        | DOUBLE        |
-| `_dt`  | `date`, `datetime-local` | DATETIME      |
-| `_str` | `text`, `select`, etc.   | VARCHAR(191)  |
-
-**Querying with `EntriesManager`:**
-
-```php
-use StarDust\DTOs\EntrySearchCriteria;
-use StarDust\DTOs\VirtualColumnFilter;
-
-$entriesManager = service('entriesManager');
-
-$criteria = new EntrySearchCriteria();
-
-// Native SQL speed! Validated by B-Tree Indexes.
-$criteria->addCustomFilter(new VirtualColumnFilter('v_price_01_num', '1000', '>'));
-$criteria->addCustomFilter(new VirtualColumnFilter('v_sku_01_str', 'PROD-001'));
-
-$results = $entriesManager->paginate($criteria);
-```
-
-> 🔒 **Security Notice:** `VirtualColumnFilter` explicitly whitelists operators (`=`, `!=`, `>`, `>=`, `<`, `<=`, `LIKE`) to prevent SQL-injection vulnerabilities caused by passing raw frontend strings to the query builder.
-
-### 4\. Projection & Sparse Fieldsets 
-
-**By default, `EntriesManager` and `ModelsManager` do NOT return the heavy JSON `fields` column when listing/paginating.**
-
-This prevents the "Premature Materialization" of massive JSON payloads that can cause Out-Of-Memory (OOM) crashes on large datasets. To retrieve the data within the `fields` column, you **must** explicitly request the specific keys you need:
-
-```php
-// Only extract 'price_01' and 'sku_01' from the JSON blob
-$criteria->selectFields(['price_01', 'sku_01']);
-
-$results = $entriesManager->paginate($criteria);
-```
-
-### 5\. Advanced: Using the Custom Builder
-
-Use the `stardust()` method to query entries with pre-configured JOINs and virtual column support. This bypasses the Manager-level DTO validation and is typically only used for internal complex queries.
-
-```php
-$entriesModel = model('StarDust\Models\EntriesModel');
-
-$entriesModel->stardust()
-    ->where('v_price_01_num >', 1000)
-    ->get();
-```
-
-> **Note:** See [FAQ](FAQ.md#why-use-stardust-instead-of-standard-model-methods) for why `stardust()` is recommended over standard Model methods when not using the `EntriesManager`.
-
-### 6\. Searching Non-Indexed Fields
-
-For fields not indexed (e.g., `textarea` types), use `likeFields()`:
-
-```php
-$entriesModel->stardust()->likeFields([
-    ['field' => 'description_01', 'value' => 'fragile']
-])->get();
-```
-
-> ⚠️ **Performance:** This performs a full table scan. See [FAQ](FAQ.md#how-do-i-search-non-indexed-fields) for details and alternatives.
-
-### 6\. Accessing Version History
-
-Every update to a model or entry creates a new version. Access the complete history using the data models:
-
-```php
-// Get all versions of a model's fields
-$modelDataModel = model('StarDust\\Models\\ModelDataModel');
-$modelVersions = $modelDataModel->where('model_id', $modelId)
-    ->orderBy('created_at', 'DESC')
-    ->findAll();
-
-// Get all versions of an entry's data
-$entryDataModel = model('StarDust\\Models\\EntryDataModel');
-$entryVersions = $entryDataModel->where('entry_id', $entryId)
-    ->orderBy('created_at', 'DESC')
-    ->findAll();
-
-// Each record includes:
-// - fields (JSON): The data at that point in time
-// - created_at: When this version was created
-// - creator_id: Who made the change
-```
-
-> 💡 **Tip:** The `models` and `entries` tables have `current_model_data_id` and `current_entry_data_id` pointers that always reference the latest version for instant access.
-
-### 7\. Advanced: Dynamic JSON Queries
-
-The `SyntaxProcessor` enables API-driven queries where logic is passed as JSON:
-
-```php
-$processor = syntax_processor();
-$result = $processor->process($jsonRequest);
-```
-
-> 💡 See [FAQ - Syntax Processor](FAQ.md#how-do-i-use-the-syntax-processor-for-dynamic-queries) for detailed usage examples.
+That is the entire public surface at this point in the build. Schema bootstrap, model definition, entry ingestion, and the read path arrive in Phases 1 through 4.
 
 ---
 
-## CLI Tools
+## CLI
 
-### Regenerating Indexes
-
-For repair or regeneration scenarios (not needed for normal usage):
+The framework-neutral CLI entry point is `bin/stardust`:
 
 ```bash
-php spark stardust:generate-indexes
+vendor/bin/stardust --version
+vendor/bin/stardust --help
 ```
 
-> **Note:** Virtual columns are **automatically created** when using `modelsManager->create()` or `->update()`. This command is only needed for database repairs or migrations.
-
-**Additional commands:**
-
-- `stardust:cleanup-columns` - Remove orphaned virtual columns
-- `stardust:map-current` - Update version pointers for latest entry data
-- `stardust:convert-fields` - Migrate from v0.1.x data format
-
-> 📖 See [FAQ - CLI Commands](FAQ.md#what-cli-commands-are-available-for-maintenance) for detailed usage and when to run each command.
+Daemon and operator commands (`watcher`, `reconciler`, `liberator`, `chronicler`, `reconciler:dlq:replay`, `backfill`) land in later phases.
 
 ---
 
-## Production Optimization
+## Running the smoke suite locally
 
-By default, StarDust creates indexes immediately (synchronously). For high-traffic sites, this can cause table locks.
-
-**Enable Async Indexing:**
-
-1. `composer require codeigniter4/queue`
-2. Run migrations to create the jobs table:
-   ```bash
-   php spark migrate -n CodeIgniter\Queue
-   ```
-3. Set `$asyncIndexing = true` in `app/Config/StarDust.php`
-
-This moves the heavy `ALTER TABLE` operations to a background worker, making your application feel instant even during complex updates.
-
-> 💡 **Free Hosting?** You can use Async Indexing too! See the "Web Worker" guide in the [FAQ](FAQ.md#how-to-use-async-indexing-on-free-hosting-no-cli).
-
-> ⚠️ **Requirement:** If using the default Database Handler for queues, your database **MUST** support `SKIP LOCKED` (MySQL 8.0.1+ or MariaDB 10.6+). For older databases, consider using Redis or Predis handlers.
-
----
-
-## Global Helpers
-
-### `syntax_processor()`
-
-A convenience wrapper to get a new instance of the `SyntaxProcessor` library.
-
-```php
-// Instead of: $processor = new \StarDust\Libraries\SyntaxProcessor();
-$processor = syntax_processor();
-$result = $processor->process($jsonRequest);
+```bash
+composer install
+cp phpunit.xml.dist phpunit.xml         # gitignored; edit with your DB creds
+vendor/bin/phpunit --testsuite Smoke
 ```
 
+`phpunit.xml.dist` ships with empty `<env>` placeholders for `STARDUST_TEST_DSN`, `STARDUST_TEST_USER`, and `STARDUST_TEST_PASS`. Fill them in on your local `phpunit.xml` copy (which is gitignored). A shell-exported env var with the same name still wins over the file value, so the one-off form also works:
+
+```bash
+STARDUST_TEST_DSN='mysql:host=127.0.0.1;dbname=stardust_test' \
+STARDUST_TEST_USER=root STARDUST_TEST_PASS=root \
+vendor/bin/phpunit --testsuite Smoke
+```
+
+The suite verifies the Phase 0 exit criteria: server is MySQL (not MariaDB), version is 8.0.13+, `EXPLAIN ANALYZE` is available, common table expressions work, and functional unique indexes enforce the partial-uniqueness invariant the schema registry depends on.
+
+GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
+
 ---
 
-## Documentation
+## Legacy
 
-- **[FAQ](FAQ.md)** - Common questions, advanced usage, and troubleshooting
-- **[Migration Guide](FAQ.md#how-do-i-upgrade-from-v01x-to-v020)** - Upgrading from v0.1.x to v0.2.0+
-
----
-
-## Compliance & Security
-
-### GDPR (General Data Protection Regulation)
-
-StarDust is **GDPR-Ready** and provides the necessary tools to help you reach compliance:
-
-- **Right to Erasure**: Use `EntriesManager::purgeDeleted()` to permanently remove all soft-deleted data. (Default behavior is "Soft Delete", which is NOT sufficient for GDPR erasure requests).
-- **Audit Trails**: Every change is versioned with a timestamp and `creator_id`, providing a complete history of data processing.
-- **Data Minimization**: The schemaless nature allows you to store only exactly what is needed.
-
-### HIPAA (Health Insurance Portability and Accountability Act)
-
-> ⚠️ **StarDust is NOT HIPAA-compliant out of the box.**
-
-If you are storing Protected Health Information (PHI):
-
-1.  **Encryption at Rest**: You **MUST** enable Transparent Data Encryption (TDE) at the database level (e.g., MySQL Enterprise Encryption or MariaDB Data-at-Rest Encryption). StarDust stores data in standard JSON columns which are readable by anyone with database access.
-2.  **Search Index Risks**: The "Virtual Columns" used for indexing (`v_diagnosis_str`) contain **plaintext copies** of your data. If your database is not encrypted, these indexes are also exposed.
-3.  **Access Control**: You must implement strict access controls in your application layer (e.g., using CodeIgniter Shield). StarDust does not enforce row-level security.
+The legacy 0.2.x source code has been removed from the repository; it remains available via the `^0.2.0-alpha.x` release tags on Packagist.
 
 ---
 

@@ -1,0 +1,71 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * StarDust CLI entry point (ADR 0026).
+ *
+ * Phase 0 stub: knows --version and --help only. Daemon and operator
+ * commands (watcher, reconciler, liberator, chronicler, reconciler:dlq:replay,
+ * backfill, ...) are filled in by later phases.
+ */
+
+$autoloadCandidates = [
+    __DIR__ . '/../vendor/autoload.php',           // running from the repo
+    __DIR__ . '/../../../autoload.php',            // running as a vendored bin
+    __DIR__ . '/../../autoload.php',               // running from a flat composer install
+];
+
+$autoloadLoaded = false;
+foreach ($autoloadCandidates as $candidate) {
+    if (is_file($candidate)) {
+        require $candidate;
+        $autoloadLoaded = true;
+        break;
+    }
+}
+
+if (! $autoloadLoaded) {
+    fwrite(STDERR, "stardust: could not locate vendor/autoload.php; run `composer install`.\n");
+    exit(1);
+}
+
+$argv    = $_SERVER['argv'] ?? [];
+$command = $argv[1] ?? '--help';
+
+switch ($command) {
+    case '--version':
+    case '-V':
+        echo \StarDust\StarDust::VERSION . "\n";
+        exit(0);
+
+    case '--help':
+    case '-h':
+        echo <<<HELP
+stardust — Vertical Schema Partitioning engine CLI
+
+Usage:
+  bin/stardust <command> [options]
+
+Phase 0 surface:
+  --version, -V    Print the engine version.
+  --help, -h       Show this help.
+
+Planned commands (not yet implemented):
+  watcher                 Page-provisioning daemon (Phase 5).
+  reconciler              Sync-queue drain daemon (Phase 5).
+  reconciler:dlq:replay   Operator-initiated DLQ replay (Phase 5).
+  liberator               Slot-reclamation daemon (Phase 6a).
+  chronicler              Async export daemon (Phase 7).
+
+Subsequent phases are tracked in the project's design notes.
+HELP;
+        echo "\n";
+        exit(0);
+
+    default:
+        fwrite(STDERR, "stardust: command '{$command}' is not implemented in this build.\n");
+        fwrite(STDERR, "Run `bin/stardust --help` for the current command surface.\n");
+        exit(2);
+}

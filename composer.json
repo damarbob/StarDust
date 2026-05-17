@@ -1,0 +1,48 @@
+{
+    "name": "damarbob/stardust",
+    "description": "MySQL-native, framework-neutral Vertical Schema Partitioning engine for dynamic data models. Zero runtime framework dependencies.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "stardust",
+        "mysql",
+        "schema-partitioning",
+        "dynamic-fields",
+        "json",
+        "vertical-partitioning"
+    ],
+    "authors": [
+        {
+            "name": "Damar Syah Maulana",
+            "email": "ibn.damr@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "ext-pdo": "*",
+        "ext-pdo_mysql": "*",
+        "psr/log": "^3.0",
+        "psr/clock": "^1.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "StarDust\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "StarDust\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/stardust"
+    ],
+    "minimum-stability": "alpha",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true
+    }
+}

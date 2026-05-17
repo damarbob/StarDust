@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/10.5/phpunit.xsd"
+         bootstrap="tests/bootstrap.php"
+         colors="true"
+         cacheDirectory=".phpunit.cache"
+         failOnWarning="true"
+         failOnRisky="true"
+         beStrictAboutOutputDuringTests="true"
+         beStrictAboutTestsThatDoNotTestAnything="true">
+    <testsuites>
+        <testsuite name="Smoke">
+            <directory>tests/Smoke</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>src</directory>
+        </include>
+    </source>
+
+    <!--
+        Smoke-test database credentials.
+
+        DO NOT put real credentials in this file — it is committed.
+        Copy this file to phpunit.xml (gitignored) and override the
+        values below for local runs:
+
+            cp phpunit.xml.dist phpunit.xml
+
+        CI sets these from secrets/service-container parameters, not
+        from this file.
+
+        The force="false" attribute means a shell-exported env var
+        (e.g. STARDUST_TEST_DSN=... vendor/bin/phpunit) takes
+        precedence over the value defined here.
+    -->
+    <php>
+        <env name="STARDUST_TEST_DSN" value="" force="false"/>
+        <env name="STARDUST_TEST_USER" value="" force="false"/>
+        <env name="STARDUST_TEST_PASS" value="" force="false"/>
+    </php>
+</phpunit>

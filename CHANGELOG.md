@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-alpha.1] - 2026-05-11
+
+### Added
+
+- **Phase 0 — Operating Environment & Repo Bootstrap.**
+- Framework-neutral Composer package skeleton with `StarDust\` PSR-4 namespace; runtime `require` limited to `php`, `ext-pdo`, `ext-pdo_mysql`, `psr/log`, and `psr/clock`.
+- `StarDust\StarDust` engine entry-point class and `StarDust\Config\Config` construction-time configuration object.
+- `StarDust\Logging\StdoutNdjsonLogger` — default PSR-3 logger emitting NDJSON to stdout.
+- `StarDust\Clock\SystemClock` — default `psr/clock` implementation, injected into the logger for deterministic timestamps in tests.
+- `bin/stardust` CLI entry-point stub (`--version`, `--help`); daemon commands arrive in later phases.
+- Phase 0 PHPUnit smoke suite under `tests/Smoke/` covering MySQL 8.0.13+ version floor, `EXPLAIN ANALYZE` availability, CTE support, functional partial-unique-index enforcement, MariaDB rejection, and engine boot with defaults.
+- GitHub Actions CI (`.github/workflows/ci.yml`) running the smoke suite against real MySQL 8.0 and asserting the suite fails against MariaDB.
+
+### Changed
+
+- README rewritten for v0.3.0; the Vertical Schema Partitioning positioning, the MySQL 8.0.13+ requirement, and the framework-neutral installation flow replace the legacy 0.2.x CodeIgniter 4 / Virtual Column documentation.
+
+### Notes
+
+- v0.3.0 is a breaking architectural migration. Consumers must remain on `^0.2.0-alpha.x` until the v0.3.0 API contract is finalized.
+- The legacy 0.2.x source code was removed from the repository in commit `02eccd4` prior to this release; it remains available via the `^0.2.0-alpha.x` Packagist tags.
+
 ## [0.2.0-alpha.3] - 2026-02-22
 
 ### Added

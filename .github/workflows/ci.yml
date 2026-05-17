@@ -1,0 +1,124 @@
+name: Phase 0 Smoke
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  mysql-smoke:
+    name: Smoke against MySQL 8.0 (must pass)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: stardust_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.1"
+          extensions: pdo, pdo_mysql
+          coverage: none
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Composer install
+        run: composer install --no-progress --no-interaction --prefer-dist
+
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -proot --silent; then
+              echo "MySQL is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "MySQL did not become ready in time"; exit 1
+
+      - name: Run smoke suite
+        env:
+          STARDUST_TEST_DSN: "mysql:host=127.0.0.1;port=3306;dbname=stardust_test"
+          STARDUST_TEST_USER: "root"
+          STARDUST_TEST_PASS: "root"
+        run: vendor/bin/phpunit --testsuite Smoke
+
+  mariadb-rejection:
+    name: Smoke against MariaDB (must fail)
+    runs-on: ubuntu-latest
+
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: stardust_test
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.1"
+          extensions: pdo, pdo_mysql
+          coverage: none
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Composer install
+        run: composer install --no-progress --no-interaction --prefer-dist
+
+      - name: Wait for MariaDB
+        run: |
+          for i in $(seq 1 30); do
+            if mariadb-admin ping -h 127.0.0.1 -P 3307 -uroot -proot --silent 2>/dev/null \
+               || mysqladmin ping -h 127.0.0.1 -P 3307 -uroot -proot --silent 2>/dev/null; then
+              echo "MariaDB is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "MariaDB did not become ready in time"; exit 1
+
+      - name: Smoke suite must reject MariaDB
+        env:
+          STARDUST_TEST_DSN: "mysql:host=127.0.0.1;port=3307;dbname=stardust_test"
+          STARDUST_TEST_USER: "root"
+          STARDUST_TEST_PASS: "root"
+        run: |
+          if vendor/bin/phpunit --testsuite Smoke; then
+            echo "::error::Smoke suite unexpectedly passed against MariaDB"
+            exit 1
+          fi
+          echo "Smoke suite rejected MariaDB as expected"
