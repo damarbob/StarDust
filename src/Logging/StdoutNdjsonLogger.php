@@ -45,11 +45,20 @@ final class StdoutNdjsonLogger extends AbstractLogger
         $event = $context['event'] ?? null;
         unset($context['event']);
 
+        // ADR 0020 mandates a closed-vocabulary `event` field — callers that
+        // omit `event` fall back to a generic category. The human-readable
+        // (interpolated) message is preserved separately under `message`
+        // whenever non-empty, so PSR-3 detail is never silently discarded.
         $record = [
             'ts'    => $ts,
             'level' => (string) $level,
-            'event' => $event !== null ? (string) $event : $this->interpolate($message, $context),
+            'event' => $event !== null ? (string) $event : 'generic_log',
         ];
+
+        $interpolated = $this->interpolate($message, $context);
+        if ($interpolated !== '') {
+            $record['message'] = $interpolated;
+        }
 
         foreach ($context as $key => $value) {
             if (array_key_exists($key, $record)) {

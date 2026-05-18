@@ -55,6 +55,12 @@ final class EnvironmentTest extends TestCase
     protected function tearDown(): void
     {
         // Best-effort cleanup so re-runs against the same DB are idempotent.
+        // Guarded with isset() because PHPUnit may still invoke tearDown
+        // after a setUp that exited via markTestSkipped() / self::fail(),
+        // leaving the typed $pdo property uninitialised.
+        if (! isset($this->pdo)) {
+            return;
+        }
         try {
             $this->pdo->exec('DROP TABLE IF EXISTS ' . self::PARTIAL_INDEX_TABLE);
         } catch (\Throwable) {
