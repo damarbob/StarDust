@@ -6,9 +6,9 @@ declare(strict_types=1);
 /**
  * StarDust CLI entry point (ADR 0026).
  *
- * Phase 0 stub: knows --version and --help only. Daemon and operator
- * commands (watcher, reconciler, liberator, chronicler, reconciler:dlq:replay,
- * backfill, ...) are filled in by later phases.
+ * Phase 1 surface: --version, --help, bootstrap. Daemon and operator
+ * commands (watcher, reconciler, liberator, chronicler,
+ * reconciler:dlq:replay, backfill, ...) are filled in by later phases.
  */
 
 $autoloadCandidates = [
@@ -43,26 +43,58 @@ switch ($command) {
     case '--help':
     case '-h':
         echo <<<HELP
-stardust — Vertical Schema Partitioning engine CLI
+        stardust — Vertical Schema Partitioning engine CLI
 
-Usage:
-  bin/stardust <command> [options]
+        Usage:
+          bin/stardust <command> [options]
 
-Phase 0 surface:
-  --version, -V    Print the engine version.
-  --help, -h       Show this help.
+        Current command surface:
+          --version, -V    Print the engine version.
+          --help, -h       Show this help.
+          bootstrap        Apply the Phase 1 schema (idempotent).
+                           Reads STARDUST_DSN, STARDUST_USER, STARDUST_PASS
+                           from the process environment.
 
-Planned commands (not yet implemented):
-  watcher                 Page-provisioning daemon (Phase 5).
-  reconciler              Sync-queue drain daemon (Phase 5).
-  reconciler:dlq:replay   Operator-initiated DLQ replay (Phase 5).
-  liberator               Slot-reclamation daemon (Phase 6a).
-  chronicler              Async export daemon (Phase 7).
+        Planned commands (not yet implemented):
+          watcher                 Page-provisioning daemon (Phase 5).
+          reconciler              Sync-queue drain daemon (Phase 5).
+          reconciler:dlq:replay   Operator-initiated DLQ replay (Phase 5).
+          liberator               Slot-reclamation daemon (Phase 6a).
+          chronicler              Async export daemon (Phase 7).
 
-Subsequent phases are tracked in the project's design notes.
-HELP;
+        Subsequent phases are tracked in the project's design notes.
+        HELP;
         echo "\n";
         exit(0);
+
+    case 'bootstrap':
+        $dsn  = getenv('STARDUST_DSN') ?: '';
+        $user = getenv('STARDUST_USER') ?: '';
+        $pass = getenv('STARDUST_PASS');
+        $pass = $pass === false ? '' : $pass;
+
+        if ($dsn === '' || $user === '') {
+            fwrite(
+                STDERR,
+                "stardust: bootstrap requires STARDUST_DSN and STARDUST_USER environment variables.\n"
+                    . "STARDUST_PASS is optional (defaults to empty).\n",
+            );
+            exit(2);
+        }
+
+        try {
+            $pdo = new PDO($dsn, $user, $pass, [
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_EMULATE_PREPARES   => false,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            ]);
+            (new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo)))->bootstrap();
+            echo "stardust: bootstrap complete.\n";
+            exit(0);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: bootstrap failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
 
     default:
         fwrite(STDERR, "stardust: command '{$command}' is not implemented in this build.\n");

@@ -16,9 +16,9 @@ Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer lib
 
 ## Status
 
-**This is a v0.3.0 pre-release.** Phase 0 (operating-environment verification and the package skeleton) is the only phase implemented at the time of this README. There is **no engine functionality yet** — no schema bootstrap, no entry ingestion, no read path. Construct the engine class today and you get a logger plus a PDO accessor.
+**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton) and 1 (schema registry and core data plane) are implemented. The engine can now idempotently provision its full physical schema — data plane, registry, and operational tables — onto a fresh MySQL 8.0.13+ database in a single call. Entry ingestion, the read path, and the resilience daemons are not yet wired.
 
-The full build sequence — Schema Registry, Slot & Page System, Write Path, Read Path, Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
+The remaining build sequence — Slot & Page System, Write Path, Read Path, Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
 If you need a working library today, stay on `^0.2.0-alpha.x`.
 
@@ -70,7 +70,7 @@ The package's only runtime dependencies are `psr/log` and `psr/clock` (both inte
 
 ---
 
-## Construction (Phase 0 surface)
+## Construction & schema bootstrap
 
 ```php
 use StarDust\Config\Config;
@@ -85,9 +85,14 @@ $engine = new StarDust(new Config(pdo: $pdo));
 // $engine->logger() returns StarDust\Logging\StdoutNdjsonLogger
 // (NDJSON to stdout per ADR 0020) unless you inject your own
 // PSR-3 logger via Config.
+
+// Phase 1: idempotently provision every physical table the engine
+// needs (data plane, schema registry, operational/coordination).
+// Safe to call on an already-bootstrapped database.
+$engine->bootstrap();
 ```
 
-That is the entire public surface at this point in the build. Schema bootstrap, model definition, entry ingestion, and the read path arrive in Phases 1 through 4.
+That is the entire public surface at this point in the build. Model definition, entry ingestion, and the read path arrive in Phases 2 through 4.
 
 ---
 
@@ -98,6 +103,12 @@ The framework-neutral CLI entry point is `bin/stardust`:
 ```bash
 vendor/bin/stardust --version
 vendor/bin/stardust --help
+
+# Phase 1: idempotently bootstrap the schema on a configured database.
+# Reads STARDUST_DSN / STARDUST_USER / STARDUST_PASS from the environment.
+STARDUST_DSN='mysql:host=127.0.0.1;dbname=app' \
+STARDUST_USER=root STARDUST_PASS=root \
+vendor/bin/stardust bootstrap
 ```
 
 Daemon and operator commands (`watcher`, `reconciler`, `liberator`, `chronicler`, `reconciler:dlq:replay`, `backfill`) land in later phases.
@@ -120,7 +131,10 @@ STARDUST_TEST_USER=root STARDUST_TEST_PASS=root \
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-The suite verifies the Phase 0 exit criteria: server is MySQL (not MariaDB), version is 8.0.13+, `EXPLAIN ANALYZE` is available, common table expressions work, and functional unique indexes enforce the partial-uniqueness invariant the schema registry depends on.
+The suite covers both implemented phases:
+
+- **Phase 0 — environment.** Server is MySQL (not MariaDB), version is 8.0.13+, common table expressions work, and functional unique indexes enforce the partial-uniqueness invariant the schema registry depends on. (`EXPLAIN ANALYZE` is an 8.0.18+ operator-runbook tool per ADR 0019 / ADR 0023 and is deliberately **not** smoke-tested.)
+- **Phase 1 — bootstrap.** The migration runner creates every data plane, registry, and operational table on a blank database; re-runs are non-destructive; the `stardust_schema_version` singleton is seeded with `id = 1`; the `stardust_slot_assignments` status ENUM rejects out-of-band values; the partial unique index on `field_id` is enforced at the database level; and the tenant-scoped composite indexes on `entry_data` are present.
 
 GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
 

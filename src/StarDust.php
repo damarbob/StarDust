@@ -6,14 +6,15 @@ namespace StarDust;
 
 use PDO;
 use Psr\Log\LoggerInterface;
+use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Config\Config;
 
 /**
- * Engine entry-point class (Phase 0).
+ * Engine entry-point class.
  *
- * No business logic. Holds the injected Config and exposes typed
- * accessors so Phase 0 smoke tests and later phase implementations
- * can pull the PDO connection and logger they need.
+ * Holds the injected Config and exposes typed accessors plus the
+ * Phase 1 bootstrap entry point. Later phases append additional
+ * entry points here without breaking this surface.
  */
 final class StarDust
 {
@@ -36,5 +37,16 @@ final class StarDust
     public function logger(): LoggerInterface
     {
         return $this->config->logger;
+    }
+
+    /**
+     * Idempotent Phase 1 bootstrap: creates the data plane, schema
+     * registry, and operational tables and seeds the singleton
+     * stardust_schema_version row. Safe to invoke on an
+     * already-bootstrapped database.
+     */
+    public function bootstrap(): void
+    {
+        (new Bootstrapper($this->config->pdo))->run();
     }
 }

@@ -15,8 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StarDust\Logging\StdoutNdjsonLogger` — default PSR-3 logger emitting NDJSON to stdout.
 - `StarDust\Clock\SystemClock` — default `psr/clock` implementation, injected into the logger for deterministic timestamps in tests.
 - `bin/stardust` CLI entry-point stub (`--version`, `--help`); daemon commands arrive in later phases.
-- Phase 0 PHPUnit smoke suite under `tests/Smoke/` covering MySQL 8.0.13+ version floor, `EXPLAIN ANALYZE` availability, CTE support, functional partial-unique-index enforcement, MariaDB rejection, and engine boot with defaults.
+- Phase 0 PHPUnit smoke suite under `tests/Smoke/` covering MySQL 8.0.13+ version floor, CTE support, functional partial-unique-index enforcement, MariaDB rejection, and engine boot with defaults.
 - GitHub Actions CI (`.github/workflows/ci.yml`) running the smoke suite against real MySQL 8.0 and asserting the suite fails against MariaDB.
+- **Phase 1 — Schema Registry & Core Data Plane.**
+- `StarDust\Bootstrap\Bootstrapper` — idempotent migration runner that creates the data plane (`entry_data`, `stardust_sync_queue`), the schema registry (`stardust_models`, `stardust_fields`, `stardust_pages`, `stardust_slot_assignments` with the closed 5-state status ENUM `free | assigned | tombstoned | backfilling | ready`), and the operational/coordination tables (`stardust_schema_version`, `stardust_export_jobs`, `stardust_reconciler_dlq`, `backfill_checkpoints`). Safe to re-run on a populated database; no DDL is destructive.
+- `StarDust\StarDust::bootstrap()` — engine-level convenience that delegates to the Bootstrapper.
+- `bin/stardust bootstrap` — CLI command that reads `STARDUST_DSN` / `STARDUST_USER` / `STARDUST_PASS` from the process environment and provisions the schema in one call.
+- Functional partial unique index `ux_slot_assignments_field_live` implementing ADR 0017's "at most one live slot per field" invariant via the MySQL 8.0.13+ functional-index pattern.
+- Seed of the `stardust_schema_version` singleton row (`id = 1`, `version = 0`) via `INSERT … ON DUPLICATE KEY UPDATE id = id`, so re-runs neither duplicate the row nor reset an already-bumped version counter.
+- Phase 1 PHPUnit smoke suite (`tests/Smoke/BootstrapTest.php`) covering all six Phase 1 exit criteria: bootstrap on a blank database creates every table; idempotent re-runs preserve a sentinel row; the singleton seeds correctly; the slot-status ENUM rejects out-of-band values at the database level; the partial unique index on `field_id` is present via `SHOW INDEX` and behaviourally enforces the live-slot invariant; and the tenant-scoped composite indexes on `entry_data` exist as specified.
 
 ### Changed
 
