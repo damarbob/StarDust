@@ -1,4 +1,4 @@
-name: Phase 0 Smoke
+name: Smoke Suite
 
 on:
   push:
