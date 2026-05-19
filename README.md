@@ -16,9 +16,9 @@ Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer lib
 
 ## Status
 
-**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton) and 1 (schema registry and core data plane) are implemented. The engine can now idempotently provision its full physical schema — data plane, registry, and operational tables — onto a fresh MySQL 8.0.13+ database in a single call. Entry ingestion, the read path, and the resilience daemons are not yet wired.
+**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton), 1 (schema registry and core data plane), and 2 (slot & page system) are implemented. The engine can now idempotently provision its full physical schema — data plane, registry, and operational tables — onto a fresh MySQL 8.0.13+ database, allocate new `entry_slots_page_N` extension pages with the index layout determined by the registry's `is_filterable` flags, and atomically reserve free slots for model fields. Entry ingestion, the read path, and the resilience daemons are not yet wired — Phase 2's components ship as internal library classes that Phase 3's write path and Phase 5's Watcher daemon will consume.
 
-The remaining build sequence — Slot & Page System, Write Path, Read Path, Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
+The remaining build sequence — Write Path, Read Path, Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
 If you need a working library today, stay on `^0.2.0-alpha.x`.
 
@@ -92,7 +92,7 @@ $engine = new StarDust(new Config(pdo: $pdo));
 $engine->bootstrap();
 ```
 
-That is the entire public surface at this point in the build. Model definition, entry ingestion, and the read path arrive in Phases 2 through 4.
+That is the entire public surface at this point in the build. Phase 2's page provisioner and slot reserver ship as internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`) that Phase 3's write path and Phase 5's Watcher daemon will wire — there is no new engine-level method or CLI command yet. Model definition, entry ingestion, and the read path arrive in Phases 3 and 4.
 
 ---
 
@@ -131,10 +131,11 @@ STARDUST_TEST_USER=root STARDUST_TEST_PASS=root \
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-The suite covers both implemented phases:
+The suite covers all three implemented phases:
 
 - **Phase 0 — environment.** Server is MySQL (not MariaDB), version is 8.0.13+, common table expressions work, and functional unique indexes enforce the partial-uniqueness invariant the schema registry depends on. (`EXPLAIN ANALYZE` is an 8.0.18+ operator-runbook tool per ADR 0019 / ADR 0023 and is deliberately **not** smoke-tested.)
 - **Phase 1 — bootstrap.** The migration runner creates every data plane, registry, and operational table on a blank database; re-runs are non-destructive; the `stardust_schema_version` singleton is seeded with `id = 1`; the `stardust_slot_assignments` status ENUM rejects out-of-band values; the partial unique index on `field_id` is enforced at the database level; and the tenant-scoped composite indexes on `entry_data` are present.
+- **Phase 2 — slot & page system.** Page provisioning emits composite `(tenant_id, slot_column)` indexes only for the filterable slots named by the caller; the full 60-row slot inventory is inserted with `status='free'` in the same registry transaction as the `stardust_schema_version` bump; a forced failure rolls the registry transaction back without leaking partial inventory; sequential calls assign monotonic page numbers; the slot reserver performs the `free → assigned` transition atomically and returns `null` when no free slot of the requested family exists; and the ADR 0012 `EmptyTableGuard` rejects DDL against populated pages before any metadata lock is acquired.
 
 GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
 

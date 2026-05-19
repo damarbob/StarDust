@@ -87,6 +87,25 @@ final class BootstrapTest extends TestCase
     private function dropAllTables(): void
     {
         $this->pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
+
+        // Phase 2 extension pages (entry_slots_page_N) are named dynamically,
+        // so they cannot be allowlisted in self::TABLES — discover any that
+        // a previous Phase 2 smoke test (or a half-finished run) left behind
+        // and drop them before the Phase 1 tables they reference.
+        $pages = $this->pdo
+            ->query(
+                "SELECT table_name FROM information_schema.TABLES"
+                . " WHERE table_schema = DATABASE() AND table_name LIKE 'entry_slots_page_%'"
+            )
+            ->fetchAll(PDO::FETCH_COLUMN);
+        foreach ($pages as $pageTable) {
+            try {
+                $this->pdo->exec("DROP TABLE IF EXISTS {$pageTable}");
+            } catch (\Throwable) {
+                // ignored
+            }
+        }
+
         foreach (self::TABLES as $t) {
             try {
                 $this->pdo->exec("DROP TABLE IF EXISTS {$t}");
