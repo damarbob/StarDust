@@ -20,13 +20,20 @@ final class Config
 {
     public readonly LoggerInterface $logger;
     public readonly ClockInterface $clock;
+    public readonly string $artifactDir;
 
     public function __construct(
         public readonly PDO $pdo,
         ?LoggerInterface $logger = null,
         ?ClockInterface $clock = null,
+        ?string $artifactDir = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
+        // ADR 0011 async bulk-ingest artifacts (Phase 3) and ADR 0010
+        // export artifacts (Phase 7) land here. Directory creation is
+        // deferred to the consumer that actually writes — Config stays
+        // side-effect-free per ADR 0026.
+        $this->artifactDir = $artifactDir ?? (sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'stardust');
     }
 }

@@ -16,9 +16,9 @@ Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer lib
 
 ## Status
 
-**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton), 1 (schema registry and core data plane), and 2 (slot & page system) are implemented. The engine can now idempotently provision its full physical schema — data plane, registry, and operational tables — onto a fresh MySQL 8.0.13+ database, allocate new `entry_slots_page_N` extension pages with the index layout determined by the registry's `is_filterable` flags, and atomically reserve free slots for model fields. Entry ingestion, the read path, and the resilience daemons are not yet wired — Phase 2's components ship as internal library classes that Phase 3's write path and Phase 5's Watcher daemon will consume.
+**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton), 1 (schema registry and core data plane), 2 (slot & page system), and 3 (write path) are implemented. The engine can now idempotently provision its full physical schema, allocate new `entry_slots_page_N` extension pages with the index layout determined by the registry's `is_filterable` flags, atomically reserve free slots for model fields, **and ingest entries** — single rows or batched up to 1 000 per call synchronously, larger batches via the async submission path that returns an Import Job ID. When a field has no live slot the write degrades gracefully to `stardust_sync_queue` so writes never block on capacity exhaustion. The read path and the four resilience daemons (Watcher, Reconciler, Liberator, Chronicler) are not yet wired.
 
-The remaining build sequence — Write Path, Read Path, Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
+The remaining build sequence — Read Path, Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
 If you need a working library today, stay on `^0.2.0-alpha.x`.
 
@@ -84,7 +84,9 @@ $engine = new StarDust(new Config(pdo: $pdo));
 
 // $engine->logger() returns StarDust\Logging\StdoutNdjsonLogger
 // (NDJSON to stdout per ADR 0020) unless you inject your own
-// PSR-3 logger via Config.
+// PSR-3 logger via Config. Optional Config::$artifactDir overrides
+// where async bulk-ingest payloads are persisted (defaults to
+// sys_get_temp_dir() . '/stardust').
 
 // Phase 1: idempotently provision every physical table the engine
 // needs (data plane, schema registry, operational/coordination).
@@ -92,7 +94,46 @@ $engine = new StarDust(new Config(pdo: $pdo));
 $engine->bootstrap();
 ```
 
-That is the entire public surface at this point in the build. Phase 2's page provisioner and slot reserver ship as internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`) that Phase 3's write path and Phase 5's Watcher daemon will wire — there is no new engine-level method or CLI command yet. Model definition, entry ingestion, and the read path arrive in Phases 3 and 4.
+Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`) that Phase 5's Watcher daemon will wire; the Watcher and other daemons are not yet shipped. Model definition and the read path arrive in Phase 4.
+
+## Writing entries
+
+```php
+use StarDust\Write\BulkIngestOptions;
+use StarDust\Write\EntryPayload;
+
+// Single-entry write. Atomic INSERT into entry_data + per-page
+// INSERT … ON DUPLICATE KEY UPDATE into entry_slots_page_N for
+// each field with a live slot; falls back to stardust_sync_queue
+// (in the same transaction) if any field lacks a live slot
+// (ADR 0007 exhaustion fallback — the call still succeeds).
+$result = $engine->write(new EntryPayload(
+    tenantId: 42,
+    modelId:  $modelId,
+    fields:   ['name' => 'Acme', 'employees' => 120],
+));
+// $result->entryId, $result->enqueuedForBackfill, $result->slotsWritten
+
+// Synchronous chunked bulk ingest (≤ 1 000 entities). Each chunk
+// (default 500) commits in its own transaction so InnoDB lock
+// duration stays bounded. Returns a per-chunk manifest.
+$bulk = $engine->bulkWrite(
+    payloads: $listOfEntryPayloads,
+    options:  new BulkIngestOptions(chunkSize: 500, interChunkDelayMicros: 0),
+);
+
+// Async submission (> 1 000 entities, or smaller batches you want
+// processed off-thread). Writes the payload to Config::$artifactDir,
+// inserts a stardust_import_jobs row, returns the Import Job ID.
+// The Phase 5 Reconciler will drain the queue once it ships.
+$jobId = $engine->submitBulkWrite(
+    tenantId:        42,
+    payloads:        $largeBatch,
+    idempotencyKey:  'monthly-import-2026-05',
+);
+```
+
+`tenant_id` is validated at every entry point (must be `>= 1`) before any SQL executes. All write-path operations emit structured-log events per ADR 0020 — `entry_written`, `exhaustion_fallback`, `bulk_chunk_committed`, `bulk_chunk_rolled_back`, `bulk_accepted`, `payload_too_large`.
 
 ---
 
@@ -131,11 +172,12 @@ STARDUST_TEST_USER=root STARDUST_TEST_PASS=root \
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-The suite covers all three implemented phases:
+The suite covers all four implemented phases:
 
 - **Phase 0 — environment.** Server is MySQL (not MariaDB), version is 8.0.13+, common table expressions work, and functional unique indexes enforce the partial-uniqueness invariant the schema registry depends on. (`EXPLAIN ANALYZE` is an 8.0.18+ operator-runbook tool per ADR 0019 / ADR 0023 and is deliberately **not** smoke-tested.)
 - **Phase 1 — bootstrap.** The migration runner creates every data plane, registry, and operational table on a blank database; re-runs are non-destructive; the `stardust_schema_version` singleton is seeded with `id = 1`; the `stardust_slot_assignments` status ENUM rejects out-of-band values; the partial unique index on `field_id` is enforced at the database level; and the tenant-scoped composite indexes on `entry_data` are present.
 - **Phase 2 — slot & page system.** Page provisioning emits composite `(tenant_id, slot_column)` indexes only for the filterable slots named by the caller; the full 60-row slot inventory is inserted with `status='free'` in the same registry transaction as the `stardust_schema_version` bump; a forced failure rolls the registry transaction back without leaking partial inventory; sequential calls assign monotonic page numbers; the slot reserver performs the `free → assigned` transition atomically and returns `null` when no free slot of the requested family exists; and the ADR 0012 `EmptyTableGuard` rejects DDL against populated pages before any metadata lock is acquired.
+- **Phase 3 — write path.** Single-entry writes commit `entry_data` + every live-slot row + (optionally) a `stardust_sync_queue` enqueue in one transaction; the exhaustion-fallback path keeps the write succeeding when slots are missing; uncoercible payload values roll the whole entry back; bulk ingest chunks transactions per `BulkIngestOptions::$chunkSize`, applies the inter-chunk delay only between chunks, and rolls each failed chunk back atomically while later chunks continue; the 1 000-entity synchronous threshold throws `PayloadTooLargeException`; async submission writes a payload artifact under `Config::$artifactDir`, inserts a `stardust_import_jobs` row, and returns an `ImportJobId`; retrying with the same `(tenant_id, idempotency_key)` returns the existing job ID; `tenant_id <= 0` is rejected before any SQL.
 
 GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
 

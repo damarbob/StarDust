@@ -36,6 +36,7 @@ final class Bootstrapper
         $this->createSlotAssignments();
         $this->createSchemaVersion();
         $this->createExportJobs();
+        $this->createImportJobs();
         $this->createReconcilerDlq();
         $this->createBackfillCheckpoints();
 
@@ -202,6 +203,44 @@ final class Bootstrapper
                 KEY ix_export_jobs_tenant_status (tenant_id, status),
                 KEY ix_export_jobs_status_heartbeat (status, heartbeat_at),
                 KEY ix_export_jobs_completed (completed_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+        SQL);
+    }
+
+    /**
+     * Phase 3 async bulk-ingest job queue. Mirrors `stardust_export_jobs`
+     * per ADR 0011 ("artifact path on local disk, identical to the export
+     * pattern") — the Reconciler (Phase 5) will drain these. Phase 3 only
+     * persists rows; processing is out of scope.
+     *
+     * The `(tenant_id, idempotency_key)` UNIQUE enforces ADR 0011's
+     * idempotency-key contract at the database level. MySQL UNIQUE allows
+     * multiple NULL idempotency_key rows so unkeyed submissions never
+     * collide with each other.
+     */
+    private function createImportJobs(): void
+    {
+        $this->pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS stardust_import_jobs (
+                id               BIGINT        NOT NULL AUTO_INCREMENT,
+                tenant_id        BIGINT        NOT NULL,
+                status           ENUM('pending','processing','completed','failed')
+                                 NOT NULL DEFAULT 'pending',
+                idempotency_key  VARCHAR(128)      NULL DEFAULT NULL,
+                artifact_path    VARCHAR(512) NOT NULL,
+                entry_count      INT UNSIGNED NOT NULL,
+                manifest         JSON              NULL DEFAULT NULL,
+                failed_reason    VARCHAR(64)       NULL DEFAULT NULL,
+                worker_identity  VARCHAR(128)      NULL DEFAULT NULL,
+                claimed_at       DATETIME          NULL DEFAULT NULL,
+                heartbeat_at     DATETIME          NULL DEFAULT NULL,
+                created_at       DATETIME     NOT NULL,
+                completed_at     DATETIME          NULL DEFAULT NULL,
+                PRIMARY KEY (id),
+                UNIQUE KEY ux_import_jobs_tenant_idempotency (tenant_id, idempotency_key),
+                KEY ix_import_jobs_status_created (status, created_at),
+                KEY ix_import_jobs_tenant_status (tenant_id, status),
+                KEY ix_import_jobs_status_heartbeat (status, heartbeat_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
         SQL);
     }

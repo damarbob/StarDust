@@ -32,6 +32,7 @@ final class SlotReserverTest extends TestCase
         'entry_data',
         'stardust_schema_version',
         'stardust_export_jobs',
+        'stardust_import_jobs',
         'stardust_reconciler_dlq',
         'backfill_checkpoints',
     ];
