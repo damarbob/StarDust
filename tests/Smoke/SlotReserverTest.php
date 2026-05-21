@@ -294,6 +294,10 @@ final class SlotReserverTest extends TestCase
         self::assertSame($assignment->pageId, $decoded['page_id'] ?? null);
         self::assertSame($assignment->slotColumn, $decoded['slot_column'] ?? null);
         self::assertSame('dt', $decoded['slot_type'] ?? null);
+        self::assertMatchesRegularExpression(
+            '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/',
+            $decoded['correlation_id'] ?? '',
+        );
     }
 
     /** Unknown field id surfaces an InvalidArgumentException before any registry write. */

@@ -140,9 +140,14 @@ final class PageProvisioner
     }
 
     /**
+     * Validates each requested slot is known and silently deduplicates the
+     * list so a caller (e.g. a future Phase 5 Watcher that converges
+     * multiple pending-field events) cannot trigger a MySQL errno 1061
+     * "Duplicate key name" by passing the same column twice.
+     *
      * @param list<string> $filterableSlots
      */
-    private function validateFilterableSlots(array $filterableSlots): void
+    private function validateFilterableSlots(array &$filterableSlots): void
     {
         $valid = array_flip(self::allSlotColumns());
         foreach ($filterableSlots as $slot) {
@@ -153,6 +158,7 @@ final class PageProvisioner
                 );
             }
         }
+        $filterableSlots = array_values(array_unique($filterableSlots));
     }
 
     /**

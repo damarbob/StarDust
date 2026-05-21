@@ -29,8 +29,14 @@ use StarDust\StarDust;
 final class BootstrapTest extends TestCase
 {
     /**
-     * Every table the Phase 1 bootstrap creates. Drop order is reverse
-     * of FK dependency so FK_CHECKS can stay on.
+     * Static Phase 1 tables the bootstrap creates. Phase 2 extension pages
+     * (`entry_slots_page_N`) are named dynamically and are NOT listed here —
+     * `dropAllTables()` discovers them from `information_schema` at runtime
+     * and drops them before this static set.
+     *
+     * The listed order is the reverse of FK dependency for human readability;
+     * `dropAllTables()` disables `FOREIGN_KEY_CHECKS` for the sweep, so the
+     * order is not load-bearing for the drop to succeed.
      *
      * @var list<string>
      */

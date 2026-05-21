@@ -295,6 +295,10 @@ final class PageProvisionerTest extends TestCase
         self::assertSame(1, $decoded['page_id'] ?? null);
         self::assertSame('entry_slots_page_1', $decoded['table_name'] ?? null);
         self::assertSame(['i_str_01'], $decoded['filterable_slots'] ?? null);
+        self::assertMatchesRegularExpression(
+            '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/',
+            $decoded['correlation_id'] ?? '',
+        );
     }
 
     /** Unknown slot column names are rejected before any SQL runs. */
@@ -302,5 +306,47 @@ final class PageProvisionerTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->newProvisioner()->provision(['i_str_99']);
+    }
+
+    /** Duplicate slot names are silently deduplicated so MySQL errno 1061 cannot leak. */
+    public function testProvisionDeduplicatesFilterableSlots(): void
+    {
+        $stream = fopen('php://memory', 'r+');
+        self::assertNotFalse($stream);
+
+        $provisioner = new PageProvisioner(
+            pdo: $this->pdo,
+            clock: new SystemClock(),
+            logger: new StdoutNdjsonLogger(new SystemClock(), $stream),
+            provisionerIdentity: 'phpunit/0',
+        );
+
+        $pageId = $provisioner->provision(['i_str_01', 'i_str_01', 'i_int_03']);
+        self::assertSame(1, $pageId);
+
+        $rows = $this->pdo->query('SHOW INDEX FROM entry_slots_page_1')->fetchAll();
+        $perSlotIndexes = [];
+        foreach ($rows as $r) {
+            $name = (string) $r['Key_name'];
+            if (str_starts_with($name, 'ix_entry_slots_page_1_i_')) {
+                $perSlotIndexes[$name] = true;
+            }
+        }
+        self::assertSame(
+            ['ix_entry_slots_page_1_i_str_01', 'ix_entry_slots_page_1_i_int_03'],
+            array_keys($perSlotIndexes),
+            'Per-slot indexes must be emitted exactly once per distinct slot.',
+        );
+
+        rewind($stream);
+        $records = array_values(array_filter(explode("\n", (string) stream_get_contents($stream))));
+        self::assertCount(1, $records);
+        $decoded = json_decode($records[0], true);
+        self::assertIsArray($decoded);
+        self::assertSame(
+            ['i_str_01', 'i_int_03'],
+            $decoded['filterable_slots'] ?? null,
+            'Log payload must reflect the deduplicated slot list, not the raw input.',
+        );
     }
 }
