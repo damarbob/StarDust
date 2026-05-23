@@ -16,11 +16,11 @@ use Throwable;
  * Phase 3 async bulk-ingest submission entry point (ADR 0011).
  *
  * `submit()` is the > 1 000-entity escape hatch: it validates the
- * batch, writes the serialized payload JSON to disk under
- * `$artifactDir`, inserts a `stardust_import_jobs` row with
- * `status='pending'`, and returns the row's id wrapped in an
- * {@see ImportJobId}. The Phase 5 Reconciler will claim and drain
- * the job; Phase 3 only persists.
+ * batch, writes the payload as a single-document JSON artifact to disk
+ * under `$artifactDir` (format contract in ADR 0028), inserts a
+ * `stardust_import_jobs` row with `status='pending'`, and returns the
+ * row's id wrapped in an {@see ImportJobId}. The Phase 5 Reconciler
+ * will claim and drain the job; Phase 3 only persists.
  *
  * Idempotency-key semantics per ADR 0011:
  *   - When the caller supplies `$idempotencyKey`, a retry with the

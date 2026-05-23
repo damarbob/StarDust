@@ -17,10 +17,11 @@ use StarDust\Exception\UncoercibleSlotValueException;
  *   - `slotWrites`: `array<int $pageId, array<string $slotColumn, mixed $value>>`
  *     ready for `INSERT … ON DUPLICATE KEY UPDATE` against each
  *     `entry_slots_page_N`.
- *   - `missingSlotFields`: list of field names that appear in the
- *     payload but have no live slot mapping. The write path uses this
- *     to decide whether to enqueue into `stardust_sync_queue` (ADR 0007
- *     exhaustion fallback).
+ *   - `missingSlotFields`: list of *registered* field names that appear
+ *     in the payload but have no live slot. Unknown payload keys (not in
+ *     `stardust_fields` for this model) are silently dropped and never
+ *     appear here. The write path enqueues into `stardust_sync_queue`
+ *     iff this list is non-empty (ADR 0007 exhaustion fallback).
  *
  * Coercion rules (Phase 3 first-write policy, distinct from the
  * Reconciler retype-backfill rules in ADR 0024):
@@ -52,9 +53,17 @@ final class PayloadSplitter
         foreach ($fields as $fieldName => $value) {
             $entry = $map->get((string) $fieldName);
             if ($entry === null) {
-                // No live slot (unmapped, never assigned, tombstoned, or
-                // assignment never landed because of capacity). Value
-                // stays in entry_data.fields per ADR 0013.
+                if (!$map->isKnown((string) $fieldName)) {
+                    // Not registered in stardust_fields for this model.
+                    // Silently drop — value persists in entry_data.fields
+                    // per ADR 0013; there is no slot to enqueue for
+                    // (ADR 0007 exhaustion fallback is scoped to registered
+                    // fields only).
+                    continue;
+                }
+                // Registered field with no live slot — ADR 0007 exhaustion
+                // fallback: enqueue so the Reconciler can backfill once
+                // capacity is restored.
                 $missingSlotFields[] = (string) $fieldName;
                 continue;
             }
@@ -149,7 +158,7 @@ final class PayloadSplitter
     private static function coerceDatetime(mixed $value, string $fieldName): string
     {
         if ($value instanceof DateTimeInterface) {
-            return (clone $value)
+            return DateTimeImmutable::createFromInterface($value)
                 ->setTimezone(new DateTimeZone('UTC'))
                 ->format('Y-m-d H:i:s');
         }

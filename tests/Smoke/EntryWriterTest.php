@@ -285,6 +285,36 @@ final class EntryWriterTest extends WritePathTestCase
         self::assertSame(['entry_written', 'exhaustion_fallback'], $events);
     }
 
+    /** Unknown payload key (not in stardust_fields) is silently dropped — no enqueue, no slot row. */
+    public function testUnknownPayloadKeyIsDroppedSilently(): void
+    {
+        [$modelId, $_fieldId, $pageId, $fieldName] = $this->setupModelWithReservedField(1, 'string');
+
+        $payload = new EntryPayload(
+            tenantId: 1,
+            modelId: $modelId,
+            fields: [
+                $fieldName        => 'known-value',
+                'no_such_field'   => 'should-be-dropped',
+            ],
+        );
+
+        $result = $this->newWriter()->write($payload);
+
+        self::assertFalse($result->enqueuedForBackfill, 'Unknown key must not trigger exhaustion fallback.');
+        self::assertCount(1, $result->slotsWritten, 'Only the registered field should be materialized.');
+
+        $queueCount = (int) $this->pdo->query('SELECT COUNT(*) FROM stardust_sync_queue')->fetchColumn();
+        self::assertSame(0, $queueCount, 'Unknown key must not produce a sync_queue row.');
+
+        /** @var array<string, mixed> $stored */
+        $stored = json_decode(
+            (string) $this->pdo->query('SELECT fields FROM entry_data WHERE id = ' . $result->entryId)->fetchColumn(),
+            true,
+        );
+        self::assertSame('should-be-dropped', $stored['no_such_field'], 'Unknown key must still persist in entry_data.fields per ADR 0013.');
+    }
+
     /** A retyped field (declared_type changed under the write) surfaces the splitter throw. */
     public function testUncoercibleValueThrowsTypedException(): void
     {
