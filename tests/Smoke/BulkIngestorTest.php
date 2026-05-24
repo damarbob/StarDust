@@ -14,6 +14,7 @@ use StarDust\Write\BulkIngestOptions;
 use StarDust\Write\BulkIngestor;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriter;
+use StarDust\Write\SlotRowUpserter;
 
 /**
  * Phase 3 BulkIngestor smoke suite.
@@ -30,6 +31,7 @@ final class BulkIngestorTest extends WritePathTestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: $log,
+            slotRowUpserter: new SlotRowUpserter($this->pdo),
         );
         return new BulkIngestor(
             pdo: $this->pdo,

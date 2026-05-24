@@ -16,9 +16,9 @@ Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer lib
 
 ## Status
 
-**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton), 1 (schema registry and core data plane), 2 (slot & page system), 3 (write path), and 4 (read path) are implemented. The engine can now idempotently provision its full physical schema, allocate new `entry_slots_page_N` extension pages with the index layout determined by the registry's `is_filterable` flags, atomically reserve free slots for model fields, ingest entries (single rows, sync chunked batches up to 1 000 per call, or larger batches via async submission), **and serve cursor-paginated reads** — the two-query bounded read of ADR 0005 with pre-flight rejection of unindexed/backfilling/unmapped filter targets, tenant-isolated SQL on every `WHERE` and `JOIN`, and an in-process schema-version cache keyed on `stardust_schema_version.version`. Fields whose slot is mid-retype or unmapped fall back to the JSON payload transparently. When a write field has no live slot the write still degrades gracefully to `stardust_sync_queue` so writes never block on capacity exhaustion. The four resilience daemons (Watcher, Reconciler, Liberator, Chronicler) are not yet wired.
+**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton), 1 (schema registry and core data plane), 2 (slot & page system), 3 (write path), 4 (read path), and 5 (resilience daemons: Watcher + Reconciler) are implemented. The engine can now idempotently provision its full physical schema, allocate new `entry_slots_page_N` extension pages with the index layout determined by the registry's `is_filterable` flags, atomically reserve free slots for model fields, ingest entries (single rows, sync chunked batches up to 1 000 per call, or larger batches via async submission), serve cursor-paginated reads — the two-query bounded read of ADR 0005 with pre-flight rejection of unindexed/backfilling/unmapped filter targets, tenant-isolated SQL on every `WHERE` and `JOIN`, and an in-process schema-version cache keyed on `stardust_schema_version.version` — **and automatically maintain slot capacity in the background**. The singleton Watcher provisions a new page when global capacity drops below the configured threshold (under `GET_LOCK('stardust_page_provision', 10)`) and runs the ADR 0019 cardinality advisory on a 24 h cadence. The multi-worker Reconciler drains `stardust_sync_queue` via `SELECT … FOR UPDATE SKIP LOCKED` and processes async bulk-ingest jobs from `stardust_import_jobs`, quarantining poison rows to `stardust_reconciler_dlq` per ADR 0018. Operators replay quarantined entries via `bin/stardust reconciler:dlq:replay --id=N` or `--reason=X`. The remaining two daemons (Liberator, Chronicler) are not yet wired.
 
-The remaining build sequence — Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
+The remaining build sequence — Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
 If you need a working library today, stay on `^0.2.0-alpha.x`.
 
@@ -94,7 +94,26 @@ $engine = new StarDust(new Config(pdo: $pdo));
 $engine->bootstrap();
 ```
 
-Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`) that Phase 5's Watcher daemon will wire; the Watcher and other daemons are not yet shipped. Model and field definition remain a registry-only concern until a future operator surface lands.
+Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`); Phase 5's Watcher daemon (`bin/stardust watcher`) wires them automatically. Model and field definition remain a registry-only concern until a future operator surface lands.
+
+Phase 5 adds eleven optional `Config` parameters for daemon tuning (all append-only per ADR 0026):
+
+```php
+$engine = new StarDust(new Config(
+    pdo:                                 $pdo,
+    watcherPollIntervalSeconds:          60,        // default
+    watcherCapacityThreshold:            0.20,      // provision when free-ratio falls below
+    watcherProvisionLockTimeoutSeconds:  10,        // GET_LOCK wait — blueprint AC#2 pins production at 10
+    cardinalityIntervalSeconds:          86_400,    // ADR 0019 24 h cadence
+    cardinalitySelectivityThreshold:     0.01,
+    cardinalityRowFloor:                 10_000,
+    cardinalityDistinctFloor:            10,
+    reconcilerChunkSize:                 500,       // SKIP LOCKED LIMIT N
+    reconcilerInterChunkDelayMicros:     0,         // pace drain throughput (0 = no pacing)
+    reconcilerCapacityWaitMillis:        5_000,     // sleep after a capacity_wait tick
+    pidFileDir:                          '/var/run/stardust',  // watcher.pid + *.shutdown flag files
+));
+```
 
 ## Writing entries
 
@@ -199,9 +218,28 @@ vendor/bin/stardust --help
 STARDUST_DSN='mysql:host=127.0.0.1;dbname=app' \
 STARDUST_USER=root STARDUST_PASS=root \
 vendor/bin/stardust bootstrap
+
+# Phase 5: singleton page-provisioning daemon. Holds a flock on
+# <pidFileDir>/watcher.pid; a second instance exits with code 2.
+vendor/bin/stardust watcher
+
+# Phase 5: multi-worker sync_queue + import_jobs drain. Run as many
+# replicas as you need — SKIP LOCKED keeps them disjoint.
+vendor/bin/stardust reconciler
+
+# Phase 5: operator-initiated DLQ replay (re-enqueues into
+# stardust_sync_queue and removes the DLQ row in one transaction).
+vendor/bin/stardust reconciler:dlq:replay --id=42
+vendor/bin/stardust reconciler:dlq:replay --reason=schema_incompatibility
 ```
 
-Daemon and operator commands (`watcher`, `reconciler`, `liberator`, `chronicler`, `reconciler:dlq:replay`, `backfill`) land in later phases.
+Daemons honour both `SIGTERM`/`SIGINT` (when `ext-pcntl` is loaded) and
+`touch <pidFileDir>/<daemon-name>.shutdown` as a graceful-shutdown
+signal — useful on hosts without `pcntl`. Exit codes: `0` clean
+shutdown (including signal-induced), `1` fatal, `2` singleton
+violation or user error.
+
+The remaining daemon commands (`liberator`, `chronicler`) land in Phases 6a and 7.
 
 ---
 
@@ -221,13 +259,14 @@ STARDUST_TEST_USER=root STARDUST_TEST_PASS=root \
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-The suite covers all five implemented phases:
+The suite covers all six implemented phases:
 
 - **Phase 0 — environment.** Server is MySQL (not MariaDB), version is 8.0.13+, common table expressions work, and functional unique indexes enforce the partial-uniqueness invariant the schema registry depends on. (`EXPLAIN ANALYZE` is an 8.0.18+ operator-runbook tool per ADR 0019 / ADR 0023 and is deliberately **not** smoke-tested.)
 - **Phase 1 — bootstrap.** The migration runner creates every data plane, registry, and operational table on a blank database; re-runs are non-destructive; the `stardust_schema_version` singleton is seeded with `id = 1`; the `stardust_slot_assignments` status ENUM rejects out-of-band values; the partial unique index on `field_id` is enforced at the database level; and the tenant-scoped composite indexes on `entry_data` are present.
 - **Phase 2 — slot & page system.** Page provisioning emits composite `(tenant_id, slot_column)` indexes only for the filterable slots named by the caller; the full 60-row slot inventory is inserted with `status='free'` in the same registry transaction as the `stardust_schema_version` bump; a forced failure rolls the registry transaction back without leaking partial inventory; sequential calls assign monotonic page numbers; the slot reserver performs the `free → assigned` transition atomically and returns `null` when no free slot of the requested family exists; and the ADR 0012 `EmptyTableGuard` rejects DDL against populated pages before any metadata lock is acquired.
 - **Phase 3 — write path.** Single-entry writes commit `entry_data` + every live-slot row + (optionally) a `stardust_sync_queue` enqueue in one transaction; the exhaustion-fallback path keeps the write succeeding when slots are missing; uncoercible payload values roll the whole entry back; bulk ingest chunks transactions per `BulkIngestOptions::$chunkSize`, applies the inter-chunk delay only between chunks, and rolls each failed chunk back atomically while later chunks continue; the 1 000-entity synchronous threshold throws `PayloadTooLargeException`; async submission writes a payload artifact under `Config::$artifactDir`, inserts a `stardust_import_jobs` row, and returns an `ImportJobId`; retrying with the same `(tenant_id, idempotency_key)` returns the existing job ID; `tenant_id <= 0` is rejected before any SQL.
 - **Phase 4 — read path.** Filters on `is_filterable = false`, `backfilling`, `tombstoned`, or unmapped slots are rejected pre-flight with a typed exception and a `pre_flight_rejected` log event — `EXPLAIN` for an accepted filter shows an index range scan on the `(tenant_id, slot_column)` composite, never a full table scan; cursor pagination over a mutated dataset never duplicates or skips entries that existed before page 1; the trailing page returns a null next-cursor sentinel; `tenant_id` outside `[1, 2^63-1]` is rejected before any SQL; rows from other tenants never appear regardless of filter collision; a field whose slot is `backfilling` returns the value from the JSON payload and never touches the slot column; the schema-version cache emits `cache_miss` on registry-version bumps and reuses the snapshot otherwise.
+- **Phase 5 — resilience daemons.** The Watcher provisions a new `entry_slots_page_N` (and its 60 slot rows) when global capacity is below the threshold, bumping `stardust_schema_version.version` in the same transaction; `poll_started` / `provision_complete` / `poll_complete` events fire with `source: 'watcher'`. When a sibling session holds `GET_LOCK('stardust_page_provision', …)`, the Watcher emits `lock_contention` and does not provision (end-to-end test runs with a 1 s timeout via `Config::$watcherProvisionLockTimeoutSeconds` — production stays at the blueprint-pinned 10 s). The PID-file guard throws `WatcherSingletonViolationException` on contention and preserves the last PID after release. The `PollLoop` surfaces SIGTERM / flag-file shutdown within one sleep slice. The cardinality sampler emits `cardinality_sampled` (and `low_cardinality_index` when distinct/selectivity floors are breached) with `source: 'registry'`. The sync-queue work source drains a chunk via `SELECT … FOR UPDATE SKIP LOCKED`, routes `EntryDataMissingException` to `stardust_reconciler_dlq` with `reason='missing_entry_data'`, and rolls the chunk back with a `capacity_wait` event when the entry's field still has no live slot. The import-job work source claims one pending row, decodes the ADR 0028 single-document JSON artifact, materialises entries through `EntryWriter::writeWithinTransaction()` in chunk windows paced by `Config::$reconcilerInterChunkDelayMicros`, and transitions to `completed | failed` with a manifest. `Reconciler::tick()` itself ticks work sources round-robin, short-circuits on `CAPACITY_WAIT`, and paces between `WORK_DONE` outcomes using the same inter-chunk delay. The DLQ replayer re-enqueues by id or by reason in a single transaction and throws `DlqReplayNotFoundException` on no-match. A closed-vocabulary guard greps `src/Watcher/` and `src/Reconciler/` for `'event' => '...'` literals and asserts subset-of-ADR-0020.
 
 GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
 

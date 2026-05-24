@@ -8,10 +8,25 @@ use PDO;
 use Psr\Log\LoggerInterface;
 use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Config\Config;
+use StarDust\Daemon\CompositeShutdownSignal;
+use StarDust\Daemon\FlagFileShutdownSignal;
+use StarDust\Daemon\PollLoop;
+use StarDust\Daemon\ShutdownSignal;
+use StarDust\Daemon\SignalShutdownSignal;
+use StarDust\Page\PageProvisioner;
 use StarDust\Read\Entry;
 use StarDust\Read\EntryPage;
 use StarDust\Read\EntryQuery;
 use StarDust\Read\EntryReader;
+use StarDust\Reconciler\DlqReplayer;
+use StarDust\Reconciler\DlqWriter;
+use StarDust\Reconciler\ImportJobWorkSource;
+use StarDust\Reconciler\Reconciler;
+use StarDust\Reconciler\SyncQueueWorkSource;
+use StarDust\Watcher\CapacityReporter;
+use StarDust\Watcher\CardinalitySampler;
+use StarDust\Watcher\Watcher;
+use StarDust\Write\BackfillExecutor;
 use StarDust\Write\BulkIngestOptions;
 use StarDust\Write\BulkIngestResult;
 use StarDust\Write\BulkIngestSubmitter;
@@ -20,6 +35,7 @@ use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriteResult;
 use StarDust\Write\EntryWriter;
 use StarDust\Write\ImportJobId;
+use StarDust\Write\SlotRowUpserter;
 use StarDust\Write\TenantId;
 
 /**
@@ -38,6 +54,9 @@ final class StarDust
     private ?BulkIngestor $bulkIngestor = null;
     private ?BulkIngestSubmitter $bulkSubmitter = null;
     private ?EntryReader $entryReader = null;
+    private ?SlotRowUpserter $slotRowUpserter = null;
+    private ?BackfillExecutor $backfillExecutor = null;
+    private ?PollLoop $pollLoop = null;
 
     public function __construct(private readonly Config $config)
     {
@@ -160,12 +179,133 @@ final class StarDust
         return $this->entryReader()->get($tenantId, $entryId);
     }
 
+    /**
+     * Phase 5 page-provisioning daemon (singleton). Construct + run via
+     * `pollLoop()` from a CLI process; the {@see Watcher} expects a
+     * process-level PID-file guard to already be held (handled by the
+     * `bin/stardust watcher` entry point).
+     */
+    public function watcher(): Watcher
+    {
+        return new Watcher(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            capacityReporter: new CapacityReporter($this->config->pdo),
+            pageProvisioner: new PageProvisioner(
+                pdo: $this->config->pdo,
+                clock: $this->config->clock,
+                logger: $this->config->logger,
+            ),
+            cardinalitySampler: new CardinalitySampler(
+                pdo: $this->config->pdo,
+                logger: $this->config->logger,
+                selectivityThreshold: $this->config->cardinalitySelectivityThreshold,
+                rowFloor: $this->config->cardinalityRowFloor,
+                distinctFloor: $this->config->cardinalityDistinctFloor,
+            ),
+            capacityThreshold: $this->config->watcherCapacityThreshold,
+            cardinalityIntervalSeconds: $this->config->cardinalityIntervalSeconds,
+            provisionLockTimeoutSeconds: $this->config->watcherProvisionLockTimeoutSeconds,
+        );
+    }
+
+    /**
+     * Phase 5 reconciliation daemon (multi-worker safe). Drains
+     * `stardust_sync_queue` and `stardust_import_jobs` via two
+     * {@see \StarDust\Reconciler\ReconcilerWorkSource} implementations
+     * ticked round-robin under one chunk correlation id per tick.
+     */
+    public function reconciler(): Reconciler
+    {
+        $dlqWriter = new DlqWriter(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+        );
+
+        $syncQueue = new SyncQueueWorkSource(
+            pdo: $this->config->pdo,
+            logger: $this->config->logger,
+            backfillExecutor: $this->backfillExecutor(),
+            dlqWriter: $dlqWriter,
+            chunkSize: $this->config->reconcilerChunkSize,
+        );
+
+        $importJobs = new ImportJobWorkSource(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            entryWriter: $this->entryWriter(),
+            dlqWriter: $dlqWriter,
+            artifactDir: $this->config->artifactDir,
+            chunkSize: $this->config->reconcilerChunkSize,
+            interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
+        );
+
+        return new Reconciler(
+            workSources: [$syncQueue, $importJobs],
+            capacityWaitMillis: $this->config->reconcilerCapacityWaitMillis,
+            interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
+        );
+    }
+
+    /**
+     * Phase 5 operator-initiated DLQ replay. The CLI invokes
+     * `replayById()` or `replayByReason()` from
+     * `bin/stardust reconciler:dlq:replay`.
+     */
+    public function dlqReplayer(): DlqReplayer
+    {
+        return new DlqReplayer(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+        );
+    }
+
+    /**
+     * Persistent poll loop shared by every Phase 5 daemon. Re-injected
+     * across daemon CLI invocations so the sleep slice (1 s) and
+     * shutdown polling logic stay in one place.
+     */
+    public function pollLoop(): PollLoop
+    {
+        return $this->pollLoop ??= new PollLoop();
+    }
+
+    /**
+     * Composite shutdown signal: POSIX SIGTERM/SIGINT (when ext-pcntl
+     * is loaded) OR a `<pidFileDir>/<daemonName>.shutdown` flag file.
+     * The CLI passes `$daemonName` per command.
+     */
+    public function shutdownSignal(string $daemonName): ShutdownSignal
+    {
+        return new CompositeShutdownSignal(
+            new SignalShutdownSignal(),
+            new FlagFileShutdownSignal($this->config->pidFileDir, $daemonName),
+        );
+    }
+
     private function entryWriter(): EntryWriter
     {
         return $this->entryWriter ??= new EntryWriter(
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
+            slotRowUpserter: $this->slotRowUpserter(),
+        );
+    }
+
+    private function slotRowUpserter(): SlotRowUpserter
+    {
+        return $this->slotRowUpserter ??= new SlotRowUpserter($this->config->pdo);
+    }
+
+    private function backfillExecutor(): BackfillExecutor
+    {
+        return $this->backfillExecutor ??= new BackfillExecutor(
+            pdo: $this->config->pdo,
+            slotRowUpserter: $this->slotRowUpserter(),
         );
     }
 

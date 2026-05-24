@@ -11,6 +11,7 @@ use StarDust\Exception\InvalidTenantIdException;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriter;
+use StarDust\Write\SlotRowUpserter;
 
 /**
  * Phase 3 EntryWriter smoke suite.
@@ -23,6 +24,7 @@ final class EntryWriterTest extends WritePathTestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: $logger ?? new NullLogger(),
+            slotRowUpserter: new SlotRowUpserter($this->pdo),
         );
     }
 
@@ -230,6 +232,7 @@ final class EntryWriterTest extends WritePathTestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new StdoutNdjsonLogger(new SystemClock(), $stream),
+            slotRowUpserter: new SlotRowUpserter($this->pdo),
         );
 
         $result = $writer->write(new EntryPayload(
@@ -269,6 +272,7 @@ final class EntryWriterTest extends WritePathTestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new StdoutNdjsonLogger(new SystemClock(), $stream),
+            slotRowUpserter: new SlotRowUpserter($this->pdo),
         );
 
         $writer->write(new EntryPayload(

@@ -49,6 +49,7 @@ final class EntryWriter
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
+        private readonly SlotRowUpserter $slotRowUpserter,
     ) {
     }
 
@@ -123,7 +124,7 @@ final class EntryWriter
         $slotsWritten = [];
         foreach ($plan->slotWrites as $pageId => $columnsToValues) {
             $tableName = $pageTableNames[$pageId];
-            $this->upsertSlotRow($tableName, $entryId, $payload->tenantId, $columnsToValues);
+            $this->slotRowUpserter->upsert($tableName, $entryId, $payload->tenantId, $columnsToValues);
             foreach ($columnsToValues as $slotColumn => $_value) {
                 $slotsWritten[] = ['pageId' => $pageId, 'slotColumn' => $slotColumn];
             }
@@ -190,38 +191,4 @@ final class EntryWriter
         return $out;
     }
 
-    /**
-     * @param array<string, mixed> $columnsToValues
-     */
-    private function upsertSlotRow(
-        string $tableName,
-        int $entryId,
-        int $tenantId,
-        array $columnsToValues,
-    ): void {
-        // Column names come from `stardust_slot_assignments.slot_column`
-        // which is populated only by `PageProvisioner` — the universe
-        // of legal values is `i_{str|int|num|dt}_NN`. Interpolating
-        // them into the SQL string is safe; parameter binding still
-        // covers every user-supplied value.
-        $columns = array_keys($columnsToValues);
-        $cols = array_merge(['entry_id', 'tenant_id'], $columns);
-
-        $placeholders = '(' . implode(',', array_fill(0, count($cols), '?')) . ')';
-
-        $assignments = [];
-        foreach ($columns as $c) {
-            $assignments[] = "{$c} = VALUES({$c})";
-        }
-        // Also keep tenant_id in sync on an idempotent re-submission
-        // (defensive — the partitioned read path relies on it).
-        $assignments[] = 'tenant_id = VALUES(tenant_id)';
-
-        $sql = "INSERT INTO {$tableName} (" . implode(',', $cols) . ') VALUES '
-            . $placeholders
-            . ' ON DUPLICATE KEY UPDATE ' . implode(', ', $assignments);
-
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute(array_merge([$entryId, $tenantId], array_values($columnsToValues)));
-    }
 }

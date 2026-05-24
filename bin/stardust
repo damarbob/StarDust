@@ -6,9 +6,14 @@ declare(strict_types=1);
 /**
  * StarDust CLI entry point (ADR 0026).
  *
- * Phase 1 surface: --version, --help, bootstrap. Daemon and operator
- * commands (watcher, reconciler, liberator, chronicler,
- * reconciler:dlq:replay, backfill, ...) are filled in by later phases.
+ * Current surface: --version, --help, bootstrap, watcher, reconciler,
+ * reconciler:dlq:replay. Daemon commands for later phases (liberator,
+ * chronicler) are advertised as planned but rejected here.
+ *
+ * Exit codes:
+ *   0  clean exit (incl. signal-induced shutdown)
+ *   1  fatal error (bootstrap / daemon)
+ *   2  user error (singleton violation, missing env vars, unknown command)
  */
 
 $autoloadCandidates = [
@@ -34,6 +39,47 @@ if (! $autoloadLoaded) {
 $argv    = $_SERVER['argv'] ?? [];
 $command = $argv[1] ?? '--help';
 
+/** Builds a PDO from the standard env vars, exiting non-zero on misconfiguration. */
+$buildPdo = static function (): PDO {
+    $dsn  = getenv('STARDUST_DSN') ?: '';
+    $user = getenv('STARDUST_USER') ?: '';
+    $pass = getenv('STARDUST_PASS');
+    $pass = $pass === false ? '' : $pass;
+
+    if ($dsn === '' || $user === '') {
+        fwrite(
+            STDERR,
+            "stardust: STARDUST_DSN and STARDUST_USER environment variables are required.\n"
+                . "STARDUST_PASS is optional (defaults to empty).\n",
+        );
+        exit(2);
+    }
+
+    return new PDO($dsn, $user, $pass, [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_EMULATE_PREPARES   => false,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ]);
+};
+
+/** Parses `--key=value` style args into a map. */
+$parseFlags = static function (array $args): array {
+    $out = [];
+    foreach ($args as $arg) {
+        if (! is_string($arg) || ! str_starts_with($arg, '--')) {
+            continue;
+        }
+        $body = substr($arg, 2);
+        $eq = strpos($body, '=');
+        if ($eq === false) {
+            $out[$body] = true;
+        } else {
+            $out[substr($body, 0, $eq)] = substr($body, $eq + 1);
+        }
+    }
+    return $out;
+};
+
 switch ($command) {
     case '--version':
     case '-V':
@@ -54,11 +100,13 @@ switch ($command) {
           bootstrap        Apply the Phase 1 schema (idempotent).
                            Reads STARDUST_DSN, STARDUST_USER, STARDUST_PASS
                            from the process environment.
+          watcher          Singleton page-provisioning daemon (Phase 5).
+          reconciler       Multi-worker sync-queue + import-job drain
+                           daemon (Phase 5).
+          reconciler:dlq:replay --id=N | --reason=X
+                           Operator-initiated DLQ replay (Phase 5).
 
         Planned commands (not yet implemented):
-          watcher                 Page-provisioning daemon (Phase 5).
-          reconciler              Sync-queue drain daemon (Phase 5).
-          reconciler:dlq:replay   Operator-initiated DLQ replay (Phase 5).
           liberator               Slot-reclamation daemon (Phase 6a).
           chronicler              Async export daemon (Phase 7).
 
@@ -68,31 +116,86 @@ switch ($command) {
         exit(0);
 
     case 'bootstrap':
-        $dsn  = getenv('STARDUST_DSN') ?: '';
-        $user = getenv('STARDUST_USER') ?: '';
-        $pass = getenv('STARDUST_PASS');
-        $pass = $pass === false ? '' : $pass;
-
-        if ($dsn === '' || $user === '') {
-            fwrite(
-                STDERR,
-                "stardust: bootstrap requires STARDUST_DSN and STARDUST_USER environment variables.\n"
-                    . "STARDUST_PASS is optional (defaults to empty).\n",
-            );
-            exit(2);
-        }
-
         try {
-            $pdo = new PDO($dsn, $user, $pass, [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_EMULATE_PREPARES   => false,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            ]);
+            $pdo = $buildPdo();
             (new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo)))->bootstrap();
             echo "stardust: bootstrap complete.\n";
             exit(0);
         } catch (\Throwable $e) {
             fwrite(STDERR, "stardust: bootstrap failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'watcher':
+        try {
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $guard = \StarDust\Daemon\PidFileGuard::acquire(
+                $stardust->config()->pidFileDir,
+                'watcher',
+            );
+            try {
+                $stardust->pollLoop()->run(
+                    $stardust->watcher(),
+                    $stardust->shutdownSignal('watcher'),
+                    $stardust->config()->watcherPollIntervalSeconds,
+                );
+                exit(0);
+            } finally {
+                $guard->release();
+            }
+        } catch (\StarDust\Exception\WatcherSingletonViolationException $e) {
+            fwrite(STDERR, "stardust: " . $e->getMessage() . "\n");
+            exit(2);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: watcher failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'reconciler':
+        try {
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            // Reconciler is multi-worker safe (SKIP LOCKED + atomic
+            // claim UPDATE) — no PID guard. Tick the loop continuously
+            // (intervalSeconds = 0); the daemon itself sleeps via
+            // capacity_wait when both work sources are idle.
+            $stardust->pollLoop()->run(
+                $stardust->reconciler(),
+                $stardust->shutdownSignal('reconciler'),
+                0,
+            );
+            exit(0);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: reconciler failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'reconciler:dlq:replay':
+        try {
+            $flags = $parseFlags(array_slice($argv, 2));
+            $id     = isset($flags['id'])     && is_string($flags['id'])     ? (int) $flags['id']     : null;
+            $reason = isset($flags['reason']) && is_string($flags['reason']) ? $flags['reason']       : null;
+
+            if ($id === null && $reason === null) {
+                fwrite(STDERR, "stardust: reconciler:dlq:replay requires --id=N or --reason=X.\n");
+                exit(2);
+            }
+
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $manifest = $id !== null
+                ? $stardust->dlqReplayer()->replayById($id)
+                : $stardust->dlqReplayer()->replayByReason($reason);
+
+            $entryIds = implode(',', $manifest->entryIds);
+            echo "stardust: replayed {$manifest->count()} DLQ row(s); re-enqueued entry_ids=[{$entryIds}]\n";
+            exit(0);
+        } catch (\StarDust\Exception\DlqReplayNotFoundException $e) {
+            fwrite(STDERR, "stardust: " . $e->getMessage() . "\n");
+            exit(1);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: reconciler:dlq:replay failed: " . $e->getMessage() . "\n");
             exit(1);
         }
 

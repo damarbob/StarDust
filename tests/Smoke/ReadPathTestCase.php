@@ -8,6 +8,7 @@ use Psr\Log\NullLogger;
 use StarDust\Read\EntryReader;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriter;
+use StarDust\Write\SlotRowUpserter;
 use StarDust\Clock\SystemClock;
 
 /**
@@ -36,6 +37,7 @@ abstract class ReadPathTestCase extends WritePathTestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new NullLogger(),
+            slotRowUpserter: new SlotRowUpserter($this->pdo),
         );
         $result = $writer->write(new EntryPayload(
             tenantId: $tenantId,
