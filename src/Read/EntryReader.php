@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\UuidV4;
 use StarDust\Write\TenantId;
 
 /**
@@ -64,7 +65,7 @@ final class EntryReader
     {
         TenantId::assertValid($query->tenantId);
 
-        $correlationId = self::generateCorrelationId();
+        $correlationId = UuidV4::generate();
         $startedAt = hrtime(true);
 
         $snapshot = $this->cache->snapshotForModel($query->modelId, $query->tenantId, $correlationId);
@@ -111,7 +112,7 @@ final class EntryReader
     {
         TenantId::assertValid($tenantId);
 
-        $correlationId = self::generateCorrelationId();
+        $correlationId = UuidV4::generate();
         $startedAt = hrtime(true);
 
         $stmt = $this->pdo->prepare(
@@ -151,16 +152,4 @@ final class EntryReader
         );
     }
 
-    private static function generateCorrelationId(): string
-    {
-        $bytes = random_bytes(16);
-        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
-        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
-        $hex = bin2hex($bytes);
-        return substr($hex, 0, 8) . '-'
-            . substr($hex, 8, 4) . '-'
-            . substr($hex, 12, 4) . '-'
-            . substr($hex, 16, 4) . '-'
-            . substr($hex, 20, 12);
-    }
 }

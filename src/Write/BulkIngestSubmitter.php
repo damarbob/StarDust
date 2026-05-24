@@ -10,6 +10,7 @@ use PDOException;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -193,9 +194,7 @@ final class BulkIngestSubmitter
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
         );
 
-        // 36-char v4 UUID — re-use the generator pattern from
-        // StdoutNdjsonLogger so the operational surface stays consistent.
-        $uuid = self::generateUuidV4();
+        $uuid = UuidV4::generate();
         $path = rtrim($this->artifactDir, DIRECTORY_SEPARATOR)
             . DIRECTORY_SEPARATOR . "import_{$tenantId}_{$uuid}.json";
 
@@ -223,14 +222,4 @@ final class BulkIngestSubmitter
         return false;
     }
 
-    private static function generateUuidV4(): string
-    {
-        $bytes = random_bytes(16);
-        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
-        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
-        return vsprintf(
-            '%s%s-%s-%s-%s-%s%s%s',
-            str_split(bin2hex($bytes), 4)
-        );
-    }
 }

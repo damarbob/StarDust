@@ -7,6 +7,7 @@ namespace StarDust\Logging;
 use DateTimeZone;
 use Psr\Clock\ClockInterface;
 use Psr\Log\AbstractLogger;
+use StarDust\Support\UuidV4;
 use Stringable;
 
 /**
@@ -63,7 +64,7 @@ final class StdoutNdjsonLogger extends AbstractLogger
             'event'          => $event !== null ? (string) $event : 'generic_log',
             'correlation_id' => is_string($correlationId) && $correlationId !== ''
                 ? $correlationId
-                : self::generateUuidV4(),
+                : UuidV4::generate(),
         ];
 
         $interpolated = $this->interpolate($message, $context);
@@ -143,21 +144,4 @@ final class StdoutNdjsonLogger extends AbstractLogger
         return $out;
     }
 
-    /**
-     * RFC 4122 v4 UUID built from 16 cryptographically random bytes. Inlined
-     * here because this logger is the sole call site today; promote to a
-     * helper if a second caller appears (e.g. Phase 4 request middleware).
-     */
-    private static function generateUuidV4(): string
-    {
-        $bytes = random_bytes(16);
-        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
-        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
-        $hex = bin2hex($bytes);
-        return substr($hex, 0, 8) . '-'
-            . substr($hex, 8, 4) . '-'
-            . substr($hex, 12, 4) . '-'
-            . substr($hex, 16, 4) . '-'
-            . substr($hex, 20, 12);
-    }
 }
