@@ -8,6 +8,10 @@ use PDO;
 use Psr\Log\LoggerInterface;
 use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Config\Config;
+use StarDust\Read\Entry;
+use StarDust\Read\EntryPage;
+use StarDust\Read\EntryQuery;
+use StarDust\Read\EntryReader;
 use StarDust\Write\BulkIngestOptions;
 use StarDust\Write\BulkIngestResult;
 use StarDust\Write\BulkIngestSubmitter;
@@ -33,6 +37,7 @@ final class StarDust
     private ?EntryWriter $entryWriter = null;
     private ?BulkIngestor $bulkIngestor = null;
     private ?BulkIngestSubmitter $bulkSubmitter = null;
+    private ?EntryReader $entryReader = null;
 
     public function __construct(private readonly Config $config)
     {
@@ -118,6 +123,43 @@ final class StarDust
         return $this->bulkSubmitter()->submit($tenantId, $payloads, $idempotencyKey);
     }
 
+    /**
+     * Phase 4 bounded, tenant-isolated, cursor-paginated read.
+     *
+     * Runs the two-query read of ADR 0005 — a Paginated Probe that
+     * selects up to `pageSize + 1` `entry_data.id` values, followed
+     * by a Bounded Fetch that materialises only those rows plus
+     * required indexed slot columns. Fields whose slot is
+     * `backfilling`/`tombstoned`/unmapped fall back to the JSON
+     * payload per ADR 0013. Filters against those same states are
+     * rejected pre-flight per ADR 0004.
+     *
+     * Throws {@see \StarDust\Exception\InvalidTenantIdException},
+     * {@see \StarDust\Exception\UnknownFieldException},
+     * {@see \StarDust\Exception\FieldNotFilterableException},
+     * {@see \StarDust\Exception\FieldNotIndexedException},
+     * {@see \StarDust\Exception\InvalidCursorException},
+     * {@see \StarDust\Exception\PageSizeOutOfRangeException}.
+     */
+    public function read(EntryQuery $query): EntryPage
+    {
+        TenantId::assertValid($query->tenantId);
+        return $this->entryReader()->read($query);
+    }
+
+    /**
+     * Phase 4 point read by `(tenant_id, entry_id)`. Returns the
+     * decoded `entry_data.fields` payload as a {@see Entry}, or
+     * `null` if the entry does not exist for this tenant (or is
+     * soft-deleted). No slot joins are issued — the JSON payload is
+     * the system of record per ADR 0013.
+     */
+    public function get(int $tenantId, int $entryId): ?Entry
+    {
+        TenantId::assertValid($tenantId);
+        return $this->entryReader()->get($tenantId, $entryId);
+    }
+
     private function entryWriter(): EntryWriter
     {
         return $this->entryWriter ??= new EntryWriter(
@@ -143,6 +185,14 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             artifactDir: $this->config->artifactDir,
+        );
+    }
+
+    private function entryReader(): EntryReader
+    {
+        return $this->entryReader ??= new EntryReader(
+            pdo: $this->config->pdo,
+            logger: $this->config->logger,
         );
     }
 }

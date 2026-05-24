@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Bootstrap;
 
 use PDO;
+use PDOException;
 
 /**
  * Phase 1 migration runner.
@@ -296,7 +297,13 @@ final class Bootstrapper
      * tombstoned and free rows do not block reassignment.
      *
      * MySQL has no CREATE INDEX IF NOT EXISTS, so we self-check via
-     * information_schema to stay idempotent across re-runs.
+     * information_schema to stay idempotent across re-runs. The follow-up
+     * catch on SQLSTATE 42000 / 1061 is defense in depth: a stale
+     * information_schema cache on the connection can let the probe miss an
+     * index that the storage engine still holds — without the catch, an
+     * otherwise-correct re-bootstrap would explode on the duplicate-name
+     * collision. Treating it as "already there" matches the table-level
+     * `IF NOT EXISTS` semantics every other DDL in this runner uses.
      */
     private function ensureSlotAssignmentFieldLiveUniqueIndex(): void
     {
@@ -311,13 +318,34 @@ final class Bootstrapper
             return;
         }
 
-        $this->pdo->exec(<<<'SQL'
-            CREATE UNIQUE INDEX ux_slot_assignments_field_live
-                ON stardust_slot_assignments (
-                    (CASE WHEN status IN ('assigned', 'backfilling', 'ready')
-                          THEN field_id END)
-                )
-        SQL);
+        try {
+            $this->pdo->exec(<<<'SQL'
+                CREATE UNIQUE INDEX ux_slot_assignments_field_live
+                    ON stardust_slot_assignments (
+                        (CASE WHEN status IN ('assigned', 'backfilling', 'ready')
+                              THEN field_id END)
+                    )
+            SQL);
+        } catch (PDOException $e) {
+            // MySQL ER_DUP_KEYNAME = 1061. We only swallow this one
+            // — anything else (permissions, syntax, connection) must
+            // surface so the bootstrap genuinely fails fast.
+            if (! $this->isDuplicateKeyName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    private function isDuplicateKeyName(PDOException $e): bool
+    {
+        // PDO/MySQL drivers expose the raw error code in different
+        // positions depending on the driver build; check both the
+        // ANSI SQLSTATE in errorInfo[0] and the vendor code in [1].
+        $info = $e->errorInfo;
+        if (is_array($info) && isset($info[1]) && (int) $info[1] === 1061) {
+            return true;
+        }
+        return str_contains($e->getMessage(), '1061');
     }
 
     private function seedSchemaVersionSingleton(): void

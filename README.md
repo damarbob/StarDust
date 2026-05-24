@@ -16,9 +16,9 @@ Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer lib
 
 ## Status
 
-**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton), 1 (schema registry and core data plane), 2 (slot & page system), and 3 (write path) are implemented. The engine can now idempotently provision its full physical schema, allocate new `entry_slots_page_N` extension pages with the index layout determined by the registry's `is_filterable` flags, atomically reserve free slots for model fields, **and ingest entries** — single rows or batched up to 1 000 per call synchronously, larger batches via the async submission path that returns an Import Job ID. When a field has no live slot the write degrades gracefully to `stardust_sync_queue` so writes never block on capacity exhaustion. The read path and the four resilience daemons (Watcher, Reconciler, Liberator, Chronicler) are not yet wired.
+**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton), 1 (schema registry and core data plane), 2 (slot & page system), 3 (write path), and 4 (read path) are implemented. The engine can now idempotently provision its full physical schema, allocate new `entry_slots_page_N` extension pages with the index layout determined by the registry's `is_filterable` flags, atomically reserve free slots for model fields, ingest entries (single rows, sync chunked batches up to 1 000 per call, or larger batches via async submission), **and serve cursor-paginated reads** — the two-query bounded read of ADR 0005 with pre-flight rejection of unindexed/backfilling/unmapped filter targets, tenant-isolated SQL on every `WHERE` and `JOIN`, and an in-process schema-version cache keyed on `stardust_schema_version.version`. Fields whose slot is mid-retype or unmapped fall back to the JSON payload transparently. When a write field has no live slot the write still degrades gracefully to `stardust_sync_queue` so writes never block on capacity exhaustion. The four resilience daemons (Watcher, Reconciler, Liberator, Chronicler) are not yet wired.
 
-The remaining build sequence — Read Path, Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
+The remaining build sequence — Resilience Daemons, Slot Reclamation, Field Retype, Async Exports, and the Search Driver — is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
 If you need a working library today, stay on `^0.2.0-alpha.x`.
 
@@ -94,7 +94,7 @@ $engine = new StarDust(new Config(pdo: $pdo));
 $engine->bootstrap();
 ```
 
-Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`) that Phase 5's Watcher daemon will wire; the Watcher and other daemons are not yet shipped. Model definition and the read path arrive in Phase 4.
+Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`) that Phase 5's Watcher daemon will wire; the Watcher and other daemons are not yet shipped. Model and field definition remain a registry-only concern until a future operator surface lands.
 
 ## Writing entries
 
@@ -135,6 +135,55 @@ $jobId = $engine->submitBulkWrite(
 
 `tenant_id` is validated at every entry point (must be `>= 1`) before any SQL executes. All write-path operations emit structured-log events per ADR 0020 — `entry_written`, `exhaustion_fallback`, `bulk_chunk_committed`, `bulk_chunk_rolled_back`, `bulk_accepted`, `payload_too_large`.
 
+## Reading entries
+
+```php
+use StarDust\Read\Cursor;
+use StarDust\Read\EntryQuery;
+use StarDust\Read\QueryFilter;
+
+// Cursor-paginated read. Two-query bounded sequence per ADR 0005:
+//   1) Paginated Probe selects entry_data.id with LIMIT pageSize+1
+//      (the extra row is the sole next-page signal — no COUNT(*),
+//      no OFFSET, per ADR 0006).
+//   2) Bounded Fetch materialises only those IDs plus the indexed
+//      slot columns needed to assemble the caller's selectFields.
+// Filters on fields with is_filterable=false or whose slot is
+// backfilling/tombstoned/unmapped are rejected pre-flight per
+// ADR 0004 with a typed exception — no SQL is issued.
+$page = $engine->read(new EntryQuery(
+    tenantId:     42,
+    modelId:      $modelId,
+    filters:      [new QueryFilter('name', 'eq', 'Acme')],
+    selectFields: ['name', 'employees'],
+    pageSize:     100,
+));
+// $page->rows           — list<Entry>
+// $page->nextCursor     — Cursor|null; null means last page
+// $page->pageSize       — echo of the requested size
+
+// Page through to exhaustion. The cursor is opaque — pass it back
+// unchanged; do not inspect it.
+$cursor = $page->nextCursor;
+while ($cursor !== null) {
+    $next = $engine->read(new EntryQuery(
+        tenantId: 42,
+        modelId:  $modelId,
+        pageSize: 100,
+        cursor:   $cursor,
+    ));
+    // ...
+    $cursor = $next->nextCursor;
+}
+
+// Point read by (tenant_id, entry_id). Returns null when the entry
+// does not exist for this tenant (or has been soft-deleted).
+$entry = $engine->get(tenantId: 42, entryId: $someEntryId);
+// $entry?->id, $entry?->fields, $entry?->createdAt
+```
+
+Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This satisfies ADR 0007's write-availability invariant on the read side: a field that lacks an indexed slot still surfaces, just without filter / sort capability. The read path emits ADR 0020 events `request` and `pre_flight_rejected`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
+
 ---
 
 ## CLI
@@ -172,12 +221,13 @@ STARDUST_TEST_USER=root STARDUST_TEST_PASS=root \
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-The suite covers all four implemented phases:
+The suite covers all five implemented phases:
 
 - **Phase 0 — environment.** Server is MySQL (not MariaDB), version is 8.0.13+, common table expressions work, and functional unique indexes enforce the partial-uniqueness invariant the schema registry depends on. (`EXPLAIN ANALYZE` is an 8.0.18+ operator-runbook tool per ADR 0019 / ADR 0023 and is deliberately **not** smoke-tested.)
 - **Phase 1 — bootstrap.** The migration runner creates every data plane, registry, and operational table on a blank database; re-runs are non-destructive; the `stardust_schema_version` singleton is seeded with `id = 1`; the `stardust_slot_assignments` status ENUM rejects out-of-band values; the partial unique index on `field_id` is enforced at the database level; and the tenant-scoped composite indexes on `entry_data` are present.
 - **Phase 2 — slot & page system.** Page provisioning emits composite `(tenant_id, slot_column)` indexes only for the filterable slots named by the caller; the full 60-row slot inventory is inserted with `status='free'` in the same registry transaction as the `stardust_schema_version` bump; a forced failure rolls the registry transaction back without leaking partial inventory; sequential calls assign monotonic page numbers; the slot reserver performs the `free → assigned` transition atomically and returns `null` when no free slot of the requested family exists; and the ADR 0012 `EmptyTableGuard` rejects DDL against populated pages before any metadata lock is acquired.
 - **Phase 3 — write path.** Single-entry writes commit `entry_data` + every live-slot row + (optionally) a `stardust_sync_queue` enqueue in one transaction; the exhaustion-fallback path keeps the write succeeding when slots are missing; uncoercible payload values roll the whole entry back; bulk ingest chunks transactions per `BulkIngestOptions::$chunkSize`, applies the inter-chunk delay only between chunks, and rolls each failed chunk back atomically while later chunks continue; the 1 000-entity synchronous threshold throws `PayloadTooLargeException`; async submission writes a payload artifact under `Config::$artifactDir`, inserts a `stardust_import_jobs` row, and returns an `ImportJobId`; retrying with the same `(tenant_id, idempotency_key)` returns the existing job ID; `tenant_id <= 0` is rejected before any SQL.
+- **Phase 4 — read path.** Filters on `is_filterable = false`, `backfilling`, `tombstoned`, or unmapped slots are rejected pre-flight with a typed exception and a `pre_flight_rejected` log event — `EXPLAIN` for an accepted filter shows an index range scan on the `(tenant_id, slot_column)` composite, never a full table scan; cursor pagination over a mutated dataset never duplicates or skips entries that existed before page 1; the trailing page returns a null next-cursor sentinel; `tenant_id` outside `[1, 2^63-1]` is rejected before any SQL; rows from other tenants never appear regardless of filter collision; a field whose slot is `backfilling` returns the value from the JSON payload and never touches the slot column; the schema-version cache emits `cache_miss` on registry-version bumps and reuses the snapshot otherwise.
 
 GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
 
