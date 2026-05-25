@@ -34,6 +34,11 @@ final class Config
     public readonly int $reconcilerInterChunkDelayMicros;
     public readonly int $reconcilerCapacityWaitMillis;
     public readonly string $pidFileDir;
+    public readonly int $liberatorIdleIntervalSeconds;
+    public readonly int $liberatorBatchSize;
+    public readonly int $liberatorChunkSize;
+    public readonly int $liberatorInterChunkDelayMicros;
+    public readonly int $liberatorDeadlockRetryBudget;
 
     public function __construct(
         public readonly PDO $pdo,
@@ -51,6 +56,11 @@ final class Config
         ?int $reconcilerInterChunkDelayMicros = null,
         ?int $reconcilerCapacityWaitMillis = null,
         ?string $pidFileDir = null,
+        ?int $liberatorIdleIntervalSeconds = null,
+        ?int $liberatorBatchSize = null,
+        ?int $liberatorChunkSize = null,
+        ?int $liberatorInterChunkDelayMicros = null,
+        ?int $liberatorDeadlockRetryBudget = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -77,5 +87,16 @@ final class Config
         $this->reconcilerInterChunkDelayMicros = $reconcilerInterChunkDelayMicros ?? 0;
         $this->reconcilerCapacityWaitMillis    = $reconcilerCapacityWaitMillis    ?? 5_000;
         $this->pidFileDir = $pidFileDir ?? (sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'stardust');
+
+        // Phase 6a Liberator tuning. Defaults pin ADR 0009's normative
+        // parameters in production (chunk size 500, deadlock budget 3,
+        // 10 s idle interval per blueprint AC#13); the fields exist so
+        // tests can shorten them through the same code path, mirroring
+        // the Watcher's `watcherProvisionLockTimeoutSeconds` rationale.
+        $this->liberatorIdleIntervalSeconds   = $liberatorIdleIntervalSeconds   ?? 10;
+        $this->liberatorBatchSize             = $liberatorBatchSize             ?? 50;
+        $this->liberatorChunkSize             = $liberatorChunkSize             ?? 500;
+        $this->liberatorInterChunkDelayMicros = $liberatorInterChunkDelayMicros ?? 0;
+        $this->liberatorDeadlockRetryBudget   = $liberatorDeadlockRetryBudget   ?? 3;
     }
 }

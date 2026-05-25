@@ -7,8 +7,8 @@ declare(strict_types=1);
  * StarDust CLI entry point (ADR 0026).
  *
  * Current surface: --version, --help, bootstrap, watcher, reconciler,
- * reconciler:dlq:replay. Daemon commands for later phases (liberator,
- * chronicler) are advertised as planned but rejected here.
+ * reconciler:dlq:replay, liberator. Daemon commands for later phases
+ * (chronicler) are advertised as planned but rejected here.
  *
  * Exit codes:
  *   0  clean exit (incl. signal-induced shutdown)
@@ -105,9 +105,10 @@ switch ($command) {
                            daemon (Phase 5).
           reconciler:dlq:replay --id=N | --reason=X
                            Operator-initiated DLQ replay (Phase 5).
+          liberator        Singleton slot-reclamation daemon (Phase 6a):
+                           sweeps tombstoned slots back to free.
 
         Planned commands (not yet implemented):
-          liberator               Slot-reclamation daemon (Phase 6a).
           chronicler              Async export daemon (Phase 7).
 
         Subsequent phases are tracked in the project's design notes.
@@ -168,6 +169,33 @@ switch ($command) {
             exit(0);
         } catch (\Throwable $e) {
             fwrite(STDERR, "stardust: reconciler failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'liberator':
+        try {
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $guard = \StarDust\Daemon\PidFileGuard::acquire(
+                $stardust->config()->pidFileDir,
+                'liberator',
+                \StarDust\Exception\LiberatorSingletonViolationException::class,
+            );
+            try {
+                $stardust->pollLoop()->run(
+                    $stardust->liberator(),
+                    $stardust->shutdownSignal('liberator'),
+                    $stardust->config()->liberatorIdleIntervalSeconds,
+                );
+                exit(0);
+            } finally {
+                $guard->release();
+            }
+        } catch (\StarDust\Exception\LiberatorSingletonViolationException $e) {
+            fwrite(STDERR, "stardust: " . $e->getMessage() . "\n");
+            exit(2);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: liberator failed: " . $e->getMessage() . "\n");
             exit(1);
         }
 

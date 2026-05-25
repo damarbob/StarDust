@@ -13,6 +13,9 @@ use StarDust\Daemon\FlagFileShutdownSignal;
 use StarDust\Daemon\PollLoop;
 use StarDust\Daemon\ShutdownSignal;
 use StarDust\Daemon\SignalShutdownSignal;
+use StarDust\Liberator\Liberator;
+use StarDust\Liberator\SlotSweeper;
+use StarDust\Liberator\TombstonedSlotRepository;
 use StarDust\Page\PageProvisioner;
 use StarDust\Read\Entry;
 use StarDust\Read\EntryPage;
@@ -247,6 +250,37 @@ final class StarDust
             workSources: [$syncQueue, $importJobs],
             capacityWaitMillis: $this->config->reconcilerCapacityWaitMillis,
             interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
+        );
+    }
+
+    /**
+     * Phase 6a slot-reclamation daemon (singleton). Polls
+     * `stardust_slot_assignments` for `status='tombstoned'` rows and
+     * sweeps each via chunked nullification of the slot column on
+     * `entry_slots_page_X`; on the final chunk of a slot, transitions
+     * `tombstoned → free` and bumps `stardust_schema_version` in the
+     * same transaction (ADR 0009, ADR 0017 §4.6).
+     *
+     * Singleton enforcement is the CLI's job
+     * ({@see \StarDust\Daemon\PidFileGuard} with
+     * `LiberatorSingletonViolationException::class`); this factory
+     * assumes it.
+     */
+    public function liberator(): Liberator
+    {
+        return new Liberator(
+            logger: $this->config->logger,
+            repository: new TombstonedSlotRepository(
+                pdo: $this->config->pdo,
+                batchSize: $this->config->liberatorBatchSize,
+            ),
+            sweeper: new SlotSweeper(
+                pdo: $this->config->pdo,
+                logger: $this->config->logger,
+                chunkSize: $this->config->liberatorChunkSize,
+                interChunkDelayMicros: $this->config->liberatorInterChunkDelayMicros,
+                deadlockRetryBudget: $this->config->liberatorDeadlockRetryBudget,
+            ),
         );
     }
 

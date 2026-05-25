@@ -4,15 +4,21 @@ declare(strict_types=1);
 
 namespace StarDust\Daemon;
 
+use RuntimeException;
 use StarDust\Exception\WatcherSingletonViolationException;
 
 /**
- * Process-level singleton enforcement for the Watcher daemon
- * (ADR 0008, ADR 0027).
+ * Process-level singleton enforcement for daemons that must run
+ * exactly once per deployment (ADR 0008 Watcher, ADR 0009 Liberator,
+ * ADR 0027 persistent-process model).
  *
  * `acquire()` opens `<pidFileDir>/<daemonName>.pid`, takes a
  * non-blocking exclusive `flock`, and writes the current PID. On
- * contention it throws {@see WatcherSingletonViolationException}.
+ * contention it throws the caller-provided exception class (defaults
+ * to {@see WatcherSingletonViolationException} to preserve Phase 5
+ * behaviour); newer daemons inject their own typed exception, e.g.
+ * `LiberatorSingletonViolationException::class`. The exception class
+ * MUST extend {@see RuntimeException}.
  *
  * The file handle is held for the lifetime of the guard object; the OS
  * releases the lock automatically when the process exits, so even a
@@ -32,10 +38,17 @@ final class PidFileGuard
         $this->path = $path;
     }
 
-    public static function acquire(string $pidFileDir, string $daemonName): self
+    /**
+     * @param class-string<RuntimeException>|null $exceptionClass
+     *        Thrown on every failure path; defaults to
+     *        {@see WatcherSingletonViolationException}.
+     */
+    public static function acquire(string $pidFileDir, string $daemonName, ?string $exceptionClass = null): self
     {
+        $exceptionClass ??= WatcherSingletonViolationException::class;
+
         if (!is_dir($pidFileDir) && !@mkdir($pidFileDir, 0777, true) && !is_dir($pidFileDir)) {
-            throw new WatcherSingletonViolationException(
+            throw new $exceptionClass(
                 "Cannot create pid-file directory '{$pidFileDir}'."
             );
         }
@@ -43,7 +56,7 @@ final class PidFileGuard
         $path = $pidFileDir . DIRECTORY_SEPARATOR . $daemonName . '.pid';
         $handle = @fopen($path, 'c+');
         if ($handle === false) {
-            throw new WatcherSingletonViolationException(
+            throw new $exceptionClass(
                 "Cannot open pid file '{$path}' for writing."
             );
         }
@@ -55,7 +68,7 @@ final class PidFileGuard
             if ($existingPid !== '') {
                 $message .= " (PID {$existingPid})";
             }
-            throw new WatcherSingletonViolationException($message . '.');
+            throw new $exceptionClass($message . '.');
         }
 
         ftruncate($handle, 0);

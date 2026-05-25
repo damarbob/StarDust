@@ -42,6 +42,7 @@ final class Bootstrapper
         $this->createBackfillCheckpoints();
 
         $this->ensureSlotAssignmentFieldLiveUniqueIndex();
+        $this->ensureSlotAssignmentSweepGapColumn();
         $this->seedSchemaVersionSingleton();
     }
 
@@ -346,6 +347,51 @@ final class Bootstrapper
             return true;
         }
         return str_contains($e->getMessage(), '1061');
+    }
+
+    /**
+     * Phase 6a Liberator registry annotation. ADR 0009's bounded
+     * deadlock-retry policy ends the third consecutive deadlock by
+     * advancing the cursor and incrementing this counter — operators
+     * read it to spot slots whose sweep skipped over rows.
+     *
+     * Same idempotency shape as the partial unique index above:
+     * probe information_schema first, defensively swallow MySQL's
+     * `ER_DUP_FIELDNAME` (1060) if a stale connection cache lets the
+     * probe miss a column the engine still holds.
+     */
+    private function ensureSlotAssignmentSweepGapColumn(): void
+    {
+        $exists = (int) $this->pdo->query(<<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_slot_assignments'
+              AND column_name = 'sweep_gap_count'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_slot_assignments
+                    ADD COLUMN sweep_gap_count INT NOT NULL DEFAULT 0
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    private function isDuplicateFieldName(PDOException $e): bool
+    {
+        $info = $e->errorInfo;
+        if (is_array($info) && isset($info[1]) && (int) $info[1] === 1060) {
+            return true;
+        }
+        return str_contains($e->getMessage(), '1060');
     }
 
     private function seedSchemaVersionSingleton(): void

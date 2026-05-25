@@ -365,6 +365,42 @@ final class BootstrapTest extends TestCase
         );
     }
 
+    /**
+     * Phase 6a deliverable: the Liberator's `sweep_gap_count` registry
+     * annotation column is provisioned by the bootstrap runner and
+     * re-runs are non-destructive (the `INT NOT NULL DEFAULT 0`
+     * default keeps existing rows valid).
+     */
+    public function testBootstrapAddsLiberatorSweepGapCountColumn(): void
+    {
+        (new Bootstrapper($this->pdo))->run();
+
+        $exists = (int) $this->pdo
+            ->query(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_slot_assignments'"
+                . " AND column_name = 'sweep_gap_count'"
+            )
+            ->fetchColumn();
+        self::assertSame(1, $exists, 'sweep_gap_count column must be present after bootstrap.');
+
+        // Idempotent: re-running must not error and must not duplicate
+        // the column.
+        (new Bootstrapper($this->pdo))->run();
+        (new Bootstrapper($this->pdo))->run();
+
+        $exists = (int) $this->pdo
+            ->query(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_slot_assignments'"
+                . " AND column_name = 'sweep_gap_count'"
+            )
+            ->fetchColumn();
+        self::assertSame(1, $exists, 'Re-running bootstrap must not duplicate the column.');
+    }
+
     /** Engine convenience method delegates to the Bootstrapper. */
     public function testEngineBootstrapMethodInvokesBootstrapper(): void
     {

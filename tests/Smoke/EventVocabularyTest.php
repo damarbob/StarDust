@@ -7,12 +7,12 @@ namespace StarDust\Tests\Smoke;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Closed-event-vocabulary guard for Phase 5.
+ * Closed-event-vocabulary guard for Phase 5 + Phase 6a.
  *
- * Greps `src/Watcher/` and `src/Reconciler/` for `'event' => '...'`
- * literals and asserts the union is a subset of the ADR 0020 allowlist
- * for those two sources. Adding a new event name without updating
- * ADR 0020 must fail this test.
+ * Greps `src/Watcher/`, `src/Reconciler/`, and `src/Liberator/` for
+ * `'event' => '...'` literals and asserts the union is a subset of the
+ * ADR 0020 allowlist for each source. Adding a new event name without
+ * updating ADR 0020 must fail this test.
  */
 final class EventVocabularyTest extends TestCase
 {
@@ -33,6 +33,14 @@ final class EventVocabularyTest extends TestCase
         'cache_miss',
         'capacity_wait',
         'coercion_null',
+    ];
+
+    private const LIBERATOR_EVENTS = [
+        'sweep_started',
+        'sweep_chunk',
+        'sweep_complete',
+        'deadlock_retry',
+        'sweep_gap_flagged',
     ];
 
     private const REGISTRY_EVENTS = [
@@ -64,6 +72,19 @@ final class EventVocabularyTest extends TestCase
                 $event,
                 self::RECONCILER_EVENTS,
                 "Event '{$event}' is not in the Reconciler allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found);
+    }
+
+    public function testLiberatorSourceUsesOnlyAllowedEventNames(): void
+    {
+        $found = $this->scanDir(__DIR__ . '/../../src/Liberator');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                self::LIBERATOR_EVENTS,
+                "Event '{$event}' is not in the Liberator allowlist (ADR 0020)."
             );
         }
         self::assertNotEmpty($found);
