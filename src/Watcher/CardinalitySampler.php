@@ -47,15 +47,46 @@ final class CardinalitySampler
         )->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($slots as $slot) {
-            $this->sampleOneSlot($slot, $correlationId);
+            $this->sampleSlotRow($slot, $correlationId, 'periodic');
         }
+    }
+
+    /**
+     * Phase 6b post-backfill trigger (ADR 0019 §Sampling Triggers §1).
+     *
+     * Called by the retype work source after it advances a slot
+     * `backfilling → ready`. Emits `cardinality_sampled` (always) and
+     * `low_cardinality_index` (if the policy threshold is crossed)
+     * with `trigger='post_backfill'` so operators can distinguish
+     * post-promotion baselines from the periodic 24-h scan.
+     *
+     * The slot is looked up by id; the row may be in `assigned` or
+     * `ready` status at sample time. Pre-promotion `backfilling`
+     * rows are intentionally not sampled — they have incomplete data
+     * and would skew the baseline.
+     */
+    public function sampleSlot(int $slotAssignmentId): void
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT a.id AS slot_assignment_id, a.field_id, a.page_id, a.slot_column,'
+            . ' p.table_name'
+            . ' FROM stardust_slot_assignments a'
+            . ' JOIN stardust_pages p ON p.id = a.page_id'
+            . " WHERE a.id = ? AND a.status IN ('assigned','ready')"
+        );
+        $stmt->execute([$slotAssignmentId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return;
+        }
+        $this->sampleSlotRow($row, UuidV4::generate(), 'post_backfill');
     }
 
     /**
      * @param array{slot_assignment_id: int|string, field_id: int|string|null,
      *              page_id: int|string, slot_column: string, table_name: string} $slot
      */
-    private function sampleOneSlot(array $slot, string $correlationId): void
+    private function sampleSlotRow(array $slot, string $correlationId, string $trigger): void
     {
         $tableName = (string) $slot['table_name'];
         $slotColumn = (string) $slot['slot_column'];
@@ -93,7 +124,7 @@ final class CardinalitySampler
                 'row_count'          => $rowCount,
                 'distinct_values'    => $distinctValues,
                 'selectivity'        => $selectivity,
-                'trigger'            => 'periodic',
+                'trigger'            => $trigger,
             ];
 
             $this->logger->info('cardinality sampled', $base + ['event' => 'cardinality_sampled']);

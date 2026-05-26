@@ -7,12 +7,12 @@ namespace StarDust\Tests\Smoke;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Closed-event-vocabulary guard for Phase 5 + Phase 6a.
+ * Closed-event-vocabulary guard for Phase 5, Phase 6a, and Phase 6b.
  *
- * Greps `src/Watcher/`, `src/Reconciler/`, and `src/Liberator/` for
- * `'event' => '...'` literals and asserts the union is a subset of the
- * ADR 0020 allowlist for each source. Adding a new event name without
- * updating ADR 0020 must fail this test.
+ * Greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`, and
+ * `src/Retype/` for `'event' => '...'` literals and asserts the union
+ * is a subset of the ADR 0020 allowlist for each source. Adding a new
+ * event name without updating ADR 0020 must fail this test.
  */
 final class EventVocabularyTest extends TestCase
 {
@@ -48,6 +48,8 @@ final class EventVocabularyTest extends TestCase
         'slot_reserved',
         'cardinality_sampled',
         'low_cardinality_index',
+        'retype_started',
+        'promote_to_ready',
     ];
 
     public function testWatcherSourceUsesOnlyAllowedEventNames(): void
@@ -85,6 +87,23 @@ final class EventVocabularyTest extends TestCase
                 $event,
                 self::LIBERATOR_EVENTS,
                 "Event '{$event}' is not in the Liberator allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found);
+    }
+
+    public function testRetypeSourceUsesOnlyAllowedEventNames(): void
+    {
+        // Retype emits a mix of reconciler-source events (from the
+        // work source's chunk lifecycle) and registry-source events
+        // (retype_started, promote_to_ready, slot_reserved).
+        $allowed = array_merge(self::RECONCILER_EVENTS, self::REGISTRY_EVENTS);
+        $found = $this->scanDir(__DIR__ . '/../../src/Retype');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                $allowed,
+                "Event '{$event}' is not in the Retype/Reconciler/Registry allowlist (ADR 0020)."
             );
         }
         self::assertNotEmpty($found);

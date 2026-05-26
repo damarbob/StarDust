@@ -43,6 +43,7 @@ final class Bootstrapper
 
         $this->ensureSlotAssignmentFieldLiveUniqueIndex();
         $this->ensureSlotAssignmentSweepGapColumn();
+        $this->ensureBackfillCheckpointsSourceTypeColumn();
         $this->seedSchemaVersionSingleton();
     }
 
@@ -377,6 +378,42 @@ final class Bootstrapper
             $this->pdo->exec(<<<'SQL'
                 ALTER TABLE stardust_slot_assignments
                     ADD COLUMN sweep_gap_count INT NOT NULL DEFAULT 0
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * Phase 6b: the Reconciler's retype work source needs to know the
+     * `declared_type` the field had BEFORE the {@see \StarDust\Retype\RetypeInitiator}
+     * overwrote it, so the {@see \StarDust\Retype\RetypeCoercionEngine}
+     * can pick the right ADR 0024 matrix cell. We store it on the
+     * checkpoint row so the work source does not have to derive it from
+     * a tombstoned slot (which the Liberator may have already reclaimed).
+     *
+     * Nullable: existing Backfill Pump CLI checkpoints (`job_name` not
+     * starting with `retype_field_`) never populate this column.
+     */
+    private function ensureBackfillCheckpointsSourceTypeColumn(): void
+    {
+        $exists = (int) $this->pdo->query(<<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'backfill_checkpoints'
+              AND column_name = 'source_declared_type'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE backfill_checkpoints
+                    ADD COLUMN source_declared_type VARCHAR(16) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
             if (! $this->isDuplicateFieldName($e)) {

@@ -26,6 +26,11 @@ use StarDust\Reconciler\DlqWriter;
 use StarDust\Reconciler\ImportJobWorkSource;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\SyncQueueWorkSource;
+use StarDust\Retype\RetypeBackfillExecutor;
+use StarDust\Retype\RetypeBackfillWorkSource;
+use StarDust\Retype\RetypeCheckpointRepository;
+use StarDust\Retype\RetypeInitiator;
+use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
 use StarDust\Watcher\Watcher;
@@ -60,6 +65,9 @@ final class StarDust
     private ?SlotRowUpserter $slotRowUpserter = null;
     private ?BackfillExecutor $backfillExecutor = null;
     private ?PollLoop $pollLoop = null;
+    private ?SlotReserver $slotReserver = null;
+    private ?CardinalitySampler $cardinalitySampler = null;
+    private ?RetypeInitiator $retypeInitiator = null;
 
     public function __construct(private readonly Config $config)
     {
@@ -183,6 +191,63 @@ final class StarDust
     }
 
     /**
+     * Phase 6b atomic retype initiation (ADR 0016).
+     *
+     * Updates the field's `declared_type`, tombstones its current
+     * live slot, reserves a new `backfilling` slot of the target
+     * type (or defers if no matching free slot exists), bumps
+     * `stardust_schema_version`, and inserts a `running` row in
+     * `backfill_checkpoints` keyed `retype_field_{$fieldId}` — all
+     * in one transaction. Subsequent {@see Reconciler} ticks drain
+     * the partition through {@see RetypeBackfillWorkSource}; on
+     * completion the slot transitions `backfilling → ready` and a
+     * post-backfill `cardinality_sampled` event fires.
+     *
+     * `int↔datetime` and `numeric↔datetime` retypes are rejected at
+     * registry-write time with {@see \StarDust\Exception\IncompatibleRetypeException}
+     * per ADR 0024 — bridge through a `string` intermediate field
+     * if epoch-style migration is required.
+     */
+    public function retypeField(int $tenantId, int $fieldId, string $newDeclaredType): void
+    {
+        TenantId::assertValid($tenantId);
+        $this->retypeInitiator()->initiate(
+            tenantId: $tenantId,
+            fieldId: $fieldId,
+            newDeclaredType: $newDeclaredType,
+            newIsFilterable: null,
+        );
+    }
+
+    /**
+     * Phase 6b filterability promotion (ADR 0016).
+     *
+     * Flips `stardust_fields.is_filterable: false → true` and runs
+     * the same retype lifecycle so the field's data moves to an
+     * indexed slot column. The new slot reservation requires a
+     * page where the target `slot_column` carries the composite
+     * `(tenant_id, slot_column)` index (filterable slot per
+     * PageProvisioner); if none is free the reservation defers and
+     * the work source retries on each tick until the Watcher
+     * provisions a suitable page.
+     *
+     * Filterability remains suppressed (`JSON_EXTRACT` fallback)
+     * for the entire backfill window; filter queries against the
+     * field throw {@see \StarDust\Exception\FieldNotIndexedException}
+     * while the slot is `backfilling` (Phase 4 read-path rule).
+     */
+    public function promoteFieldToFilterable(int $tenantId, int $fieldId): void
+    {
+        TenantId::assertValid($tenantId);
+        $this->retypeInitiator()->initiate(
+            tenantId: $tenantId,
+            fieldId: $fieldId,
+            newDeclaredType: null,
+            newIsFilterable: true,
+        );
+    }
+
+    /**
      * Phase 5 page-provisioning daemon (singleton). Construct + run via
      * `pollLoop()` from a CLI process; the {@see Watcher} expects a
      * process-level PID-file guard to already be held (handled by the
@@ -246,8 +311,22 @@ final class StarDust
             interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
         );
 
+        $retypeBackfill = new RetypeBackfillWorkSource(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            repository: new RetypeCheckpointRepository($this->config->pdo),
+            executor: new RetypeBackfillExecutor(
+                pdo: $this->config->pdo,
+                slotRowUpserter: $this->slotRowUpserter(),
+            ),
+            slotReserver: $this->slotReserver(),
+            cardinalitySampler: $this->cardinalitySampler(),
+            chunkSize: $this->config->reconcilerChunkSize,
+        );
+
         return new Reconciler(
-            workSources: [$syncQueue, $importJobs],
+            workSources: [$syncQueue, $importJobs, $retypeBackfill],
             capacityWaitMillis: $this->config->reconcilerCapacityWaitMillis,
             interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
         );
@@ -367,6 +446,37 @@ final class StarDust
         return $this->entryReader ??= new EntryReader(
             pdo: $this->config->pdo,
             logger: $this->config->logger,
+        );
+    }
+
+    private function slotReserver(): SlotReserver
+    {
+        return $this->slotReserver ??= new SlotReserver(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+        );
+    }
+
+    private function cardinalitySampler(): CardinalitySampler
+    {
+        return $this->cardinalitySampler ??= new CardinalitySampler(
+            pdo: $this->config->pdo,
+            logger: $this->config->logger,
+            selectivityThreshold: $this->config->cardinalitySelectivityThreshold,
+            rowFloor: $this->config->cardinalityRowFloor,
+            distinctFloor: $this->config->cardinalityDistinctFloor,
+        );
+    }
+
+    private function retypeInitiator(): RetypeInitiator
+    {
+        return $this->retypeInitiator ??= new RetypeInitiator(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            slotReserver: $this->slotReserver(),
+            checkpointRepository: new RetypeCheckpointRepository($this->config->pdo),
         );
     }
 }
