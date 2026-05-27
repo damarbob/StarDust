@@ -22,9 +22,11 @@ final class GetExportJobTest extends Phase7TestCase
         self::assertNotNull($job);
         self::assertSame($jobId, $job->id);
         self::assertSame(7, $job->tenantId);
+        self::assertSame($modelId, $job->modelId);
         self::assertSame('pending', $job->status);
         self::assertSame('json', $job->format);
-        self::assertSame($modelId, $job->filter['model_id']);
+        self::assertSame([], $job->filter,
+            'Consumer QueryFilter is preserved unmodified — model_id is exposed as a typed field.');
         self::assertNull($job->lastCursor);
         self::assertNull($job->artifactPath);
         self::assertNull($job->failedReason);

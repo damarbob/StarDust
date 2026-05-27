@@ -192,27 +192,41 @@ final class ExportJobClaimer
         }
     }
 
-    /** @return array<string,mixed> */
+    /**
+     * Returns the consumer's original QueryFilter (the inner shape
+     * inside the stored `{model_id, filter}` envelope). The engine's
+     * model_id stamping is invisible to the rest of the pipeline.
+     *
+     * @return array<string,mixed>
+     */
     private function decodeFilter(mixed $raw): array
     {
-        if (!is_string($raw) || $raw === '') {
-            return [];
-        }
-        $decoded = json_decode($raw, true);
-        return is_array($decoded) ? $decoded : [];
+        $envelope = $this->decodeEnvelope($raw);
+        $inner = $envelope['filter'] ?? null;
+        return is_array($inner) ? $inner : [];
     }
 
     private function extractModelId(mixed $raw): int
     {
-        $filter = $this->decodeFilter($raw);
-        if (!isset($filter['model_id']) || !is_int($filter['model_id'])) {
+        $envelope = $this->decodeEnvelope($raw);
+        if (!isset($envelope['model_id']) || !is_int($envelope['model_id'])) {
             // Fall back to 0 — the pager will return no rows for an
             // invalid model_id, so the job completes empty rather than
             // crashing the worker. The submitter always stamps a valid
             // model_id; this branch is defensive.
             return 0;
         }
-        return $filter['model_id'];
+        return $envelope['model_id'];
+    }
+
+    /** @return array<string,mixed> */
+    private function decodeEnvelope(mixed $raw): array
+    {
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? $decoded : [];
     }
 
     private function utcNow(): string

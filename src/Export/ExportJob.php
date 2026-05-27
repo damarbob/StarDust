@@ -15,18 +15,21 @@ use DateTimeImmutable;
  * match on lifecycle stage (`status='pending'` ⇒ `claimedAt === null`,
  * `status='completed'` ⇒ `artifactPath !== null`, etc.).
  *
- * `filter` is the decoded JSON shape stored at submission time. The
- * Chronicler's submitter injects `model_id` into the stored filter,
- * so consumers can recover the model id without a separate column.
+ * `modelId` is hoisted out of the stored envelope so consumers see it
+ * as a typed first-class field. `filter` is the original consumer
+ * QueryFilter as submitted — the engine's `model_id` stamping
+ * convention is hidden from API consumers.
  */
 final class ExportJob
 {
     /**
-     * @param array<string,mixed> $filter Decoded `filter` column.
+     * @param array<string,mixed> $filter Original consumer QueryFilter
+     *   payload (without the engine's `model_id` envelope).
      */
     public function __construct(
         public readonly int $id,
         public readonly int $tenantId,
+        public readonly int $modelId,
         public readonly string $status,
         public readonly array $filter,
         public readonly string $format,

@@ -157,8 +157,10 @@ abstract class Phase7TestCase extends Phase6bTestCase
         int $skipCount = 0,
         array $filter = [],
     ): int {
-        $filter['model_id'] = $modelId;
-        $filterJson = json_encode($filter, JSON_THROW_ON_ERROR);
+        // Match the production envelope: stored shape is
+        // {model_id, filter} so the consumer QueryFilter stays clean.
+        $envelope = ['model_id' => $modelId, 'filter' => $filter];
+        $filterJson = json_encode($envelope, JSON_THROW_ON_ERROR);
         $now = $createdAt ?? $this->utcNowString();
 
         $stmt = $this->pdo->prepare(

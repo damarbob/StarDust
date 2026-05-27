@@ -53,13 +53,16 @@ final class ExportJobSubmitter
     {
         TenantId::assertValid($request->tenantId);
 
-        // model_id is stamped into the stored filter so the Chronicler
-        // can hydrate it on claim without a separate column. We do
-        // this here rather than in the DTO so the request shape stays
-        // intentional (model_id is a typed first-class field).
-        $storedFilter = array_merge($request->filter, ['model_id' => $request->modelId]);
+        // Wrap the consumer's QueryFilter so the stored `filter`
+        // column shape is `{model_id, filter}` instead of merging
+        // model_id INTO the consumer filter. This preserves the
+        // schema_reference §5.2 intent ("the QueryFilter payload
+        // submitted by the consumer") and keeps Phase 8's eventual
+        // QueryFilter validator independent of the engine's model_id
+        // stamping convention.
+        $envelope = ['model_id' => $request->modelId, 'filter' => $request->filter];
         $filterJson = (string) json_encode(
-            $storedFilter,
+            $envelope,
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES,
         );
 
@@ -141,17 +144,23 @@ final class ExportJobSubmitter
             return null;
         }
 
+        $modelId = 0;
         $filter = [];
         if (is_string($row['filter']) && $row['filter'] !== '') {
             $decoded = json_decode($row['filter'], true);
             if (is_array($decoded)) {
-                $filter = $decoded;
+                // Stored shape is `{model_id, filter}` — unwrap so
+                // the DTO exposes a typed modelId and returns the
+                // original consumer QueryFilter under .filter.
+                $modelId = is_int($decoded['model_id'] ?? null) ? $decoded['model_id'] : 0;
+                $filter  = is_array($decoded['filter'] ?? null) ? $decoded['filter'] : [];
             }
         }
 
         return new ExportJob(
             id: (int) $row['id'],
             tenantId: (int) $row['tenant_id'],
+            modelId: $modelId,
             status: (string) $row['status'],
             filter: $filter,
             format: (string) $row['format'],

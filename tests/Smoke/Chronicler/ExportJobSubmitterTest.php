@@ -43,10 +43,11 @@ final class ExportJobSubmitterTest extends Phase7TestCase
         self::assertNull($row['claimed_at']);
         self::assertNull($row['last_cursor']);
 
-        // model_id is injected into the stored filter.
-        $filter = json_decode((string) $row['filter'], true);
-        self::assertSame($modelId, $filter['model_id']);
-        self::assertSame('value', $filter['extra']);
+        // Envelope shape: {model_id, filter} with the consumer's
+        // QueryFilter preserved verbatim under .filter.
+        $envelope = json_decode((string) $row['filter'], true);
+        self::assertSame($modelId, $envelope['model_id']);
+        self::assertSame(['extra' => 'value'], $envelope['filter']);
 
         $accepted = $this->recordsWithEvent($logger->records(), 'export_accepted');
         self::assertCount(1, $accepted);

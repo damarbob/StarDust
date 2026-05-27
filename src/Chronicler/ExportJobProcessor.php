@@ -73,7 +73,14 @@ final class ExportJobProcessor
         $startTime = microtime(true);
         $header = $this->headerResolver->resolve($job->tenantId, $job->modelId);
         $stream = $this->streamFactory->from($job, $header);
-        $stream->open();
+        // open() may write the format prelude (CSV header / JSON `[`),
+        // which can trip ENOSPC. Treat header-write disk-full
+        // identically to per-row disk-full per ADR 0025.
+        try {
+            $stream->open();
+        } catch (ChroniclerArtifactDiskFullException) {
+            return $this->failDiskFull($job, $stream, $correlationId, $job->lastCursor ?? 0, $job->skipCount, $startTime);
+        }
 
         $cursor          = $job->lastCursor ?? 0;
         $skipCount       = $job->skipCount;
@@ -188,16 +195,17 @@ final class ExportJobProcessor
             }
 
             // === Atomic chunk commit + lease-loss detector ===
-            $leaseHeld = $this->commitChunk(
+            $outcome = $this->commitChunk(
                 jobId: $job->id,
                 workerIdentity: $job->workerIdentity,
                 newCursor: $newCursor,
+                rowsStreamed: $rowsStreamed,
                 skipCount: $skipCount,
                 isFinal: $isFinal,
                 artifactPath: $isFinal ? $stream->path() : null,
             );
 
-            if (!$leaseHeld) {
+            if ($outcome->leaseLost) {
                 $this->logger->warning('chronicler lease lost', [
                     'event'           => 'lease_lost',
                     'source'          => 'chronicler',
@@ -205,7 +213,7 @@ final class ExportJobProcessor
                     'tenant_id'       => $job->tenantId,
                     'job_id'          => $job->id,
                     'worker_identity' => $job->workerIdentity,
-                    'last_cursor'     => $newCursor,
+                    'last_cursor'     => $outcome->newCursor,
                 ]);
                 $stream->close();
                 $stream->delete();
@@ -220,13 +228,13 @@ final class ExportJobProcessor
                 'tenant_id'        => $job->tenantId,
                 'job_id'           => $job->id,
                 'worker_identity'  => $job->workerIdentity,
-                'last_cursor'      => $newCursor,
-                'rows_streamed'    => $rowsStreamed,
+                'last_cursor'      => $outcome->newCursor,
+                'rows_streamed'    => $outcome->rowsStreamed,
                 'bytes_written'    => $stream->bytesWritten() - $bytesBaseline,
                 'chunk_elapsed_ms' => $chunkElapsedMs,
             ]);
 
-            if ($isFinal) {
+            if ($outcome->isFinal) {
                 $stream->close();
                 $elapsedMs = (int) round((microtime(true) - $startTime) * 1000);
                 $this->logger->info('chronicler job complete', [
@@ -251,18 +259,20 @@ final class ExportJobProcessor
     }
 
     /**
-     * Commit one chunk's progress. Returns false when the UPDATE
-     * affected zero rows — i.e., another worker overwrote
-     * `worker_identity` (lease lost).
+     * Commit one chunk's progress. The returned {@see ChunkOutcome}
+     * carries the new cursor, rows streamed, finality flag, AND the
+     * lease-loss verdict (`UPDATE … WHERE worker_identity = self`
+     * affecting zero rows ⇒ another worker overwrote our row).
      */
     private function commitChunk(
         int $jobId,
         string $workerIdentity,
         int $newCursor,
+        int $rowsStreamed,
         int $skipCount,
         bool $isFinal,
         ?string $artifactPath,
-    ): bool {
+    ): ChunkOutcome {
         $now = $this->utcNow();
         $this->pdo->beginTransaction();
         try {
@@ -288,7 +298,12 @@ final class ExportJobProcessor
             }
             $affected = $stmt->rowCount();
             $this->pdo->commit();
-            return $affected > 0;
+            return new ChunkOutcome(
+                newCursor: $newCursor,
+                rowsStreamed: $rowsStreamed,
+                isFinal: $isFinal,
+                leaseLost: $affected === 0,
+            );
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
