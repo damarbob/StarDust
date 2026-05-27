@@ -7,8 +7,7 @@ declare(strict_types=1);
  * StarDust CLI entry point (ADR 0026).
  *
  * Current surface: --version, --help, bootstrap, watcher, reconciler,
- * reconciler:dlq:replay, liberator. Daemon commands for later phases
- * (chronicler) are advertised as planned but rejected here.
+ * reconciler:dlq:replay, liberator, chronicler.
  *
  * Exit codes:
  *   0  clean exit (incl. signal-induced shutdown)
@@ -107,9 +106,9 @@ switch ($command) {
                            Operator-initiated DLQ replay (Phase 5).
           liberator        Singleton slot-reclamation daemon (Phase 6a):
                            sweeps tombstoned slots back to free.
-
-        Planned commands (not yet implemented):
-          chronicler              Async export daemon (Phase 7).
+          chronicler       Multi-worker async export daemon (Phase 7):
+                           claims pending export jobs, paginates entry_data,
+                           writes CSV/JSON artifacts under Config::artifactDir.
 
         Subsequent phases are tracked in the project's design notes.
         HELP;
@@ -196,6 +195,25 @@ switch ($command) {
             exit(2);
         } catch (\Throwable $e) {
             fwrite(STDERR, "stardust: liberator failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'chronicler':
+        try {
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            // Chronicler is multi-worker safe (SELECT … FOR UPDATE
+            // SKIP LOCKED on stardust_export_jobs) — no PID guard.
+            // The poll interval is the idle interval; per-job work
+            // runs synchronously inside one tick.
+            $stardust->pollLoop()->run(
+                $stardust->chronicler(),
+                $stardust->shutdownSignal('chronicler'),
+                $stardust->config()->chroniclerIdleIntervalSeconds,
+            );
+            exit(0);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: chronicler failed: " . $e->getMessage() . "\n");
             exit(1);
         }
 

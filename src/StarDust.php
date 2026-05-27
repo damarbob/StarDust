@@ -7,12 +7,24 @@ namespace StarDust;
 use PDO;
 use Psr\Log\LoggerInterface;
 use StarDust\Bootstrap\Bootstrapper;
+use StarDust\Chronicler\ArtifactStreamFactory;
+use StarDust\Chronicler\Chronicler;
+use StarDust\Chronicler\DiskPressureGate;
+use StarDust\Chronicler\EntryDataPager;
+use StarDust\Chronicler\ExportJobClaimer;
+use StarDust\Chronicler\ExportJobProcessor;
+use StarDust\Chronicler\GcSweeper;
+use StarDust\Chronicler\HeaderResolver;
 use StarDust\Config\Config;
 use StarDust\Daemon\CompositeShutdownSignal;
 use StarDust\Daemon\FlagFileShutdownSignal;
 use StarDust\Daemon\PollLoop;
 use StarDust\Daemon\ShutdownSignal;
 use StarDust\Daemon\SignalShutdownSignal;
+use StarDust\Export\ExportJob;
+use StarDust\Export\ExportJobId;
+use StarDust\Export\ExportJobRequest;
+use StarDust\Export\ExportJobSubmitter;
 use StarDust\Liberator\Liberator;
 use StarDust\Liberator\SlotSweeper;
 use StarDust\Liberator\TombstonedSlotRepository;
@@ -68,6 +80,7 @@ final class StarDust
     private ?SlotReserver $slotReserver = null;
     private ?CardinalitySampler $cardinalitySampler = null;
     private ?RetypeInitiator $retypeInitiator = null;
+    private ?ExportJobSubmitter $exportSubmitter = null;
 
     public function __construct(private readonly Config $config)
     {
@@ -333,6 +346,94 @@ final class StarDust
     }
 
     /**
+     * Phase 7 async export submission (ADR 0010).
+     *
+     * Validates the request, enforces the per-tenant active-job cap
+     * (≤ `Config::$chroniclerPerTenantActiveCap`, default 3) via a
+     * `SELECT … FOR UPDATE` + `INSERT` transaction, persists a
+     * `pending` `stardust_export_jobs` row, and returns its id wrapped
+     * in {@see ExportJobId}. A `bin/stardust chronicler` worker will
+     * claim and drain the job; this method only persists.
+     *
+     * Throws {@see \StarDust\Exception\InvalidTenantIdException} for
+     * an out-of-range `tenant_id` and
+     * {@see \StarDust\Exception\ExportJobActiveCapExceededException}
+     * when the tenant already has `cap` active jobs.
+     */
+    public function submitExport(ExportJobRequest $request): ExportJobId
+    {
+        TenantId::assertValid($request->tenantId);
+        return $this->exportSubmitter()->submit($request);
+    }
+
+    /**
+     * Phase 7 consumer-side status read. Loads a single
+     * `stardust_export_jobs` row by `(tenant_id, job_id)`. Returns
+     * `null` when the job does not exist OR belongs to a different
+     * tenant — tenant isolation is enforced by the `WHERE` clause,
+     * mirroring {@see \StarDust\Read\EntryReader::get()}.
+     */
+    public function getExportJob(int $tenantId, int $jobId): ?ExportJob
+    {
+        TenantId::assertValid($tenantId);
+        return $this->exportSubmitter()->getJob($tenantId, $jobId);
+    }
+
+    /**
+     * Phase 7 async export daemon (multi-worker). Polls
+     * `stardust_export_jobs` for pending or abandoned claims under
+     * `SELECT … FOR UPDATE SKIP LOCKED`, paginates `entry_data` for
+     * the matched `(tenant_id, model_id)`, streams CSV / JSON
+     * artifacts to disk under `Config::$artifactDir`, and refreshes
+     * the lease on every chunk-commit. Idle ticks run the artifact
+     * GC sweep (TTL'd completed jobs + orphaned failed-job partials).
+     *
+     * Multi-worker safe (no PID guard); horizontal scaling = more
+     * processes. Failure semantics per ADR 0025: deadlock retry
+     * budget (3), skip cap (1 000), artifact size cap (5 GB),
+     * fixed DB-disconnect backoff `[1, 4, 16]`.
+     */
+    public function chronicler(): Chronicler
+    {
+        $streamFactory = new ArtifactStreamFactory($this->config->artifactDir);
+
+        $processor = new ExportJobProcessor(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            pager: new EntryDataPager($this->config->pdo),
+            headerResolver: new HeaderResolver($this->config->pdo),
+            streamFactory: $streamFactory,
+            pageSize: $this->config->chroniclerPageSize,
+            interChunkDelayMicros: $this->config->chroniclerInterChunkDelayMicros,
+            deadlockRetryBudget: $this->config->chroniclerDeadlockRetryBudget,
+            skipCountCap: $this->config->chroniclerSkipCountCap,
+            artifactSizeCapBytes: $this->config->chroniclerArtifactSizeCapBytes,
+            dbDisconnectBackoffSeconds: $this->config->chroniclerDbDisconnectBackoffSeconds,
+        );
+
+        return new Chronicler(
+            logger: $this->config->logger,
+            claimer: new ExportJobClaimer(
+                pdo: $this->config->pdo,
+                clock: $this->config->clock,
+                leaseTimeoutSeconds: $this->config->chroniclerLeaseTimeoutSeconds,
+            ),
+            processor: $processor,
+            diskGate: new DiskPressureGate(
+                artifactDir: $this->config->artifactDir,
+                lowDiskThresholdPct: $this->config->chroniclerLowDiskThresholdPct,
+            ),
+            gcSweeper: new GcSweeper(
+                pdo: $this->config->pdo,
+                logger: $this->config->logger,
+                artifactTtlSeconds: $this->config->chroniclerArtifactTtlSeconds,
+                orphanedPartialTtlSeconds: $this->config->chroniclerOrphanedPartialTtlSeconds,
+            ),
+        );
+    }
+
+    /**
      * Phase 6a slot-reclamation daemon (singleton). Polls
      * `stardust_slot_assignments` for `status='tombstoned'` rows and
      * sweeps each via chunked nullification of the slot column on
@@ -477,6 +578,16 @@ final class StarDust
             logger: $this->config->logger,
             slotReserver: $this->slotReserver(),
             checkpointRepository: new RetypeCheckpointRepository($this->config->pdo),
+        );
+    }
+
+    private function exportSubmitter(): ExportJobSubmitter
+    {
+        return $this->exportSubmitter ??= new ExportJobSubmitter(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            perTenantActiveCap: $this->config->chroniclerPerTenantActiveCap,
         );
     }
 }

@@ -39,7 +39,23 @@ final class Config
     public readonly int $liberatorChunkSize;
     public readonly int $liberatorInterChunkDelayMicros;
     public readonly int $liberatorDeadlockRetryBudget;
+    public readonly int $chroniclerIdleIntervalSeconds;
+    public readonly int $chroniclerLeaseTimeoutSeconds;
+    public readonly int $chroniclerPageSize;
+    public readonly int $chroniclerInterChunkDelayMicros;
+    public readonly int $chroniclerDeadlockRetryBudget;
+    public readonly int $chroniclerSkipCountCap;
+    public readonly int $chroniclerArtifactSizeCapBytes;
+    public readonly int $chroniclerArtifactTtlSeconds;
+    public readonly int $chroniclerOrphanedPartialTtlSeconds;
+    public readonly float $chroniclerLowDiskThresholdPct;
+    public readonly int $chroniclerPerTenantActiveCap;
+    /** @var list<int> */
+    public readonly array $chroniclerDbDisconnectBackoffSeconds;
 
+    /**
+     * @param list<int>|null $chroniclerDbDisconnectBackoffSeconds
+     */
     public function __construct(
         public readonly PDO $pdo,
         ?LoggerInterface $logger = null,
@@ -61,6 +77,18 @@ final class Config
         ?int $liberatorChunkSize = null,
         ?int $liberatorInterChunkDelayMicros = null,
         ?int $liberatorDeadlockRetryBudget = null,
+        ?int $chroniclerIdleIntervalSeconds = null,
+        ?int $chroniclerLeaseTimeoutSeconds = null,
+        ?int $chroniclerPageSize = null,
+        ?int $chroniclerInterChunkDelayMicros = null,
+        ?int $chroniclerDeadlockRetryBudget = null,
+        ?int $chroniclerSkipCountCap = null,
+        ?int $chroniclerArtifactSizeCapBytes = null,
+        ?int $chroniclerArtifactTtlSeconds = null,
+        ?int $chroniclerOrphanedPartialTtlSeconds = null,
+        ?float $chroniclerLowDiskThresholdPct = null,
+        ?int $chroniclerPerTenantActiveCap = null,
+        ?array $chroniclerDbDisconnectBackoffSeconds = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -98,5 +126,24 @@ final class Config
         $this->liberatorChunkSize             = $liberatorChunkSize             ?? 500;
         $this->liberatorInterChunkDelayMicros = $liberatorInterChunkDelayMicros ?? 0;
         $this->liberatorDeadlockRetryBudget   = $liberatorDeadlockRetryBudget   ?? 3;
+
+        // Phase 7 Chronicler tuning. Defaults pin ADR 0025's normative
+        // parameters and the chronicler blueprint's §2 caps. The fields
+        // exist so tests can shorten timeouts/caps through the same code
+        // path, mirroring the Liberator/Watcher rationale.
+        $this->chroniclerIdleIntervalSeconds       = $chroniclerIdleIntervalSeconds       ?? 10;
+        $this->chroniclerLeaseTimeoutSeconds       = $chroniclerLeaseTimeoutSeconds       ?? 30;
+        $this->chroniclerPageSize                  = $chroniclerPageSize                  ?? 500;
+        $this->chroniclerInterChunkDelayMicros     = $chroniclerInterChunkDelayMicros     ?? 0;
+        $this->chroniclerDeadlockRetryBudget       = $chroniclerDeadlockRetryBudget       ?? 3;
+        $this->chroniclerSkipCountCap              = $chroniclerSkipCountCap              ?? 1_000;
+        $this->chroniclerArtifactSizeCapBytes      = $chroniclerArtifactSizeCapBytes      ?? (5 * 1024 * 1024 * 1024);
+        $this->chroniclerArtifactTtlSeconds        = $chroniclerArtifactTtlSeconds        ?? 86_400;
+        $this->chroniclerOrphanedPartialTtlSeconds = $chroniclerOrphanedPartialTtlSeconds ?? 3_600;
+        $this->chroniclerLowDiskThresholdPct       = $chroniclerLowDiskThresholdPct       ?? 0.10;
+        $this->chroniclerPerTenantActiveCap        = $chroniclerPerTenantActiveCap        ?? 3;
+        // ADR 0025 pins the schedule at [1, 4, 16]; the field is
+        // injectable so tests can shorten the cumulative wait.
+        $this->chroniclerDbDisconnectBackoffSeconds = $chroniclerDbDisconnectBackoffSeconds ?? [1, 4, 16];
     }
 }

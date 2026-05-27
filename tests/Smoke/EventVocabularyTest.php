@@ -7,12 +7,13 @@ namespace StarDust\Tests\Smoke;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Closed-event-vocabulary guard for Phase 5, Phase 6a, and Phase 6b.
+ * Closed-event-vocabulary guard for Phase 5, Phase 6a, Phase 6b, and Phase 7.
  *
- * Greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`, and
- * `src/Retype/` for `'event' => '...'` literals and asserts the union
- * is a subset of the ADR 0020 allowlist for each source. Adding a new
- * event name without updating ADR 0020 must fail this test.
+ * Greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`,
+ * `src/Retype/`, `src/Chronicler/`, and `src/Export/` for
+ * `'event' => '...'` literals and asserts the union is a subset of
+ * the ADR 0020 allowlist for each source. Adding a new event name
+ * without updating ADR 0020 must fail this test.
  */
 final class EventVocabularyTest extends TestCase
 {
@@ -50,6 +51,24 @@ final class EventVocabularyTest extends TestCase
         'low_cardinality_index',
         'retype_started',
         'promote_to_ready',
+    ];
+
+    private const CHRONICLER_EVENTS = [
+        'job_claimed',
+        'chunk_written',
+        'deadlock_retry',
+        'chunk_skipped',
+        'row_skipped',
+        'lease_lost',
+        'low_disk',
+        'artifact_oversized',
+        'job_complete',
+        'job_failed',
+        'gc_swept',
+    ];
+
+    private const EXPORT_API_EVENTS = [
+        'export_accepted',
     ];
 
     public function testWatcherSourceUsesOnlyAllowedEventNames(): void
@@ -104,6 +123,32 @@ final class EventVocabularyTest extends TestCase
                 $event,
                 $allowed,
                 "Event '{$event}' is not in the Retype/Reconciler/Registry allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found);
+    }
+
+    public function testChroniclerSourceUsesOnlyAllowedEventNames(): void
+    {
+        $found = $this->scanDir(__DIR__ . '/../../src/Chronicler');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                self::CHRONICLER_EVENTS,
+                "Event '{$event}' is not in the Chronicler allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found);
+    }
+
+    public function testExportApiSourceUsesOnlyAllowedEventNames(): void
+    {
+        $found = $this->scanDir(__DIR__ . '/../../src/Export');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                self::EXPORT_API_EVENTS,
+                "Event '{$event}' is not in the Export API allowlist (ADR 0020)."
             );
         }
         self::assertNotEmpty($found);
