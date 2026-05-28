@@ -6,7 +6,7 @@ namespace StarDust\Tests\Smoke;
 
 use StarDust\Exception\InvalidTenantIdException;
 use StarDust\Read\EntryQuery;
-use StarDust\Read\QueryFilter;
+use StarDust\Filter\Ast\LeafNode;
 
 final class TenantIsolationTest extends ReadPathTestCase
 {
@@ -106,7 +106,7 @@ final class TenantIsolationTest extends ReadPathTestCase
         $page = $this->reader()->read(new EntryQuery(
             tenantId: 1,
             modelId: $modelId,
-            filters: [new QueryFilter($fieldName, 'eq', 'collision')],
+            filter: LeafNode::local($fieldName, 'eq', 'collision'),
         ));
         self::assertCount(1, $page->rows);
         self::assertSame(1, $page->rows[0]->tenantId);

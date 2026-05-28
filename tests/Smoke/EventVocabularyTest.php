@@ -7,13 +7,14 @@ namespace StarDust\Tests\Smoke;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Closed-event-vocabulary guard for Phase 5, Phase 6a, Phase 6b, and Phase 7.
+ * Closed-event-vocabulary guard for Phase 5 through Phase 8.
  *
  * Greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`,
- * `src/Retype/`, `src/Chronicler/`, and `src/Export/` for
- * `'event' => '...'` literals and asserts the union is a subset of
- * the ADR 0020 allowlist for each source. Adding a new event name
- * without updating ADR 0020 must fail this test.
+ * `src/Retype/`, `src/Chronicler/`, `src/Export/`, `src/Search/`,
+ * and `src/Filter/` for `'event' => '...'` literals and asserts the
+ * union is a subset of the ADR 0020 allowlist for each source.
+ * Adding a new event name without updating ADR 0020 must fail this
+ * test.
  */
 final class EventVocabularyTest extends TestCase
 {
@@ -69,6 +70,13 @@ final class EventVocabularyTest extends TestCase
 
     private const EXPORT_API_EVENTS = [
         'export_accepted',
+    ];
+
+    private const SEARCH_API_EVENTS = [
+        'search_request',
+        'capability_unsupported',
+        'pre_flight_rejected',
+        'cache_miss',
     ];
 
     public function testWatcherSourceUsesOnlyAllowedEventNames(): void
@@ -152,6 +160,28 @@ final class EventVocabularyTest extends TestCase
             );
         }
         self::assertNotEmpty($found);
+    }
+
+    public function testSearchSourceUsesOnlyAllowedEventNames(): void
+    {
+        // Phase 8 emits `search_request` and `capability_unsupported`
+        // from the search service / capability checker, plus reuses
+        // `pre_flight_rejected` (shared with Phase 4 read path) for
+        // generic rejections. The decoder under src/Filter/ throws
+        // typed exceptions and emits no events itself — the scan still
+        // covers that directory for forward-compatibility.
+        $found = array_unique(array_merge(
+            $this->scanDir(__DIR__ . '/../../src/Search'),
+            $this->scanDir(__DIR__ . '/../../src/Filter'),
+        ));
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                self::SEARCH_API_EVENTS,
+                "Event '{$event}' is not in the Search API allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found, 'Search namespace should emit at least one structured-log event');
     }
 
     /** @return list<string> */

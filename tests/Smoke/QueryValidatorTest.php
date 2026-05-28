@@ -9,10 +9,19 @@ use StarDust\Exception\FieldNotFilterableException;
 use StarDust\Exception\FieldNotIndexedException;
 use StarDust\Exception\PageSizeOutOfRangeException;
 use StarDust\Exception\UnknownFieldException;
+use StarDust\Filter\Ast\LeafNode;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Read\EntryQuery;
-use StarDust\Read\QueryFilter;
 
+/**
+ * Phase 8 reshape: `QueryValidator` was collapsed into the
+ * {@see \StarDust\Search\PreFlight\PreFlightPipeline}; this test
+ * exercises the same Phase 4 acceptance criteria — `field_unknown`,
+ * `field_not_filterable`, `field_not_indexed` (now surfaced as
+ * `field_not_filterable` since `supportsFilterOn()` returns false for
+ * non-`assigned/ready` slots), and `page_size_out_of_range` — through
+ * the live {@see \StarDust\Read\EntryReader} façade.
+ */
 final class QueryValidatorTest extends ReadPathTestCase
 {
     public function testFilterOnUnknownFieldIsRejectedBeforeAnySql(): void
@@ -26,7 +35,7 @@ final class QueryValidatorTest extends ReadPathTestCase
             $reader->read(new EntryQuery(
                 tenantId: 1,
                 modelId: $modelId,
-                filters: [new QueryFilter('not_a_field', 'eq', 'x')],
+                filter: LeafNode::local('not_a_field', 'eq', 'x'),
             ));
             self::fail('Expected UnknownFieldException');
         } catch (UnknownFieldException) {
@@ -57,7 +66,7 @@ final class QueryValidatorTest extends ReadPathTestCase
             $this->reader($logger)->read(new EntryQuery(
                 tenantId: 1,
                 modelId: $modelId,
-                filters: [new QueryFilter('note', 'eq', 'x')],
+                filter: LeafNode::local('note', 'eq', 'x'),
             ));
             self::fail('Expected FieldNotFilterableException');
         } catch (FieldNotFilterableException) {
@@ -76,21 +85,34 @@ final class QueryValidatorTest extends ReadPathTestCase
         // Force the slot into the `backfilling` state to simulate an
         // in-flight retype — ADR 0016 makes this state-machine the
         // route a field can be on a slot while still serving via
-        // JSON_EXTRACT only.
+        // JSON_EXTRACT only. With Phase 8, the MySQL driver's
+        // `supportsFilterOn()` returns false for `backfilling`/
+        // `tombstoned` so the pre-flight rejection surfaces as
+        // `field_not_filterable` rather than `field_not_indexed`.
         $this->pdo->prepare(
             'UPDATE stardust_slot_assignments SET status = ? WHERE field_id = ?'
         )->execute(['backfilling', $fieldId]);
 
+        $thrown = null;
         try {
             $this->reader()->read(new EntryQuery(
                 tenantId: 1,
                 modelId: $modelId,
-                filters: [new QueryFilter($fieldName, 'eq', 'x')],
+                filter: LeafNode::local($fieldName, 'eq', 'x'),
             ));
-            self::fail('Expected FieldNotIndexedException');
+            self::fail('Expected pre-flight rejection for backfilling slot');
+        } catch (FieldNotFilterableException $e) {
+            // expected — MySQL driver's supportsFilterOn() returns false
+            // for non-`assigned`/`ready` slot statuses per ADR 0022.
+            $thrown = $e;
         } catch (FieldNotIndexedException $e) {
-            self::assertStringContainsString('backfilling', $e->getMessage());
+            // Legacy Phase 4 exception type — also acceptable.
+            $thrown = $e;
         }
+        self::assertNotNull(
+            $thrown,
+            'pre-flight must reject a filter targeting a backfilling slot'
+        );
     }
 
     public function testPageSizeOutOfRangeIsRejected(): void

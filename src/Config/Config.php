@@ -8,7 +8,9 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Clock\SystemClock;
+use StarDust\Filter\Limits\FilterLimits;
 use StarDust\Logging\StdoutNdjsonLogger;
+use StarDust\Search\EntrySearchInterface;
 
 /**
  * Construction-time configuration object per ADR 0026.
@@ -52,6 +54,8 @@ final class Config
     public readonly int $chroniclerPerTenantActiveCap;
     /** @var list<int> */
     public readonly array $chroniclerDbDisconnectBackoffSeconds;
+    public readonly ?EntrySearchInterface $searchDriver;
+    public readonly FilterLimits $queryFilterLimits;
 
     /**
      * @param list<int>|null $chroniclerDbDisconnectBackoffSeconds
@@ -89,6 +93,8 @@ final class Config
         ?float $chroniclerLowDiskThresholdPct = null,
         ?int $chroniclerPerTenantActiveCap = null,
         ?array $chroniclerDbDisconnectBackoffSeconds = null,
+        ?EntrySearchInterface $searchDriver = null,
+        ?FilterLimits $queryFilterLimits = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -145,5 +151,14 @@ final class Config
         // ADR 0025 pins the schedule at [1, 4, 16]; the field is
         // injectable so tests can shorten the cumulative wait.
         $this->chroniclerDbDisconnectBackoffSeconds = $chroniclerDbDisconnectBackoffSeconds ?? [1, 4, 16];
+
+        // Phase 8 search driver injection (ADR 0026 construction-time
+        // injection). `null` defaults to the engine's MysqlNativeDriver,
+        // lazily instantiated in StarDust::searchService(). Filter
+        // limits default to the QueryFilter wire-format blueprint §4.6
+        // normative values; injectable for operators with tighter or
+        // looser bounds.
+        $this->searchDriver       = $searchDriver;
+        $this->queryFilterLimits  = $queryFilterLimits ?? FilterLimits::defaults();
     }
 }

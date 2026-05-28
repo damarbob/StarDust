@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace StarDust\Tests\Smoke;
 
 use PDO;
+use StarDust\Filter\Ast\LeafNode;
 use StarDust\Read\EntryQuery;
-use StarDust\Read\QueryFilter;
 
 final class EntryReaderTest extends ReadPathTestCase
 {
@@ -42,7 +42,7 @@ final class EntryReaderTest extends ReadPathTestCase
         $page = $this->reader()->read(new EntryQuery(
             tenantId: 1,
             modelId: $modelId,
-            filters: [new QueryFilter($fieldName, 'eq', 'alpha')],
+            filter: LeafNode::local($fieldName, 'eq', 'alpha'),
             pageSize: 10,
         ));
 

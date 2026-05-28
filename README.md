@@ -174,9 +174,12 @@ $jobId = $engine->submitBulkWrite(
 ## Reading entries
 
 ```php
+use StarDust\Filter\Ast\AndNode;
+use StarDust\Filter\Ast\LeafNode;
+use StarDust\Filter\Ast\NotNode;
+use StarDust\Filter\Ast\OrNode;
 use StarDust\Read\Cursor;
 use StarDust\Read\EntryQuery;
-use StarDust\Read\QueryFilter;
 
 // Cursor-paginated read. Two-query bounded sequence:
 //   1) Paginated Probe selects entry_data.id with LIMIT pageSize+1
@@ -187,13 +190,37 @@ use StarDust\Read\QueryFilter;
 // Filters on fields with is_filterable=false or whose slot is
 // backfilling/tombstoned/unmapped are rejected pre-flight with a
 // typed exception — no SQL is issued.
+//
+// Filters are AST trees: leaves carry (operator, field, value);
+// composites are AndNode / OrNode / NotNode. Pure-AND chains keep
+// the original INNER-JOIN-per-page execution shape; trees that
+// contain OR or NOT switch to EXISTS subqueries automatically.
 $page = $engine->read(new EntryQuery(
     tenantId:     42,
     modelId:      $modelId,
-    filters:      [new QueryFilter('name', 'eq', 'Acme')],
+    filter:       LeafNode::local('name', 'eq', 'Acme'),
     selectFields: ['name', 'employees'],
     pageSize:     100,
 ));
+
+// Multiple AND-composed leaves:
+$page = $engine->read(new EntryQuery(
+    tenantId: 42,
+    modelId:  $modelId,
+    filter:   new AndNode([
+        LeafNode::local('status', 'eq', 'active'),
+        LeafNode::local('employees', 'gt', 100),
+    ]),
+));
+
+// Full boolean composition:
+$filter = new AndNode([
+    new OrNode([
+        LeafNode::local('region', 'eq', 'eu'),
+        LeafNode::local('region', 'eq', 'us'),
+    ]),
+    new NotNode(LeafNode::local('status', 'eq', 'archived')),
+]);
 // $page->rows           — list<Entry>
 // $page->nextCursor     — Cursor|null; null means last page
 // $page->pageSize       — echo of the requested size
@@ -218,7 +245,61 @@ $entry = $engine->get(tenantId: 42, entryId: $someEntryId);
 // $entry?->id, $entry?->fields, $entry?->createdAt
 ```
 
-Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This preserves write-availability on the read side: a field that lacks an indexed slot still surfaces, just without filter / sort capability. The read path emits NDJSON events `request` and `pre_flight_rejected`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
+Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This preserves write-availability on the read side: a field that lacks an indexed slot still surfaces, just without filter / sort capability. The read path emits NDJSON events `search_request` and `pre_flight_rejected`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
+
+## Searching with the JSON wire format
+
+Consumers (HTTP gateways, RPC layers) typically receive filters as JSON. Decode them with `JsonFilterDecoder`, then call `search()` with the resulting AST:
+
+```php
+use StarDust\Filter\Json\JsonFilterDecoder;
+use StarDust\Search\SearchRequest;
+
+$decoder = new JsonFilterDecoder($engine->config()->queryFilterLimits);
+$filter  = $decoder->decode($requestBody);
+$result  = $engine->search(new SearchRequest(
+    tenantId: 42,
+    modelId:  $modelId,
+    filter:   $filter,
+    pageSize: 100,
+));
+```
+
+A typical wire payload:
+
+```json
+{
+  "version": "1",
+  "filter": {
+    "op": "and",
+    "args": [
+      { "op": "eq",    "field": { "model": "invoice", "name": "status" }, "value": "paid" },
+      { "op": "gt",    "field": { "model": "invoice", "name": "amount" }, "value": 100   },
+      { "op": "is_not_null", "field": { "model": "invoice", "name": "due_date" } }
+    ]
+  }
+}
+```
+
+The decoder enforces a closed 13-code error taxonomy (`envelope_malformed`, `node_malformed`, `operator_unknown`, `value_count_mismatch`, `value_unexpected`, `value_out_of_bounds`, `nesting_too_deep`, `node_count_exceeded`, `version_unsupported`, plus pre-flight `field_unknown`, `field_not_filterable`, `capability_unsupported`, `value_type_mismatch`). Every rejection carries an RFC 6901 JSON Pointer to the offending node.
+
+## Custom search drivers
+
+`StarDust\Search\EntrySearchInterface` is the swappable seam. The engine ships with a `MysqlNativeDriver` that wraps the bounded-read path; inject any other implementation through `Config`:
+
+```php
+use StarDust\Config\Config;
+use StarDust\Search\EntrySearchInterface;
+
+final class MeilisearchDriver implements EntrySearchInterface { /* ... */ }
+
+$engine = new StarDust(new Config(
+    pdo:          $pdo,
+    searchDriver: new MeilisearchDriver(/* ... */),
+));
+```
+
+Drivers declare which operators they service (`supportedOperators()`), per-field filterability (`supportsFilterOn()`), and their consistency model (`consistencyModel(): 'strong' | 'eventual'`). The pre-flight pipeline rejects unsupported requests before the driver is invoked. Writes always go to MySQL — drivers are read-only.
 
 ## Changing a field's type or filterability
 

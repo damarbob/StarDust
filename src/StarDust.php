@@ -32,7 +32,7 @@ use StarDust\Page\PageProvisioner;
 use StarDust\Read\Entry;
 use StarDust\Read\EntryPage;
 use StarDust\Read\EntryQuery;
-use StarDust\Read\EntryReader;
+use StarDust\Read\SchemaVersionCache;
 use StarDust\Reconciler\DlqReplayer;
 use StarDust\Reconciler\DlqWriter;
 use StarDust\Reconciler\ImportJobWorkSource;
@@ -42,6 +42,15 @@ use StarDust\Retype\RetypeBackfillExecutor;
 use StarDust\Retype\RetypeBackfillWorkSource;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Retype\RetypeInitiator;
+use StarDust\Search\EntrySearchInterface;
+use StarDust\Search\Mysql\MysqlNativeDriver;
+use StarDust\Search\PreFlight\CapabilityChecker;
+use StarDust\Search\PreFlight\FieldRefResolver;
+use StarDust\Search\PreFlight\PreFlightPipeline;
+use StarDust\Search\PreFlight\ValueTypeValidator;
+use StarDust\Search\SearchRequest;
+use StarDust\Search\SearchResult;
+use StarDust\Search\SearchService;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
@@ -73,7 +82,9 @@ final class StarDust
     private ?EntryWriter $entryWriter = null;
     private ?BulkIngestor $bulkIngestor = null;
     private ?BulkIngestSubmitter $bulkSubmitter = null;
-    private ?EntryReader $entryReader = null;
+    private ?SearchService $searchService = null;
+    private ?EntrySearchInterface $resolvedSearchDriver = null;
+    private ?SchemaVersionCache $schemaVersionCache = null;
     private ?SlotRowUpserter $slotRowUpserter = null;
     private ?BackfillExecutor $backfillExecutor = null;
     private ?PollLoop $pollLoop = null;
@@ -187,7 +198,8 @@ final class StarDust
     public function read(EntryQuery $query): EntryPage
     {
         TenantId::assertValid($query->tenantId);
-        return $this->entryReader()->read($query);
+        $request = SearchRequest::fromEntryQuery($query);
+        return $this->searchService()->execute($request)->toEntryPage();
     }
 
     /**
@@ -200,7 +212,30 @@ final class StarDust
     public function get(int $tenantId, int $entryId): ?Entry
     {
         TenantId::assertValid($tenantId);
-        return $this->entryReader()->get($tenantId, $entryId);
+        return $this->searchDriver()->get($tenantId, $entryId);
+    }
+
+    /**
+     * Phase 8 driver-backed search entry point.
+     *
+     * Runs the pre-flight pipeline (field-ref resolution, capability
+     * check, value-type validation) and dispatches to the active
+     * {@see EntrySearchInterface}. The active driver defaults to
+     * {@see MysqlNativeDriver}; inject a custom driver via
+     * {@see Config::$searchDriver} to swap backends without modifying
+     * call-site code.
+     *
+     * Throws the Phase 4 exceptions for shared cases
+     * ({@see \StarDust\Exception\UnknownFieldException},
+     * {@see \StarDust\Exception\FieldNotFilterableException},
+     * {@see \StarDust\Exception\PageSizeOutOfRangeException}) plus
+     * {@see \StarDust\Filter\QueryFilterValidationException} for the
+     * Phase 8 wire-format codes that have no Phase 4 equivalent.
+     */
+    public function search(SearchRequest $request): SearchResult
+    {
+        TenantId::assertValid($request->tenantId);
+        return $this->searchService()->execute($request);
     }
 
     /**
@@ -542,11 +577,36 @@ final class StarDust
         );
     }
 
-    private function entryReader(): EntryReader
+    private function searchService(): SearchService
     {
-        return $this->entryReader ??= new EntryReader(
-            pdo: $this->config->pdo,
-            logger: $this->config->logger,
+        return $this->searchService ??= new SearchService(
+            driver:    $this->searchDriver(),
+            cache:     $this->schemaVersionCache(),
+            preFlight: new PreFlightPipeline(
+                fieldRefResolver:   new FieldRefResolver($this->config->logger),
+                capabilityChecker:  new CapabilityChecker($this->config->logger),
+                valueTypeValidator: new ValueTypeValidator($this->config->logger, $this->config->queryFilterLimits),
+            ),
+            logger:    $this->config->logger,
+            clock:     $this->config->clock,
+        );
+    }
+
+    private function searchDriver(): EntrySearchInterface
+    {
+        return $this->resolvedSearchDriver ??= $this->config->searchDriver
+            ?? new MysqlNativeDriver(
+                pdo:    $this->config->pdo,
+                logger: $this->config->logger,
+                cache:  $this->schemaVersionCache(),
+            );
+    }
+
+    private function schemaVersionCache(): SchemaVersionCache
+    {
+        return $this->schemaVersionCache ??= new SchemaVersionCache(
+            $this->config->pdo,
+            $this->config->logger,
         );
     }
 
