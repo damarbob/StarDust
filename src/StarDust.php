@@ -42,6 +42,7 @@ use StarDust\Retype\RetypeBackfillExecutor;
 use StarDust\Retype\RetypeBackfillWorkSource;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Retype\RetypeInitiator;
+use StarDust\Schema\SchemaBuilder;
 use StarDust\Search\EntrySearchInterface;
 use StarDust\Search\Mysql\MysqlNativeDriver;
 use StarDust\Search\PreFlight\CapabilityChecker;
@@ -92,6 +93,7 @@ final class StarDust
     private ?CardinalitySampler $cardinalitySampler = null;
     private ?RetypeInitiator $retypeInitiator = null;
     private ?ExportJobSubmitter $exportSubmitter = null;
+    private ?SchemaBuilder $schemaBuilder = null;
 
     public function __construct(private readonly Config $config)
     {
@@ -121,6 +123,26 @@ final class StarDust
     public function bootstrap(): void
     {
         (new Bootstrapper($this->config->pdo))->run();
+    }
+
+    /**
+     * Convenience helper for registering models and fields without
+     * hand-writing `stardust_models` / `stardust_fields` SQL.
+     *
+     * This is a stopgap for ergonomic setup, not the first-class
+     * definition API (still on the roadmap). It registers registry
+     * rows only — making a filterable field genuinely queryable still
+     * requires a provisioned page and a reserved slot (the Watcher
+     * daemon, or {@see \StarDust\Page\PageProvisioner} +
+     * {@see \StarDust\Slot\SlotReserver} for one-off setup).
+     */
+    public function schemaBuilder(): SchemaBuilder
+    {
+        return $this->schemaBuilder ??= new SchemaBuilder(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+        );
     }
 
     /**

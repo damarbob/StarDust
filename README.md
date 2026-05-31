@@ -1,21 +1,52 @@
 # StarDust
 
-> **🚧 UNDER ACTIVE DEVELOPMENT (v0.3.0) 🚧**
->
-> StarDust is currently undergoing a major architectural migration to **Vertical Schema Partitioning** to address scalability limits and OOM vulnerabilities found in the previous Virtual Column architecture. The current `main` branch and upcoming `0.3.x` pre-releases represent a breaking change.
->
-> We strongly advise consumers and developers to remain locked to the `^0.2.0-alpha.x` release line until the v0.3.0 API contract and migration paths are finalized. Critical fixes and backports for the `0.2.x` line will be maintained in the `support/v0.2` branch.
+**Schemaless dynamic fields, queried at native SQL index speed — no separate search cluster, no EAV join swamp.**
 
-## MySQL-Native, Framework-Neutral Engine for Dynamic Data Models
+Give every tenant their own fields, then filter them like first-class columns:
 
-**StarDust** is a high-performance PHP engine that gives applications schemaless dynamic fields with the query speed of a native SQL table — without bolting on a separate search service. The v0.3.0 architecture (**Vertical Schema Partitioning**) stores every entry's full JSON payload as the system of record and mirrors filterable fields into pre-provisioned slot columns on immutable extension pages, so consumer reads hit indexed columns directly while writes remain available even when slot capacity is exhausted.
+```php
+// "industry" and "employees" are user-defined fields, not table columns —
+// yet this compiles to an indexed range scan, not a table-scan-and-pray.
+$page = $engine->read(new EntryQuery(
+    tenantId: 1,
+    modelId:  $companyModelId,
+    filter:   new AndNode([
+        LeafNode::local('industry',  'eq', 'software'),
+        LeafNode::local('employees', 'gt', 100),
+    ]),
+    selectFields: ['name', 'employees'],
+));
 
-Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer library** with zero runtime framework dependencies. Adapters for specific frameworks (CodeIgniter 4 first) are opt-in companion packages, not core requirements.
+foreach ($page->rows as $company) {
+    echo "{$company->fields['name']} — {$company->fields['employees']}\n";
+}
+```
+
+If you've ever reached for an EAV table and then watched the self-joins melt your database, StarDust is the engine you wanted instead. The complete JSON payload is always the system of record; filterable fields are mirrored into pre-provisioned, indexed slot columns — so reads hit real indexes while writes stay available even when capacity runs low.
+
+### Try it in five minutes
+
+```bash
+docker compose up
+```
+
+This brings up MySQL, bootstraps the schema, seeds a sample `company` model, runs the query above, and starts the four background daemons. The seeded results print in the `init` service logs:
+
+```bash
+docker compose logs init
+```
+
+Want to tinker? [`docker/seed.php`](docker/seed.php) is the whole flow — define a model, make fields filterable, write entries, query — as readable, copy-pasteable example code.
+
+> **Heads up — this is a v0.3.0 pre-release.** `main` and the `0.3.x` tags are a breaking architectural migration (**Vertical Schema Partitioning**) away from the legacy 0.2.x line, motivated by scalability limits and OOM vulnerabilities in the old Virtual Column design. If you need something production-ready today, stay on `^0.2.0-alpha.x` — critical 0.2.x fixes land on the `support/v0.2` branch. Otherwise, read on; the honest caveats live in [Is StarDust a fit?](#is-stardust-a-fit) and [Status](#status), not buried in the fine print.
+
+StarDust ships as a **framework-neutral Composer library** with zero runtime framework dependencies — only the `psr/log` and `psr/clock` interfaces. Framework adapters (CodeIgniter 4 first) are opt-in companion packages, never core requirements.
 
 ---
 
 ## Contents
 
+- [Architecture at a glance](#architecture-at-a-glance)
 - [Is StarDust a fit?](#is-stardust-a-fit)
 - [Status](#status)
 - [Requirements](#requirements)
@@ -31,9 +62,62 @@ Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer lib
 - [Async exports](#async-exports)
 - [Errors](#errors)
 - [CLI](#cli)
-- [Running the smoke suite locally](#running-the-smoke-suite-locally)
+- [Testing](#testing)
 - [Legacy](#legacy)
 - [License](#license)
+
+---
+
+## Architecture at a glance
+
+Every entry's full payload is stored as JSON in `entry_data` — that's the system of record, and it always holds the complete record. Filterable fields are *mirrored* into typed, indexed slot columns on an extension page, so a filter query reads an index instead of scanning JSON:
+
+```
+                       write(EntryPayload)
+                                │
+                                ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │  entry_data            (system of record — full payload)    │
+   │  id │ tenant_id │ model_id │ fields (JSON)                  │
+   │   7 │     1     │    42    │ {"name":"Acme","employees":340,│
+   │     │           │          │  "city":"Berlin"}              │
+   └─────────────────────────────────────────────────────────────┘
+                                │  mirror the filterable fields
+                                │  into typed slot columns
+                                ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │  entry_slots_page_1    (indexed 1:1 extension page)         │
+   │  entry_id │ i_str_01 │ i_int_01 │ …  (60 typed slots)       │
+   │     7     │  "Acme"  │   340    │                           │
+   │           │ (name)   │(employees)                           │
+   └─────────────────────────────────────────────────────────────┘
+        ▲ composite index (tenant_id, i_str_01), (tenant_id, i_int_01), …
+
+   "city" was never made filterable → it lives in JSON only:
+   still readable, just not indexed. A filterable field that
+   outruns slot capacity also stays in JSON and is queued for
+   backfill — the write never fails for lack of a slot.
+```
+
+Four background daemons keep the slot machinery healthy. They never talk to each other directly — MySQL is the only coordination point:
+
+```
+        ┌──────────── MySQL — sole coordination point ──────────────┐
+        │   entry_data · entry_slots_page_N · stardust_* registry   │
+        └───────────────────────────────────────────────────────────┘
+            ▲              ▲              ▲                ▲
+   provisions│     drains  │    reclaims  │      streams   │
+   capacity  │     queues  │    freed     │      exports   │
+             │             │    slots     │                │
+      ┌──────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐
+      │ Watcher  │  │ Reconciler │  │ Liberator  │  │ Chronicler │
+      │ singleton│  │multi-worker│  │ singleton  │  │multi-worker│
+      └──────────┘  └────────────┘  └────────────┘  └────────────┘
+   adds indexed   backfills the    sweeps tombstoned  writes async
+   pages when     sync queue,      slot columns back  CSV/JSON
+   capacity is    async imports,   to free for reuse  export
+   low            and retypes                         artifacts
+```
 
 ---
 
@@ -71,7 +155,7 @@ Unlike the legacy 0.2.x line, v0.3.0 ships as a **framework-neutral Composer lib
 
 **Not yet available:**
 
-- ⚠️ **No public API to define models or fields.** You seed `stardust_models`, `stardust_fields`, and slot assignments with direct SQL — the engine ships no method to create them. Without those rows you can still store and point-read entries (the JSON payload is always authoritative), but the **indexed filter/search path can't be exercised**. A first-class definition API is not yet part of the build sequence (Phases 0–8).
+- **No first-class model/field definition API yet.** `StarDust::schemaBuilder()` is a convenience helper that registers models and fields for you (get-or-create, so it's safe to re-run) — no raw `INSERT`s required for the registry. It's a stopgap, not the full definition API: making a filterable field genuinely queryable still means provisioning a page and reserving a slot (the Watcher daemon does this automatically, or you call `PageProvisioner` / `SlotReserver` for one-off setup). Without a reserved indexed slot you can still store and point-read entries (the JSON payload is always authoritative), but the field won't be on the indexed filter path. The first-class definition API that ties all of this together is on the roadmap.
 - **Export predicate filtering** — a submitted export currently writes *every* non-deleted entry for the model. The supplied filter is stored verbatim but not yet applied by the Chronicler.
 - **Async import-job status reads** — `submitBulkWrite()` returns an `ImportJobId`, but there is no `getImportJob()` polling method yet (exports do have `getExportJob()`).
 
@@ -87,12 +171,12 @@ If you need a working library today, stay on `^0.2.0-alpha.x`.
 - **PHP extensions:** `ext-pdo`, `ext-pdo_mysql`
 - **Database:** MySQL 8.0.13+ **or** Percona Server 8.0.13+
 
-The 8.0.13 floor is non-negotiable. StarDust relies on functional/conditional unique indexes and common table expressions, both of which require 8.0.13.
+The 8.0.13 floor is firm: StarDust leans on functional/conditional unique indexes and common table expressions, and neither exists below 8.0.13. We'd rather refuse to start than corrupt your registry on an engine that silently does the wrong thing.
 
-**Explicitly unsupported:**
+**Not supported:**
 
-- **MariaDB** — partial-index syntax and `SKIP LOCKED` semantics diverge from MySQL. The Phase 0 smoke suite is intentionally inhospitable to MariaDB and the CI pipeline asserts the rejection on every push.
-- **MySQL 5.7 and older** — missing the partial-unique-index feature the schema registry depends on.
+- **MariaDB** — its partial-index syntax and `SKIP LOCKED` semantics diverge from MySQL's in ways that would break the slot registry and the daemon claim model. StarDust detects this and refuses to run, and CI keeps us honest with a dedicated job that *expects* the smoke suite to fail on MariaDB. You find out at boot, not in production.
+- **MySQL 5.7 and older** — no partial-unique-index feature, which the schema registry depends on.
 
 ---
 
@@ -129,7 +213,7 @@ The package's only runtime dependencies are `psr/log` and `psr/clock` (both inte
 
 ## Complete example
 
-A minimal end-to-end walkthrough: bootstrap the schema, seed the registry (direct SQL until the model/field definition API lands), write a few entries, filter, and page through results.
+A minimal end-to-end walkthrough: bootstrap the schema, define a model, make its fields filterable, write a few entries, filter, and page through results. (This is the same flow as [`docker/seed.php`](docker/seed.php).)
 
 ### 1 — Bootstrap
 
@@ -145,53 +229,45 @@ $engine = new StarDust(new Config(pdo: $pdo));
 $engine->bootstrap(); // idempotent — safe to call on every deploy
 ```
 
-### 2 — Seed the registry (temporary until the definition API lands)
+### 2 — Define the model and its fields
 
-```sql
--- Tenant 1 · model "company"
-INSERT INTO stardust_models (tenant_id, name, created_at)
-VALUES (1, 'company', NOW());
+`schemaBuilder()` registers the model and its fields — no raw `INSERT`s. It's get-or-create, so re-running is safe, and it returns the model id plus a field-name → id map.
 
--- Two fields: 'name' (string, filterable) and 'employees' (int, filterable)
-INSERT INTO stardust_fields (model_id, name, declared_type, is_filterable, created_at, updated_at)
-VALUES
-    (LAST_INSERT_ID(), 'name',      'string', TRUE,  NOW(), NOW()),
-    (LAST_INSERT_ID(), 'employees', 'int',    TRUE,  NOW(), NOW());
+```php
+use StarDust\Schema\FieldDefinition;
+
+$company = $engine->schemaBuilder()->createModel(tenantId: 1, name: 'company', fields: [
+    new FieldDefinition('name',      'string', isFilterable: true),
+    new FieldDefinition('employees', 'int',    isFilterable: true),
+]);
+
+$modelId = $company->modelId;
 ```
 
-Then provision a page (gives the engine 60 typed slot columns) and assign one slot per field:
+### 3 — Make the filterable fields queryable
+
+Registering a field records *intent*; the field becomes filterable once its value lands in an indexed slot column. In a running deployment the Watcher daemon provisions that capacity automatically. For one-off setup, provision a page (60 typed slots) and reserve one slot per field:
 
 ```php
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
 
-// Provision a page, indexing the two filterable slots.
-// Normally the Watcher daemon handles this automatically;
-// for one-off setup you can call it directly.
-$provisioner = new PageProvisioner($pdo, $engine->config()->clock, $engine->logger());
-$provisioner->provision(filterableSlots: ['i_str_01', 'i_int_01']);
+// Provision a page, indexing the two slots the filterable fields will use.
+(new PageProvisioner($pdo, $engine->config()->clock, $engine->logger()))
+    ->provision(filterableSlots: ['i_str_01', 'i_int_01']);
 
-// Resolve the field ids just inserted.
-$stmt = $pdo->query(
-    "SELECT id, name FROM stardust_fields
-      WHERE model_id = (SELECT id FROM stardust_models WHERE tenant_id = 1 AND name = 'company')"
-);
-$fields = array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'id', 'name');
-
-// Reserve one slot per field (free → assigned).
+// Reserve one slot per field (free → assigned). Reservation takes the
+// lowest-numbered free slot of each type, so 'name' lands on i_str_01 and
+// 'employees' on i_int_01 — exactly the slots we just indexed.
 $reserver = new SlotReserver($pdo, $engine->config()->clock, $engine->logger());
-$reserver->reserve((int) $fields['name']);
-$reserver->reserve((int) $fields['employees']);
+$reserver->reserve($company->fieldId('name'));
+$reserver->reserve($company->fieldId('employees'));
 ```
 
-### 3 — Write entries
+### 4 — Write entries
 
 ```php
 use StarDust\Write\EntryPayload;
-
-$modelId = (int) $pdo->query(
-    "SELECT id FROM stardust_models WHERE tenant_id = 1 AND name = 'company'"
-)->fetchColumn();
 
 $engine->write(new EntryPayload(tenantId: 1, modelId: $modelId,
     fields: ['name' => 'Acme Corp',   'employees' => 340]));
@@ -203,7 +279,7 @@ $engine->write(new EntryPayload(tenantId: 1, modelId: $modelId,
     fields: ['name' => 'Initech',     'employees' => 510]));
 ```
 
-### 4 — Filter and paginate
+### 5 — Filter and paginate
 
 ```php
 use StarDust\Filter\Ast\LeafNode;
@@ -236,7 +312,7 @@ while ($cursor !== null) {
 }
 ```
 
-### 5 — Point read
+### 6 — Point read
 
 ```php
 $firstId = $page->rows[0]->id;
@@ -272,7 +348,19 @@ $engine->bootstrap();
 
 Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`); Phase 5's Watcher daemon (`bin/stardust watcher`) wires them automatically.
 
-> ⚠️ **You must define models and fields directly in the registry.** There is no public API for creating `stardust_models` / `stardust_fields` rows or reserving slots, so every example below assumes a `$modelId` and field names you have seeded yourself. Basic store and point-read work without them; the indexed filter/search path does not.
+> ℹ️ **Defining models and fields.** Use `StarDust::schemaBuilder()` to register models and fields without hand-writing registry SQL. It's get-or-create (safe to re-run) and returns the ids you'll need:
+>
+> ```php
+> use StarDust\Schema\FieldDefinition;
+>
+> $model = $engine->schemaBuilder()->createModel(tenantId: 1, name: 'company', fields: [
+>     new FieldDefinition('name',      'string', isFilterable: true),
+>     new FieldDefinition('employees', 'int',    isFilterable: true),
+> ]);
+> // $model->modelId, $model->fieldId('name')
+> ```
+>
+> This is a stopgap, not the first-class definition API. Registering a field isn't enough to filter on it — its value has to reach an indexed slot column. The Watcher daemon provisions that capacity in a running deployment; for one-off setup, call `PageProvisioner` + `SlotReserver` (see the [Complete example](#complete-example)). Until a field has a reserved indexed slot it's still stored and point-readable from the JSON payload — just not on the indexed filter path.
 
 Phases 5, 6a, and 7 add twenty-eight optional `Config` parameters for daemon tuning:
 
@@ -664,7 +752,9 @@ violation or user error.
 
 ---
 
-## Running the smoke suite locally
+## Testing
+
+StarDust is covered by a smoke suite that runs against a **real MySQL** — no mocked databases. It skips cleanly when no test database is configured, so a fresh clone runs green out of the box:
 
 ```bash
 composer install
@@ -672,28 +762,9 @@ cp phpunit.xml.dist phpunit.xml         # gitignored; edit with your DB creds
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-`phpunit.xml.dist` ships with empty `<env>` placeholders for `STARDUST_TEST_DSN`, `STARDUST_TEST_USER`, and `STARDUST_TEST_PASS`. Fill them in on your local `phpunit.xml` copy (which is gitignored). A shell-exported env var with the same name still wins over the file value, so the one-off form also works:
-
-```bash
-STARDUST_TEST_DSN='mysql:host=127.0.0.1;dbname=stardust_test' \
-STARDUST_TEST_USER=root STARDUST_TEST_PASS=root \
-vendor/bin/phpunit --testsuite Smoke
-```
-
-The suite covers all ten implemented phases:
-
-- **Phase 0 — environment.** Server is MySQL (not MariaDB), version is 8.0.13+, common table expressions work, and functional unique indexes enforce the partial-uniqueness invariant the schema registry depends on. (`EXPLAIN ANALYZE` is an 8.0.18+ operator-runbook tool and is deliberately **not** smoke-tested.)
-- **Phase 1 — bootstrap.** The migration runner creates every data plane, registry, and operational table on a blank database; re-runs are non-destructive; the `stardust_schema_version` singleton is seeded with `id = 1`; the `stardust_slot_assignments` status ENUM rejects out-of-band values; the partial unique index on `field_id` is enforced at the database level; and the tenant-scoped composite indexes on `entry_data` are present.
-- **Phase 2 — slot & page system.** Page provisioning emits composite `(tenant_id, slot_column)` indexes only for the filterable slots named by the caller; the full 60-row slot inventory is inserted with `status='free'` in the same registry transaction as the `stardust_schema_version` bump; a forced failure rolls the registry transaction back without leaking partial inventory; sequential calls assign monotonic page numbers; the slot reserver performs the `free → assigned` transition atomically and returns `null` when no free slot of the requested family exists; and the `EmptyTableGuard` rejects DDL against populated pages before any metadata lock is acquired.
-- **Phase 3 — write path.** Single-entry writes commit `entry_data` + every live-slot row + (optionally) a `stardust_sync_queue` enqueue in one transaction; the exhaustion-fallback path keeps the write succeeding when slots are missing; uncoercible payload values roll the whole entry back; bulk ingest chunks transactions per `BulkIngestOptions::$chunkSize`, applies the inter-chunk delay only between chunks, and rolls each failed chunk back atomically while later chunks continue; the 1 000-entity synchronous threshold throws `PayloadTooLargeException`; async submission writes a payload artifact under `Config::$artifactDir`, inserts a `stardust_import_jobs` row, and returns an `ImportJobId`; retrying with the same `(tenant_id, idempotency_key)` returns the existing job ID; `tenant_id <= 0` is rejected before any SQL.
-- **Phase 4 — read path.** Filters on `is_filterable = false`, `backfilling`, `tombstoned`, or unmapped slots are rejected pre-flight with a typed exception and a `pre_flight_rejected` log event — `EXPLAIN` for an accepted filter shows an index range scan on the `(tenant_id, slot_column)` composite, never a full table scan; cursor pagination over a mutated dataset never duplicates or skips entries that existed before page 1; the trailing page returns a null next-cursor sentinel; `tenant_id` outside `[1, 2^63-1]` is rejected before any SQL; rows from other tenants never appear regardless of filter collision; a field whose slot is `backfilling` returns the value from the JSON payload and never touches the slot column; the schema-version cache emits `cache_miss` on registry-version bumps and reuses the snapshot otherwise.
-- **Phase 5 — resilience daemons.** The Watcher provisions a new `entry_slots_page_N` (and its 60 slot rows) when global capacity is below the threshold, bumping `stardust_schema_version.version` in the same transaction; `poll_started` / `provision_complete` / `poll_complete` events fire with `source: 'watcher'`. When a sibling session holds `GET_LOCK('stardust_page_provision', …)`, the Watcher emits `lock_contention` and does not provision (end-to-end test runs with a 1 s timeout via `Config::$watcherProvisionLockTimeoutSeconds` — production stays at 10 s). The PID-file guard throws `WatcherSingletonViolationException` on contention and preserves the last PID after release. The `PollLoop` surfaces SIGTERM / flag-file shutdown within one sleep slice. The cardinality sampler emits `cardinality_sampled` (and `low_cardinality_index` when distinct/selectivity floors are breached) with `source: 'registry'`. The sync-queue work source drains a chunk via `SELECT … FOR UPDATE SKIP LOCKED`, routes `EntryDataMissingException` to `stardust_reconciler_dlq` with `reason='missing_entry_data'`, and rolls the chunk back with a `capacity_wait` event when the entry's field still has no live slot. The import-job work source claims one pending row, decodes the single-document JSON artifact, materialises entries through `EntryWriter::writeWithinTransaction()` in chunk windows paced by `Config::$reconcilerInterChunkDelayMicros`, and transitions to `completed | failed` with a manifest. `Reconciler::tick()` itself ticks work sources round-robin, short-circuits on `CAPACITY_WAIT`, and paces between `WORK_DONE` outcomes using the same inter-chunk delay. The DLQ replayer re-enqueues by id or by reason in a single transaction and throws `DlqReplayNotFoundException` on no-match. A closed-vocabulary guard greps `src/Watcher/`, `src/Reconciler/`, and `src/Liberator/` for `'event' => '...'` literals and asserts the union matches the documented allowlist.
-- **Phase 6a — slot reclamation (Liberator).** Tombstoning a slot and starting the Liberator nullifies every non-NULL value in the corresponding `entry_slots_page_N.<slotColumn>` across the partition, transitions the registry row from `tombstoned → free` (and clears `field_id`) in the same transaction as the final chunk's nullification, and bumps `stardust_schema_version.version`. Sweep proceeds in `LIMIT N` chunks; each chunk's `UPDATE` and the `sweep_cursor_id` advance commit together, so a mid-sweep crash resumes deterministically from `last cursor + 1` on restart. On `SQLSTATE 40001` (InnoDB deadlock) the sweeper rolls the chunk back, emits `deadlock_retry`, and retries the same chunk from the same cursor; after three consecutive deadlocks on the same chunk it advances the cursor by `chunkSize`, increments `sweep_gap_count` on the registry row, emits `sweep_gap_flagged`, and continues — bounded contention does not block sweep progress indefinitely. Tombstoned slots are processed `tombstoned_at ASC, page_id, slot_column` (deterministic across restarts). The PID-file guard throws `LiberatorSingletonViolationException` on contention. Closed `source: 'liberator'` event vocabulary: `sweep_started` (per non-empty batch only — idle ticks emit nothing), `sweep_chunk`, `sweep_complete`, `deadlock_retry`, `sweep_gap_flagged`. The bootstrap migration adds the `sweep_gap_count INT NOT NULL DEFAULT 0` column idempotently.
-- **Phase 6b — field retype & filterability promotion.** `retypeField()` atomically updates `stardust_fields.declared_type`, tombstones the field's current live slot, reserves a new `backfilling` slot of the target type (or defers if no matching free slot exists), bumps `stardust_schema_version`, and inserts a `running` `backfill_checkpoints` row keyed `retype_field_{id}` — emits `retype_started`. `numeric ↔ datetime` and `int ↔ datetime` retypes raise `IncompatibleRetypeException` at registry-write time with zero registry mutation. Filterability promotion follows the same pipeline but the new slot reservation demands a column with a `(tenant_id, slot_column)` composite index. While the slot is `backfilling`, reads of the field fall back to the JSON payload and filter queries throw `FieldNotIndexedException`. The Reconciler's third work source — `RetypeBackfillWorkSource` — claims one running checkpoint per tick via `SELECT … FOR UPDATE SKIP LOCKED`, runs the normative type-coercion matrix per row through `JSON_EXTRACT`, writes coerced values (or NULL on uncoercible) via `INSERT … ON DUPLICATE KEY UPDATE`, and on the final chunk transitions the slot `backfilling → ready` plus bumps `stardust_schema_version` in the same transaction. Per-row uncoercible values emit `coercion_null` with the closed taxonomy (`out_of_range`, `non_integer`, `malformed_datetime`, `malformed_number`, `epoch_coercion_rejected`, `unparseable`); absent/null JSON values do NOT emit (only attempted-and-failed coercions are observable). Promotion to `ready` emits `promote_to_ready` and triggers `CardinalitySampler::sampleSlot()` for the one-shot post-backfill `cardinality_sampled` event with `trigger='post_backfill'`. Idempotent resume: mid-chunk crash + restart re-processes only entries after `last_processed_id`, and the UPSERT primary key guarantees no double-write. The bootstrap migration adds the `source_declared_type VARCHAR(16) NULL` column to `backfill_checkpoints` idempotently.
-- **Phase 7 — async exports (Chronicler).** `submitExport()` enforces the per-tenant active-job cap atomically (`SELECT … FOR UPDATE` + `INSERT` in one transaction) and emits `export_accepted` (source `export_api`); a 4th concurrent submission for the same tenant throws `ExportJobActiveCapExceededException`. A sibling-session test holds `SELECT … FOR UPDATE` on the tenant's active range while a second submitter runs with `innodb_lock_wait_timeout = 1` — the second submission blocks, surfaces `SQLSTATE 1205`, and proves the cap check is genuinely serialised across sessions (no phantom inserts past the cap). `getExportJob()` is tenant-isolated — returns `null` for cross-tenant or missing job ids. The Chronicler's per-tenant round-robin claim orders pending jobs by `MIN(created_at) GROUP BY tenant_id`, computed at claim time without a materialised column — a single tenant's burst cannot starve another tenant's oldest job. Two-session `SKIP LOCKED` tests prove the claimer skips rows held by a sibling `FOR UPDATE` and routes to the next available row; two parallel claimers never double-claim the same id. Abandoned-claim sweep detects stranded `processing` rows with `heartbeat_at < UTC_TIMESTAMP() - INTERVAL leaseTimeoutSeconds SECOND`, best-effort deletes the prior partial, and resumes from `last_cursor` with `claimed_at` preserved. Lease-loss self-detection at every chunk commit (`WHERE worker_identity = self`, `rowCount() == 0` ⇒ `lease_lost` + delete partial, no terminal-state mutation). End-to-end CSV happy path covers RFC 4180 quoting (comma, double-quote, CR, LF), `\r\n` line terminator, header derived alphabetically from `stardust_fields`, and embedded-NUL → `row_skipped{format_invalid}`. End-to-end JSON happy path validates the streamed single-document array (leading `[`, `,`-prefix for subsequent rows, trailing `]`, exactly `n-1` commas for `n` rows, round-trip through `json_decode`). Three-deadlock budget per chunk → `chunk_skipped{cause:deadlock_budget_exhausted}` + cursor advance + `skip_count += pageSize` (simulated by a reflection-bypass `DeadlockInjectingPdo` that wraps the test connection and throws `SQLSTATE 40001` on the `entry_data` SELECT); skip-cap (1 000) trip → `failed:excessive_skips`; ENOSPC short-write during artifact append (exercised via a `failwrite://` stream wrapper that returns 0 on every `fwrite`) → `failed:disk_full` + `job_failed{reason:disk_full}` — also covers the header-write disk-full path on `stream->open()`; partial-artifact bytes > 5 GB cap → `artifact_oversized` (distinct event) + `failed:artifact_size_exceeded`; idle ticks GC TTL'd completed artifacts (24 h) and orphaned failed-job partials (1 h); pre-claim disk-pressure gate emits `low_disk` and skips new claims while in-flight jobs continue. Tenant isolation is enforced by the pager's `WHERE tenant_id = ? AND model_id = ? AND deleted_at IS NULL` predicate; soft-deleted rows never appear in artifacts. The closed-vocabulary guard scans `src/Chronicler/` and `src/Export/` for `'event' => '...'` literals — adding an unallowlisted name fails CI.
-- **Phase 8 — search driver & JSON query filter.** The `JsonFilterDecoder` turns a JSON wire payload into the closed filter AST (twelve leaf operators; full AND/OR/NOT composition), deduplicates `in` / `nin` arrays at decode time, and enforces the closed 13-code error taxonomy with RFC 6901 JSON Pointers plus payload-size, nesting-depth, node-count, argument-count, and string-length bounds — the decoder never consults the registry, so it is reusable in offline tooling. The three-stage pre-flight pipeline (field resolution → driver capability → value-type validation) rejects unknown, non-filterable, unsupported-operator, and type-mismatched filters before any SQL is issued, emitting `pre_flight_rejected` / `capability_unsupported`. The adaptive `SqlFilterCompiler` keeps pure-AND trees on the Phase 4 INNER-JOIN-per-page execution shape and switches to `EXISTS` / `NOT EXISTS` subqueries for any subtree containing OR or NOT, with tenant isolation enforced on both strategies; OR/NOT filters round-trip end-to-end against real data. A custom `EntrySearchInterface` driver injected through `Config` is invoked in place of the default `MysqlNativeDriver`, and every `search()` call emits one `search_request` event carrying `latency_ms`, `rows_returned`, `has_more`, `tree_node_count`, and `compile_strategy`. The closed-vocabulary guard extends to scan `src/Search/` and `src/Filter/`.
-
 GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
+
+For the full setup guide and a phase-by-phase breakdown of exactly what each behaviour the suite proves, see **[TESTING.md](TESTING.md)**.
 
 ---
 

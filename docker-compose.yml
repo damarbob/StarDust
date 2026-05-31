@@ -1,0 +1,100 @@
+# StarDust five-minute quickstart.
+#
+#   docker compose up
+#
+# Spins up MySQL 8.0, bootstraps the schema, seeds a sample model with a
+# few entries, runs an indexed filter to prove the payoff, and then keeps
+# the four background daemons (Watcher, Reconciler, Liberator, Chronicler)
+# alive so you can watch the operational model in action.
+#
+# Seed output (the filtered companies) is printed by the `init` service:
+#
+#   docker compose logs init
+#
+# Tear everything down, including the MySQL volume:
+#
+#   docker compose down -v
+
+x-stardust-env: &stardust-env
+  STARDUST_DSN: "mysql:host=mysql;port=3306;dbname=stardust"
+  STARDUST_USER: "root"
+  STARDUST_PASS: "root"
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: stardust/dev:local   # shared tag → image is built once, reused by every service
+  environment: *stardust-env
+  volumes:
+    - .:/app
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: "root"
+      MYSQL_DATABASE: "stardust"
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: install deps (first run only), bootstrap the schema, seed
+  # the sample data, and print a filtered query. Exits 0 when done.
+  init:
+    <<: *app
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ ! -f vendor/autoload.php ]; then
+          composer install --no-interaction --no-progress
+        fi
+        php bin/stardust bootstrap
+        php docker/seed.php
+    restart: "no"
+
+  watcher:
+    <<: *app
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["php", "bin/stardust", "watcher"]
+    restart: unless-stopped
+
+  reconciler:
+    <<: *app
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["php", "bin/stardust", "reconciler"]
+    restart: unless-stopped
+
+  liberator:
+    <<: *app
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["php", "bin/stardust", "liberator"]
+    restart: unless-stopped
+
+  chronicler:
+    <<: *app
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["php", "bin/stardust", "chronicler"]
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
