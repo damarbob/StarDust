@@ -24,7 +24,7 @@ x-app: &app
   build:
     context: .
     dockerfile: docker/Dockerfile
-  image: stardust/dev:local   # shared tag → image is built once, reused by every service
+  image: stardust/dev:local # shared tag → image is built once, reused by every service
   environment: *stardust-env
   volumes:
     - .:/app
@@ -36,11 +36,16 @@ services:
       MYSQL_ROOT_PASSWORD: "root"
       MYSQL_DATABASE: "stardust"
     ports:
-      - "3306:3306"
+      # Host-side port is overridable to avoid clashing with a MySQL already
+      # bound to 3306. The init service and daemons connect over the compose
+      # network (host "mysql", port 3306) and do NOT depend on this mapping —
+      # it exists only so you can reach the DB from the host (GUI client, the
+      # smoke suite, etc.). Override with STARDUST_HOST_DB_PORT if 3307 clashes.
+      - "${STARDUST_HOST_DB_PORT:-3307}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      test: [ "CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot" ]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -69,7 +74,7 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["php", "bin/stardust", "watcher"]
+    command: [ "php", "bin/stardust", "watcher" ]
     restart: unless-stopped
 
   reconciler:
@@ -77,7 +82,7 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["php", "bin/stardust", "reconciler"]
+    command: [ "php", "bin/stardust", "reconciler" ]
     restart: unless-stopped
 
   liberator:
@@ -85,7 +90,7 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["php", "bin/stardust", "liberator"]
+    command: [ "php", "bin/stardust", "liberator" ]
     restart: unless-stopped
 
   chronicler:
@@ -93,7 +98,7 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["php", "bin/stardust", "chronicler"]
+    command: [ "php", "bin/stardust", "chronicler" ]
     restart: unless-stopped
 
 volumes:
