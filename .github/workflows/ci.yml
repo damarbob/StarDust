@@ -8,8 +8,13 @@ on:
 
 jobs:
   mysql-smoke:
-    name: Smoke against MySQL 8.0 (must pass)
+    name: Smoke against MySQL 8.0 on PHP ${{ matrix.php-version }} (must pass)
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ["8.1", "8.2", "8.3", "8.4"]
 
     services:
       mysql:
@@ -31,7 +36,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.1"
+          php-version: ${{ matrix.php-version }}
           extensions: pdo, pdo_mysql
           coverage: none
 
@@ -39,8 +44,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.composer/cache
-          key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
-          restore-keys: ${{ runner.os }}-composer-
+          key: ${{ runner.os }}-php${{ matrix.php-version }}-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php-version }}-composer-
 
       - name: Composer install
         run: composer install --no-progress --no-interaction --prefer-dist
