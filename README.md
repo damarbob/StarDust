@@ -548,6 +548,8 @@ A typical wire payload:
 
 The decoder enforces a closed 13-code error taxonomy (`envelope_malformed`, `node_malformed`, `operator_unknown`, `value_count_mismatch`, `value_unexpected`, `value_out_of_bounds`, `nesting_too_deep`, `node_count_exceeded`, `version_unsupported`, plus pre-flight `field_unknown`, `field_not_filterable`, `capability_unsupported`, `value_type_mismatch`). Every rejection carries an RFC 6901 JSON Pointer to the offending node.
 
+The wire format also ships as a normative JSON Schema (draft 2020-12) at [`schemas/queryfilter.schema.json`](schemas/queryfilter.schema.json), for consumer-side validation in any language and for CI cross-checks. A smoke test (`QueryFilterSchemaConformanceTest`) runs a payload corpus through both the schema and `JsonFilterDecoder` and fails if their accept/reject verdicts ever diverge, keeping the two in lockstep.
+
 ## Custom search drivers
 
 `StarDust\Search\EntrySearchInterface` is the swappable seam. The engine ships with a `MysqlNativeDriver` that wraps the bounded-read path; inject any other implementation through `Config`:
@@ -761,6 +763,8 @@ composer install
 cp phpunit.xml.dist phpunit.xml         # gitignored; edit with your DB creds
 vendor/bin/phpunit --testsuite Smoke
 ```
+
+A handful of the suite's tests need no database at all (e.g. the wire-format decoder, the event-vocabulary guard, and the schema-conformance cross-check), so they run even on a bare clone.
 
 GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
 
