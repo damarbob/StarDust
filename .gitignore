@@ -128,6 +128,9 @@ nb-configuration.xml
 /results/
 /phpunit*.xml
 
+# PHPStan: commit phpstan.neon.dist + phpstan-baseline.neon; ignore local override
+/phpstan.neon
+
 #-------------------------
 # Node.js
 #-------------------------

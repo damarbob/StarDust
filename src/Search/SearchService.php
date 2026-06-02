@@ -41,6 +41,10 @@ final class SearchService
         private readonly SchemaVersionCache $cache,
         private readonly PreFlightPipeline $preFlight,
         private readonly LoggerInterface $logger,
+        // Injected for constructor-shape uniformity across services. This
+        // class needs no wall-clock value: latency is measured with the
+        // monotonic hrtime() and the event `ts` is stamped by the logger.
+        // @phpstan-ignore property.onlyWritten
         private readonly ClockInterface $clock,
     ) {
     }

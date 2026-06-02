@@ -51,6 +51,10 @@ final class MysqlNativeDriver implements EntrySearchInterface
 
     public function __construct(
         private readonly PDO $pdo,
+        // Kept for EntrySearchInterface implementation uniformity: a custom
+        // driver may emit its own diagnostics. The default MySQL driver is a
+        // pure executor and delegates all logging to SearchService.
+        // @phpstan-ignore property.onlyWritten
         private readonly LoggerInterface $logger,
         private readonly SchemaVersionCache $cache,
         ?SqlFilterCompiler $compiler = null,

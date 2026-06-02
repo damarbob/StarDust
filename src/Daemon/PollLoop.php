@@ -31,6 +31,10 @@ final class PollLoop
             $tickable->tick();
 
             for ($remaining = $intervalSeconds; $remaining > 0; $remaining--) {
+                // Re-poll mid-sleep: the signal can flip out-of-band (async
+                // pcntl handler / flag file) after the while-condition saw
+                // false, so this is reachable despite PHPStan's purity model.
+                // @phpstan-ignore if.alwaysFalse
                 if ($shutdown->isRequested()) {
                     return;
                 }

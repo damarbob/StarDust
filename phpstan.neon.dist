@@ -1,0 +1,11 @@
+includes:
+    - phpstan-baseline.neon
+
+parameters:
+    level: 6
+    paths:
+        - src
+        - bin
+    # Pre-existing findings are captured in phpstan-baseline.neon so this
+    # check is green today while still holding all NEW code to level 6.
+    # Shrink the baseline as files are touched; raise `level` when it empties.

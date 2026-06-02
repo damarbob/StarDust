@@ -155,7 +155,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
         // Post-commit event emission per the registry write-then-log
         // discipline used elsewhere in the codebase: emit events that
         // describe committed state, never rolled-back state.
-        if ($reservedThisTick && $newSlot !== null) {
+        if ($reservedThisTick) {
             $this->slotReserver->emitSlotReservedEvent(
                 $checkpoint->fieldId,
                 $newSlot,
@@ -183,7 +183,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
             'final_chunk'    => $promoted,
         ]);
 
-        if ($promoted && $newSlot !== null) {
+        if ($promoted) {
             $this->logger->info('slot promoted to ready', [
                 'event'              => 'promote_to_ready',
                 'source'             => 'registry',

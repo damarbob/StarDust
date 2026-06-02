@@ -7,6 +7,33 @@ on:
     branches: [main]
 
 jobs:
+  static-analysis:
+    name: PHPStan (level 6, no DB)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo, pdo_mysql
+          coverage: none
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-php8.4-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-php8.4-composer-
+
+      - name: Composer install
+        run: composer install --no-progress --no-interaction --prefer-dist
+
+      - name: Run PHPStan
+        run: vendor/bin/phpstan analyse --no-progress
+
   mysql-smoke:
     name: Smoke against MySQL 8.0 on PHP ${{ matrix.php-version }} (must pass)
     runs-on: ubuntu-latest
