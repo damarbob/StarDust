@@ -7,8 +7,9 @@ declare(strict_types=1);
  *
  * Run by the `init` service in docker-compose.yml after the schema is
  * bootstrapped. Also a readable, copy-pasteable example of the whole
- * flow: register a model, make its fields filterable, write entries,
- * and run an indexed filter.
+ * flow: register a model, make its fields filterable, write entries
+ * from raw JSON, and run an indexed filter decoded from a JSON wire
+ * payload.
  *
  * Idempotent — safe to run on every `docker compose up`. The model and
  * fields are get-or-create; the page/slot/entry seeding is skipped once
@@ -18,8 +19,7 @@ declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php';
 
 use StarDust\Config\Config;
-use StarDust\Filter\Ast\AndNode;
-use StarDust\Filter\Ast\LeafNode;
+use StarDust\Filter\Json\JsonFilterDecoder;
 use StarDust\Page\PageProvisioner;
 use StarDust\Read\EntryQuery;
 use StarDust\Schema\FieldDefinition;
@@ -70,28 +70,52 @@ if (! $alreadySeeded) {
     $reserver->reserve($company->fieldId('employees'));
     $reserver->reserve($company->fieldId('founded'));
 
-    // 3) Write a handful of entries.
-    $rows = [
-        ['name' => 'Acme Corp', 'industry' => 'manufacturing', 'employees' => 340,  'founded' => '1998-04-12T00:00:00+00:00'],
-        ['name' => 'Globex',    'industry' => 'energy',        'employees' => 85,   'founded' => '2011-09-01T00:00:00+00:00'],
-        ['name' => 'Initech',   'industry' => 'software',      'employees' => 510,  'founded' => '2003-01-20T00:00:00+00:00'],
-        ['name' => 'Umbrella',  'industry' => 'pharma',        'employees' => 1200, 'founded' => '1990-06-30T00:00:00+00:00'],
-        ['name' => 'Hooli',     'industry' => 'software',      'employees' => 240,  'founded' => '2009-11-11T00:00:00+00:00'],
-    ];
-    foreach ($rows as $fields) {
-        $engine->write(new EntryPayload(tenantId: $tenantId, modelId: $modelId, fields: $fields));
+    // 3) Write a handful of entries — straight from a raw JSON array, the
+    //    way a CMS or HTTP layer would hand them over. The envelope is
+    //    {tenantId, modelId, fields} (camelCase); values coerce on the
+    //    same write path as the typed `new EntryPayload(...)` constructor.
+    $companies = <<<JSON
+    [
+      {"tenantId": {$tenantId}, "modelId": {$modelId}, "fields": {"name": "Acme Corp", "industry": "manufacturing", "employees": 340,  "founded": "1998-04-12T00:00:00+00:00"}},
+      {"tenantId": {$tenantId}, "modelId": {$modelId}, "fields": {"name": "Globex",    "industry": "energy",        "employees": 85,   "founded": "2011-09-01T00:00:00+00:00"}},
+      {"tenantId": {$tenantId}, "modelId": {$modelId}, "fields": {"name": "Initech",   "industry": "software",      "employees": 510,  "founded": "2003-01-20T00:00:00+00:00"}},
+      {"tenantId": {$tenantId}, "modelId": {$modelId}, "fields": {"name": "Umbrella",  "industry": "pharma",        "employees": 1200, "founded": "1990-06-30T00:00:00+00:00"}},
+      {"tenantId": {$tenantId}, "modelId": {$modelId}, "fields": {"name": "Hooli",     "industry": "software",      "employees": 240,  "founded": "2009-11-11T00:00:00+00:00"}}
+    ]
+    JSON;
+
+    foreach (EntryPayload::listFromJson($companies) as $payload) {
+        $engine->write($payload);
     }
 }
 
-// 4) The payoff: an indexed filter over user-defined fields — a pure-AND
-//    tree compiles to an INNER JOIN range scan on the composite indexes.
+// 4) The payoff: an indexed filter over user-defined fields. The filter
+//    arrives as a JSON wire payload — exactly what an HTTP gateway would
+//    receive — and decodes into the same AST the typed builder produces.
+//    A pure-AND tree compiles to an INNER JOIN range scan on the
+//    composite indexes.
+//
+//    Typed equivalent:
+//      new AndNode([
+//          LeafNode::local('industry', 'eq', 'software'),
+//          LeafNode::local('employees', 'gt', 100),
+//      ])
+$filter = (new JsonFilterDecoder($engine->config()->queryFilterLimits))->decode(<<<JSON
+    {
+      "filter": {
+        "op": "and",
+        "args": [
+          {"op": "eq", "field": {"model": "company", "name": "industry"},  "value": "software"},
+          {"op": "gt", "field": {"model": "company", "name": "employees"}, "value": 100}
+        ]
+      }
+    }
+    JSON);
+
 $page = $engine->read(new EntryQuery(
     tenantId:     $tenantId,
     modelId:      $modelId,
-    filter:       new AndNode([
-        LeafNode::local('industry', 'eq', 'software'),
-        LeafNode::local('employees', 'gt', 100),
-    ]),
+    filter:       $filter,
     selectFields: ['name', 'industry', 'employees'],
     pageSize:     10,
 ));

@@ -105,7 +105,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
         ┌──────────── MySQL — sole coordination point ──────────────┐
         │   entry_data · entry_slots_page_N · stardust_* registry   │
         └───────────────────────────────────────────────────────────┘
-            ▲              ▲              ▲                ▲
+             ▲             ▲              ▲                ▲
    provisions│     drains  │    reclaims  │      streams   │
    capacity  │     queues  │    freed     │      exports   │
              │             │    slots     │                │
@@ -266,30 +266,61 @@ $reserver->reserve($company->fieldId('employees'));
 
 ### 4 — Write entries
 
+The same entry can be built two ways — pick whichever fits the caller. A
+JSON/array envelope (`{tenantId, modelId, fields}`, camelCase) is handy when
+entries arrive off a wire (CMS, HTTP body, queue); the typed constructor gives
+you IDE validation. Both flow through the **identical** write path: field values
+coerce the same way (same `UncoercibleSlotValueException`), and `tenant_id` is
+validated (`>= 1`) at the boundary regardless of how the payload was built.
+
 ```php
 use StarDust\Write\EntryPayload;
 
+// Typed — IDE-validated:
 $engine->write(new EntryPayload(tenantId: 1, modelId: $modelId,
-    fields: ['name' => 'Acme Corp',   'employees' => 340]));
+    fields: ['name' => 'Acme Corp', 'employees' => 340]));
 
-$engine->write(new EntryPayload(tenantId: 1, modelId: $modelId,
-    fields: ['name' => 'Globex',      'employees' => 85]));
+// From a PHP array — e.g. you already decoded a request body:
+$engine->write(EntryPayload::fromArray([
+    'tenantId' => 1,
+    'modelId'  => $modelId,
+    'fields'   => ['name' => 'Globex', 'employees' => 85],
+]));
 
-$engine->write(new EntryPayload(tenantId: 1, modelId: $modelId,
-    fields: ['name' => 'Initech',     'employees' => 510]));
+// From a raw JSON string — feed an HTTP request body straight in:
+$body = '{"tenantId": 1, "modelId": ' . $modelId . ',
+          "fields": {"name": "Initech", "employees": 510}}';
+$engine->write(EntryPayload::fromJson($body));
+
+// Bulk: a JSON array of envelopes straight into bulkWrite():
+//   $engine->bulkWrite(EntryPayload::listFromJson($jsonArrayBody));
 ```
 
 ### 5 — Filter and paginate
 
 ```php
 use StarDust\Filter\Ast\LeafNode;
+use StarDust\Filter\Json\JsonFilterDecoder;
 use StarDust\Read\EntryQuery;
+
+// Build the filter — two equivalent ways (the JSON form is used below):
+//
+//  (a) Typed — IDE-validated:
+//      $filter = LeafNode::local('employees', 'gt', 100);
+//
+//  (b) From a JSON wire payload — e.g. decoded straight from an HTTP
+//      request. Returns the same FilterNode the typed form produces;
+//      rejections carry a closed error code + RFC 6901 pointer.
+$filter = (new JsonFilterDecoder($engine->config()->queryFilterLimits))->decode(
+    '{"filter": {"op": "gt",
+        "field": {"model": "company", "name": "employees"}, "value": 100}}'
+);
 
 // Fetch companies with more than 100 employees, 2 per page.
 $page = $engine->read(new EntryQuery(
     tenantId:     1,
     modelId:      $modelId,
-    filter:       LeafNode::local('employees', 'gt', 100),
+    filter:       $filter,
     selectFields: ['name', 'employees'],
     pageSize:     2,
 ));
@@ -433,7 +464,30 @@ $jobId = $engine->submitBulkWrite(
     payloads:        $largeBatch,
     idempotencyKey:  'monthly-import-2026-05',
 );
+
+// Build payloads from JSON / arrays instead of the typed constructor —
+// handy when entries arrive off a wire (CMS, HTTP, queue). The envelope
+// is {tenantId, modelId, fields} (camelCase). These are *convergent*
+// factories: they validate envelope shape and return an ordinary
+// EntryPayload, so the value flows through the identical write path.
+$engine->write(EntryPayload::fromArray([
+    'tenantId' => 42, 'modelId' => $modelId,
+    'fields'   => ['name' => 'Acme', 'employees' => 120],
+]));
+$engine->write(EntryPayload::fromJson($rawJsonObjectBody));
+
+// Bulk: a JSON array (or PHP list) of envelopes:
+$engine->bulkWrite(EntryPayload::listFromJson($rawJsonArrayBody));
+$engine->submitBulkWrite(tenantId: 42,
+    payloads: EntryPayload::listFromArray($decodedEnvelopes));
 ```
+
+Envelope-shape errors raise `MalformedEntryPayloadException` (carrying the
+offending `$key`, e.g. `'tenantId'` or `'[3].modelId'`). The `tenant_id >= 1`
+rule and per-field type coercion stay on the write path — identical to the typed
+constructor — so a factory-built payload behaves exactly like `new EntryPayload(...)`.
+Pair this with [Searching with the JSON wire format](#searching-with-the-json-wire-format)
+for an end-to-end JSON loop: JSON in, JSON-filtered out.
 
 `tenant_id` is validated at every entry point (must be `>= 1`) before any SQL executes. All write-path operations emit structured NDJSON log events — `entry_written`, `exhaustion_fallback`, `bulk_chunk_committed`, `bulk_chunk_rolled_back`, `bulk_accepted`, `payload_too_large`.
 
@@ -652,6 +706,7 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `InvalidTenantIdException` | `tenantId` is `<= 0` (checked before any SQL at every entry point). |
 | `PayloadTooLargeException` | A synchronous `bulkWrite()` exceeds 1 000 entities — use `submitBulkWrite()` instead. |
 | `UncoercibleSlotValueException` | A first-write payload value cannot be coerced to its slot's declared type (the write path is fail-fast). |
+| `MalformedEntryPayloadException` | An array/JSON entry envelope passed to `EntryPayload::fromArray()` / `fromJson()` / `listFrom*()` is structurally invalid — missing or mistyped `tenantId`/`modelId`/`fields`, a non-map `fields`, unparseable JSON, or a wrong root. Carries the offending `$key`. |
 | `UnknownFieldException` | A filter references a field absent from `stardust_fields`. |
 | `FieldNotFilterableException` | A filter targets a field the active driver reports as non-filterable (for the default MySQL driver, `is_filterable = false`). |
 | `FieldNotIndexedException` | A filter targets a field whose slot is `backfilling`, `tombstoned`, or unmapped. |
