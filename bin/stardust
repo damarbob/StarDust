@@ -38,8 +38,20 @@ if (! $autoloadLoaded) {
 $argv    = $_SERVER['argv'] ?? [];
 $command = $argv[1] ?? '--help';
 
-/** Builds a PDO from the standard env vars, exiting non-zero on misconfiguration. */
-$buildPdo = static function (): PDO {
+/** Standard PDO driver options — shared by the primary connection and the reconnect factory. */
+$pdoOptions = [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_EMULATE_PREPARES   => false,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+];
+
+/**
+ * Reads and validates the standard DB env vars, exiting non-zero on
+ * misconfiguration.
+ *
+ * @return array{string, string, string} [dsn, user, pass]
+ */
+$readDbEnv = static function (): array {
     $dsn  = getenv('STARDUST_DSN') ?: '';
     $user = getenv('STARDUST_USER') ?: '';
     $pass = getenv('STARDUST_PASS');
@@ -54,11 +66,22 @@ $buildPdo = static function (): PDO {
         exit(2);
     }
 
-    return new PDO($dsn, $user, $pass, [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_EMULATE_PREPARES   => false,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
+    return [$dsn, $user, $pass];
+};
+
+/** Builds a PDO from the standard env vars, exiting non-zero on misconfiguration. */
+$buildPdo = static function () use ($readDbEnv, $pdoOptions): PDO {
+    [$dsn, $user, $pass] = $readDbEnv();
+    return new PDO($dsn, $user, $pass, $pdoOptions);
+};
+
+/**
+ * Builds a reconnect factory from the same env vars so the Chronicler
+ * can re-establish a dropped connection mid-export (ADR 0025).
+ */
+$buildConnector = static function () use ($readDbEnv, $pdoOptions): \StarDust\Chronicler\DsnPdoConnector {
+    [$dsn, $user, $pass] = $readDbEnv();
+    return new \StarDust\Chronicler\DsnPdoConnector($dsn, $user, $pass, $pdoOptions);
 };
 
 /** Parses `--key=value` style args into a map. */
@@ -201,7 +224,12 @@ switch ($command) {
     case 'chronicler':
         try {
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            // Wire the reconnect factory so a transient DB disconnect
+            // mid-export is recovered in-process (ADR 0025).
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(
+                pdo: $pdo,
+                pdoConnector: $buildConnector(),
+            ));
             // Chronicler is multi-worker safe (SELECT … FOR UPDATE
             // SKIP LOCKED on stardust_export_jobs) — no PID guard.
             // The poll interval is the idle interval; per-job work

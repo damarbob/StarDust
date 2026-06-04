@@ -467,6 +467,7 @@ final class StarDust
             skipCountCap: $this->config->chroniclerSkipCountCap,
             artifactSizeCapBytes: $this->config->chroniclerArtifactSizeCapBytes,
             dbDisconnectBackoffSeconds: $this->config->chroniclerDbDisconnectBackoffSeconds,
+            connector: $this->config->pdoConnector,
         );
 
         return new Chronicler(

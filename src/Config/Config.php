@@ -7,6 +7,7 @@ namespace StarDust\Config;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Chronicler\PdoConnector;
 use StarDust\Clock\SystemClock;
 use StarDust\Filter\Limits\FilterLimits;
 use StarDust\Logging\StdoutNdjsonLogger;
@@ -56,6 +57,7 @@ final class Config
     public readonly array $chroniclerDbDisconnectBackoffSeconds;
     public readonly ?EntrySearchInterface $searchDriver;
     public readonly FilterLimits $queryFilterLimits;
+    public readonly ?PdoConnector $pdoConnector;
 
     /**
      * @param list<int>|null $chroniclerDbDisconnectBackoffSeconds
@@ -95,6 +97,7 @@ final class Config
         ?array $chroniclerDbDisconnectBackoffSeconds = null,
         ?EntrySearchInterface $searchDriver = null,
         ?FilterLimits $queryFilterLimits = null,
+        ?PdoConnector $pdoConnector = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -160,5 +163,13 @@ final class Config
         // looser bounds.
         $this->searchDriver       = $searchDriver;
         $this->queryFilterLimits  = $queryFilterLimits ?? FilterLimits::defaults();
+
+        // Optional construction-time reconnect seam (ADR 0025
+        // Commitment 6). `null` leaves the Chronicler unable to recover
+        // a dropped connection mid-export — it degrades to the terminal
+        // `failed:query_failure` with `last_cursor` preserved.
+        // `bin/stardust chronicler` injects a DsnPdoConnector built from
+        // the same env vars as $pdo.
+        $this->pdoConnector       = $pdoConnector;
     }
 }

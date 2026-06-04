@@ -393,7 +393,7 @@ Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\
 >
 > This is a stopgap, not the first-class definition API. Registering a field isn't enough to filter on it — its value has to reach an indexed slot column. The Watcher daemon provisions that capacity in a running deployment; for one-off setup, call `PageProvisioner` + `SlotReserver` (see the [Complete example](#complete-example)). Until a field has a reserved indexed slot it's still stored and point-readable from the JSON payload — just not on the indexed filter path.
 
-Phases 5, 6a, and 7 add twenty-eight optional `Config` parameters for daemon tuning:
+Phases 5, 6a, and 7 add twenty-nine optional `Config` parameters for daemon tuning:
 
 ```php
 $engine = new StarDust(new Config(
@@ -426,6 +426,7 @@ $engine = new StarDust(new Config(
     chroniclerLowDiskThresholdPct:       0.10,      // pre-claim disk gate (0..1)
     chroniclerPerTenantActiveCap:        3,         // submission cap on pending+processing
     chroniclerDbDisconnectBackoffSeconds:[1, 4, 16],// fixed backoff schedule
+    pdoConnector:                        null,      // reconnect factory for mid-export DB drops (CLI wires one automatically)
 ));
 ```
 

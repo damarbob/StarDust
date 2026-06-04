@@ -46,15 +46,24 @@ final class ExportJobProcessor
     private $sleepFn;
 
     /**
+     * `$pdo` and `$pager` are deliberately NOT readonly: a mid-pagination
+     * reconnect ({@see self::reconnectWithBackoff()}) swaps both for a
+     * fresh connection per ADR 0025 Commitment 6. Every other dependency
+     * is immutable.
+     *
      * @param list<int> $dbDisconnectBackoffSeconds  ADR 0025-fixed [1, 4, 16];
      *                                                injectable for tests.
      * @param callable(int):void|null $sleepFn       Injected for tests; defaults to `usleep`.
+     * @param PdoConnector|null $connector           Reconnect seam; when null the
+     *                                                processor cannot recover a dropped
+     *                                                connection and degrades to
+     *                                                `failed:query_failure`.
      */
     public function __construct(
-        private readonly PDO $pdo,
+        private PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
-        private readonly EntryDataPager $pager,
+        private EntryDataPager $pager,
         private readonly HeaderResolver $headerResolver,
         private readonly ArtifactStreamFactory $streamFactory,
         private readonly int $pageSize,
@@ -64,6 +73,7 @@ final class ExportJobProcessor
         private readonly int $artifactSizeCapBytes,
         private readonly array $dbDisconnectBackoffSeconds,
         ?callable $sleepFn = null,
+        private readonly ?PdoConnector $connector = null,
     ) {
         $this->sleepFn = $sleepFn ?? static fn (int $micros) => usleep($micros);
     }
@@ -443,23 +453,35 @@ final class ExportJobProcessor
     }
 
     /**
-     * Try to reconnect to MySQL with the configured backoff schedule.
-     * Returns true if the connection responds to a trivial ping query
-     * after one of the sleeps; false if the schedule is exhausted.
+     * Re-establish the database connection with the configured backoff
+     * schedule (ADR 0025 Commitment 6). PHP's PDO never auto-reconnects
+     * a dead handle, so recovery means building a *fresh* connection via
+     * the injected {@see PdoConnector} and re-pointing BOTH `$this->pdo`
+     * (used by the chunk-commit / mark-failed transactions) and
+     * `$this->pager` (used by the next bounded probe). A successful
+     * `connect()` is itself the liveness check — it throws on failure.
+     *
+     * Returns true once a fresh connection is in place; false when no
+     * connector is wired (cannot reconnect) or the schedule is
+     * exhausted — both fall through to the unchanged `failQueryFailure()`
+     * terminal with `last_cursor` preserved.
      */
     private function reconnectWithBackoff(ClaimedJob $job, string $correlationId): bool
     {
+        if ($this->connector === null) {
+            return false;
+        }
         foreach ($this->dbDisconnectBackoffSeconds as $delay) {
-            sleep((int) $delay);
+            // Backoff is in whole seconds; $sleepFn is usleep-shaped.
+            ($this->sleepFn)((int) $delay * 1_000_000);
             try {
-                $stmt = $this->pdo->query('SELECT 1');
-                if ($stmt !== false) {
-                    $stmt->fetchColumn();
-                    return true;
-                }
+                $fresh = $this->connector->connect();
             } catch (PDOException) {
-                // continue to next delay
+                continue; // still down — next delay
             }
+            $this->pdo = $fresh;
+            $this->pager = new EntryDataPager($fresh);
+            return true;
         }
         return false;
     }
