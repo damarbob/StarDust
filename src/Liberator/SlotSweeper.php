@@ -40,12 +40,15 @@ use Throwable;
  *     chunk size, increment `sweep_gap_count`, emit
  *     `sweep_gap_flagged`, continue.
  *
- * Note on the UPDATE WHERE clause: AC#3 specifies `(page, slot_column)
- * for id > sweep_cursor_id` with no tenant predicate; the blueprint
- * mermaid sketch shows `WHERE tenant_id = ?` but the registry row
- * carries no tenant once tombstoned and a slot column on a page is
- * owned by exactly one model by `ux_slot_assignments_page_column`. AC#3
- * is the resolution.
+ * Note on the UPDATE WHERE clause: the sweep is keyed on
+ * `(page, slot_column) for id > sweep_cursor_id` with no tenant
+ * predicate. The registry row carries no tenant once tombstoned
+ * (`field_id = NULL`), and a slot column on a page is owned by exactly
+ * one model via `ux_slot_assignments_page_column UNIQUE (page_id,
+ * slot_column)`, so only one tenant ever held data in it and the
+ * predicate is redundant. This was ratified in ADR 0029 (which refines
+ * ADR 0009 on this point); liberator_daemon.md AC#3 is the normative
+ * sweep shape.
  *
  * SRP: this class only sweeps one slot; batch iteration and
  * `sweep_started` emission live on {@see Liberator}.
