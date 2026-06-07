@@ -1,12 +1,6 @@
 parameters:
 	ignoreErrors:
 		-
-			message: '#^Call to function is_array\(\) with list will always evaluate to true\.$#'
-			identifier: function.alreadyNarrowedType
-			count: 1
-			path: src/Chronicler/GcSweeper.php
-
-		-
 			message: '#^Method StarDust\\Filter\\Json\\JsonFilterDecoder\:\:isAssocArray\(\) has parameter \$value with no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
 			count: 1

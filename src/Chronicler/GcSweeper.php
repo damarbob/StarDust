@@ -81,7 +81,7 @@ final class GcSweeper
     }
 
     /**
-     * @return list<array{id: int|string, artifact_path: string}>
+     * @return array<int, array{id: int|string, artifact_path: string}>
      */
     private function loadCandidates(string $whereSql): array
     {
@@ -92,8 +92,7 @@ final class GcSweeper
         if ($stmt === false) {
             return [];
         }
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        return is_array($rows) ? $rows : [];
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
