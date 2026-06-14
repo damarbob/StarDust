@@ -41,12 +41,29 @@ final class PageProvisioner
     public const SLOTS_PER_PAGE = 60;
 
     /**
+     * String slots are `TEXT` so they can hold the full normative QueryFilter
+     * string bound (4096 chars, `FilterLimits::DEFAULT_MAX_STRING_LENGTH`).
+     * `VARCHAR(4096)` cannot: 25 string slots × 4096 × 4 bytes (utf8mb4)
+     * blows MySQL's 65,535-byte row-definition limit (errno 1118), which
+     * counts every VARCHAR in full — TEXT counts only its ~12-byte pointer.
+     *
+     * The filterable composite `(tenant_id, slot_column)` index covers a
+     * 766-char prefix: 766 utf8mb4 chars × 4 bytes + an 8-byte BIGINT
+     * tenant_id = 3072 bytes, exactly the InnoDB key-size limit under
+     * ROW_FORMAT=DYNAMIC (COMPACT/REDUNDANT cap keys at 767 bytes, errno
+     * 1071 — hence the page DDL pins DYNAMIC explicitly). MySQL rechecks
+     * the full column value behind every prefix-index access, so all 12
+     * filter operators stay exact (ADR 0030).
+     */
+    public const STRING_INDEX_PREFIX = 766; // 766*4 + 8-byte tenant_id = 3072 = InnoDB DYNAMIC key limit
+
+    /**
      * Per slot-type family: count of slot columns and the MySQL column type
      * used in the page DDL. Slot family code matches the
      * `stardust_slot_assignments.slot_type` ENUM.
      */
     private const SLOT_TYPE_DEFINITIONS = [
-        'str' => ['count' => self::STRING_SLOTS,   'mysql_type' => 'VARCHAR(255)'],
+        'str' => ['count' => self::STRING_SLOTS,   'mysql_type' => 'TEXT'],
         'int' => ['count' => self::INT_SLOTS,      'mysql_type' => 'BIGINT'],
         'num' => ['count' => self::NUMERIC_SLOTS,  'mysql_type' => 'DOUBLE'],
         'dt'  => ['count' => self::DATETIME_SLOTS, 'mysql_type' => 'DATETIME'],
@@ -180,14 +197,18 @@ final class PageProvisioner
         $lines[] = sprintf('    KEY ix_%s_tenant (tenant_id),', $tableName);
 
         foreach ($filterableSlots as $slot) {
-            $lines[] = sprintf('    KEY ix_%s_%s (tenant_id, %s),', $tableName, $slot, $slot);
+            $lines[] = sprintf('    KEY ix_%s_%s (tenant_id, %s),', $tableName, $slot, self::indexedColumnExpr($slot));
         }
 
         $lines[] = sprintf(
             '    CONSTRAINT fk_%s_entry FOREIGN KEY (entry_id) REFERENCES entry_data (id) ON DELETE CASCADE',
             $tableName
         );
-        $lines[] = ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci';
+        // ROW_FORMAT=DYNAMIC is load-bearing: the 766-char string-slot index
+        // prefix needs the 3072-byte key limit; COMPACT/REDUNDANT cap at 767
+        // bytes and would fail CREATE TABLE with errno 1071 on servers whose
+        // innodb_default_row_format is not dynamic.
+        $lines[] = ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC';
 
         return implode("\n", $lines);
     }
@@ -226,5 +247,20 @@ final class PageProvisioner
     {
         $parts = explode('_', $col);
         return self::SLOT_TYPE_DEFINITIONS[$parts[1]]['mysql_type'];
+    }
+
+    /**
+     * Index-column expression for a filterable slot's composite key.
+     *
+     * String slots are `TEXT`, which MySQL refuses to index without an
+     * explicit prefix length; the composite `(tenant_id, slot)` key caps
+     * that prefix at `STRING_INDEX_PREFIX` utf8mb4 chars (ADR 0030).
+     * Fixed-width families (int/num/dt) are indexed in full.
+     */
+    private static function indexedColumnExpr(string $col): string
+    {
+        return explode('_', $col)[1] === 'str'
+            ? sprintf('%s(%d)', $col, self::STRING_INDEX_PREFIX)
+            : $col;
     }
 }
