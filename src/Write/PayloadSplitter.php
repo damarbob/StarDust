@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeInterface;
 use DateTimeZone;
 use StarDust\Exception\UncoercibleSlotValueException;
+use StarDust\Filter\Limits\FilterLimits;
 
 /**
  * Pure value-mapping from `EntryPayload::$fields` to a per-page write
@@ -99,17 +100,34 @@ final class PayloadSplitter
     private static function coerceString(mixed $value, string $fieldName): string
     {
         if (is_string($value)) {
-            return $value;
+            $str = $value;
+        } elseif (is_int($value) || is_float($value) || is_bool($value)) {
+            $str = (string) $value;
+        } elseif ($value instanceof \Stringable) {
+            $str = (string) $value;
+        } else {
+            throw new UncoercibleSlotValueException(
+                "Field '{$fieldName}': cannot coerce " . get_debug_type($value) . ' to string.'
+            );
         }
-        if (is_int($value) || is_float($value) || is_bool($value)) {
-            return (string) $value;
+
+        // A filterable string slot is `TEXT` sized for the normative 4096-char
+        // QueryFilter bound (ADR 0030); past that, the slot UPSERT would raise a
+        // raw MySQL 1406. Guard here — before any SQL — so the failure is a typed
+        // StarDust exception, and so the write contract matches the filter bound
+        // the slot is queried by (mb_strlen, FilterLimits::DEFAULT_MAX_STRING_LENGTH,
+        // exactly as JsonFilterDecoder and ValueTypeValidator measure it).
+        $length = mb_strlen($str);
+        if ($length > FilterLimits::DEFAULT_MAX_STRING_LENGTH) {
+            throw new UncoercibleSlotValueException(sprintf(
+                "Field '%s': string value of length %d exceeds the maximum filterable string length of %d characters.",
+                $fieldName,
+                $length,
+                FilterLimits::DEFAULT_MAX_STRING_LENGTH
+            ));
         }
-        if ($value instanceof \Stringable) {
-            return (string) $value;
-        }
-        throw new UncoercibleSlotValueException(
-            "Field '{$fieldName}': cannot coerce " . get_debug_type($value) . ' to string.'
-        );
+
+        return $str;
     }
 
     private static function coerceInt(mixed $value, string $fieldName): int

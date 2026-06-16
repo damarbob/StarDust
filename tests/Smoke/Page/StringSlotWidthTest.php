@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace StarDust\Tests\Smoke\Page;
 
+use StarDust\Exception\UncoercibleSlotValueException;
 use StarDust\Filter\Ast\LeafNode;
 use StarDust\Read\EntryQuery;
 use StarDust\Tests\Smoke\ReadPathTestCase;
@@ -105,5 +106,29 @@ final class StringSlotWidthTest extends ReadPathTestCase
 
         self::assertNotNull($entry);
         self::assertSame($value, $entry->fields[$fieldName]);
+    }
+
+    public function testStringExceedingMaxLengthThrowsTypedExceptionAndPersistsNothing(): void
+    {
+        [$modelId, , , $fieldName] = $this->setupFilterableStringField();
+
+        // One past FilterLimits::DEFAULT_MAX_STRING_LENGTH (4096) — fits TEXT
+        // storage but exceeds the filter bound the slot is queried by. The
+        // write must fail with a typed StarDust exception, never a raw 1406.
+        $tooLong = str_repeat('a', 4097);
+
+        try {
+            $this->seedEntry(1, $modelId, [$fieldName => $tooLong]);
+            self::fail('Expected UncoercibleSlotValueException for a 4097-char string.');
+        } catch (UncoercibleSlotValueException $e) {
+            self::assertStringContainsString('4097', $e->getMessage());
+        }
+
+        // Coercion runs before the entry_data INSERT, so a rejected over-length
+        // write is fail-fast — nothing is persisted.
+        $count = (int) $this->pdo
+            ->query('SELECT COUNT(*) FROM entry_data WHERE model_id = ' . $modelId)
+            ->fetchColumn();
+        self::assertSame(0, $count, 'A rejected over-length write must leave no entry_data row.');
     }
 }
