@@ -379,6 +379,7 @@ final class StarDust
             artifactDir: $this->config->artifactDir,
             chunkSize: $this->config->reconcilerChunkSize,
             interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
+            leaseTimeoutSeconds: $this->config->reconcilerImportLeaseTimeoutSeconds,
         );
 
         $retypeBackfill = new RetypeBackfillWorkSource(

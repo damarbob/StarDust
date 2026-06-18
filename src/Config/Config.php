@@ -58,6 +58,7 @@ final class Config
     public readonly ?EntrySearchInterface $searchDriver;
     public readonly FilterLimits $queryFilterLimits;
     public readonly ?PdoConnector $pdoConnector;
+    public readonly int $reconcilerImportLeaseTimeoutSeconds;
 
     /**
      * @param list<int>|null $chroniclerDbDisconnectBackoffSeconds
@@ -98,6 +99,7 @@ final class Config
         ?EntrySearchInterface $searchDriver = null,
         ?FilterLimits $queryFilterLimits = null,
         ?PdoConnector $pdoConnector = null,
+        ?int $reconcilerImportLeaseTimeoutSeconds = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -171,5 +173,12 @@ final class Config
         // `bin/stardust chronicler` injects a DsnPdoConnector built from
         // the same env vars as $pdo.
         $this->pdoConnector       = $pdoConnector;
+
+        // Import-job abandoned-claim recovery (Gap 5). The Reconciler
+        // re-claims a `processing` import job whose `heartbeat_at` lapsed
+        // past this timeout and resumes from the manifest checkpoint.
+        // Default 30 s mirrors $chroniclerLeaseTimeoutSeconds; injectable
+        // so tests can shorten the lease through the same code path.
+        $this->reconcilerImportLeaseTimeoutSeconds = $reconcilerImportLeaseTimeoutSeconds ?? 30;
     }
 }

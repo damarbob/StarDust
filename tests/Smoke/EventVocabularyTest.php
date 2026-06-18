@@ -35,6 +35,7 @@ final class EventVocabularyTest extends TestCase
         'cache_miss',
         'capacity_wait',
         'coercion_null',
+        'lease_lost',
     ];
 
     private const LIBERATOR_EVENTS = [

@@ -19,21 +19,33 @@ use Throwable;
  * Claims one `stardust_import_jobs` row at a time and applies the
  * batched-write contract of ADR 0011 + ADR 0028.
  *
- * Claim protocol:
- *   - `UPDATE … SET status='processing', worker_identity=?, claimed_at=NOW(),
- *     heartbeat_at=NOW() WHERE status='pending' ORDER BY id LIMIT 1`.
- *     `worker_identity` is `host:pid:uuid` so a stale lease can be
- *     detected and re-claimed in a later phase.
- *   - `SELECT … WHERE worker_identity = ?` retrieves the row this
- *     worker won. Other workers see no claim and move on.
+ * Claim protocol (dual-path, mirroring {@see \StarDust\Chronicler\ExportJobClaimer}):
+ *   - Pending path: `UPDATE … SET status='processing', worker_identity=?,
+ *     claimed_at=NOW(), heartbeat_at=NOW() WHERE status='pending'
+ *     ORDER BY id LIMIT 1`, then `SELECT … WHERE worker_identity = ?`
+ *     retrieves the row this worker won.
+ *   - Abandoned path (only when no pending row exists): re-claims a
+ *     `processing` job whose `heartbeat_at` has lapsed past the lease
+ *     timeout via `SELECT … FOR UPDATE SKIP LOCKED` + `UPDATE … SET
+ *     worker_identity=?, heartbeat_at=?` — `claimed_at` is PRESERVED so
+ *     operators see the original claim time. `worker_identity` is
+ *     `host:pid:uuid` so the prior worker self-aborts on the mismatch.
  *
  * Read & process:
  *   - Reads `artifact_path` via `file_get_contents()` and decodes the
  *     single-document JSON per ADR 0028 (`tenant_id` + `entries[]`).
+ *   - Resumes from the `manifest` checkpoint: `entries_written` is the
+ *     count of already-committed entries, so a re-claimed abandoned job
+ *     restarts at `offset = manifest.entries_written` and never
+ *     re-processes a committed chunk (no duplicate `entry_data` rows).
  *   - Iterates entries in `chunkSize` windows; each window opens its
  *     own transaction, calls
- *     {@see EntryWriter::writeWithinTransaction()} for every entry,
- *     and refreshes `heartbeat_at` inside the same transaction.
+ *     {@see EntryWriter::writeWithinTransaction()} for every entry, and
+ *     writes the running `manifest` + `heartbeat_at` inside the same
+ *     transaction. That UPDATE carries `WHERE … AND worker_identity = self`:
+ *     a `rowCount() === 0` means a re-claimer overwrote our identity, so
+ *     the worker rolls back the chunk, emits `lease_lost`, and stops
+ *     WITHOUT marking the row failed — the re-claimer owns terminal state.
  *
  * Completion:
  *   - On success: `status='completed'`, `manifest` populated with
@@ -42,8 +54,8 @@ use Throwable;
  *     `failed_reason='malformed_json'`, DLQ row inserted.
  *   - On per-entry failure: the whole chunk rolls back; the job moves
  *     to `failed` with `failed_reason='entry_write_failed'` and a DLQ
- *     row is inserted. Partial completion is not supported in Phase 5
- *     — the manifest reports the boundary so an operator can replay.
+ *     row is inserted. Partial completion is not supported — the
+ *     manifest reports the boundary so an operator can replay.
  */
 final class ImportJobWorkSource implements ReconcilerWorkSource
 {
@@ -59,6 +71,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         private readonly string $artifactDir,
         private readonly int $chunkSize,
         private readonly int $interChunkDelayMicros = 0,
+        private readonly int $leaseTimeoutSeconds = 30,
         private $sleepFn = null,
     ) {
         $this->sleepFn = $sleepFn ?? static fn (int $micros) => usleep($micros);
@@ -67,10 +80,11 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     public function tickOne(string $chunkCorrelationId): TickOutcome
     {
         $workerIdentity = $this->workerIdentity();
-        $jobId = $this->claim($workerIdentity);
-        if ($jobId === null) {
+        $claim = $this->claim($workerIdentity);
+        if ($claim === null) {
             return TickOutcome::IDLE;
         }
+        [$jobId, $claimKind] = $claim;
 
         $job = $this->loadJob($jobId);
         if ($job === null) {
@@ -79,6 +93,13 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             return TickOutcome::IDLE;
         }
 
+        // Resume from the manifest checkpoint. A pending claim has a NULL
+        // manifest (offset 0); an abandoned re-claim resumes from the
+        // committed boundary so no chunk is processed twice.
+        $checkpoint = $this->decodeManifest($job['manifest'] ?? null);
+        $resumeOffset = $checkpoint['entries_written'];
+        $priorChunks = $checkpoint['chunks'];
+
         $this->logger->info('import_job chunk claimed', [
             'event'          => 'chunk_claimed',
             'source'         => 'reconciler',
@@ -86,6 +107,8 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             'queue'          => 'import_jobs',
             'job_id'         => (int) $job['id'],
             'tenant_id'      => (int) $job['tenant_id'],
+            'claim_kind'     => $claimKind,
+            'resume_offset'  => $resumeOffset,
         ]);
 
         try {
@@ -106,9 +129,14 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             tenantId: (int) $job['tenant_id'],
             payload: $payload,
             chunkCorrelationId: $chunkCorrelationId,
+            workerIdentity: $workerIdentity,
+            resumeOffset: $resumeOffset,
+            priorChunks: $priorChunks,
         );
 
         if ($manifest === null) {
+            // Job was failed, or the lease was lost mid-chunk and the
+            // re-claimer owns terminal state. Either way, don't complete.
             return TickOutcome::WORK_DONE;
         }
 
@@ -127,7 +155,26 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         return $host . ':' . getmypid() . ':' . UuidV4::generate();
     }
 
-    private function claim(string $workerIdentity): ?int
+    /**
+     * Claims one job — a fresh `pending` row, or (failing that) an
+     * abandoned `processing` row whose lease lapsed.
+     *
+     * @return array{0: int, 1: 'pending'|'abandoned'}|null
+     */
+    private function claim(string $workerIdentity): ?array
+    {
+        $pending = $this->claimPending($workerIdentity);
+        if ($pending !== null) {
+            return [$pending, 'pending'];
+        }
+        $abandoned = $this->claimAbandoned($workerIdentity);
+        if ($abandoned !== null) {
+            return [$abandoned, 'abandoned'];
+        }
+        return null;
+    }
+
+    private function claimPending(string $workerIdentity): ?int
     {
         $now = $this->utcNow();
 
@@ -154,16 +201,86 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     }
 
     /**
-     * @return array{id: int|string, tenant_id: int|string, artifact_path: string}|null
+     * Re-claims one abandoned `processing` job whose `heartbeat_at`
+     * lapsed past the lease timeout. `claimed_at` is preserved; only
+     * `worker_identity` + `heartbeat_at` are overwritten, exactly as
+     * {@see \StarDust\Chronicler\ExportJobClaimer::claimAbandoned()}.
+     */
+    private function claimAbandoned(string $workerIdentity): ?int
+    {
+        $now = $this->utcNow();
+
+        $this->pdo->beginTransaction();
+        try {
+            // UTC_TIMESTAMP() (not NOW()) because heartbeat_at is stored
+            // in UTC; a session local-time comparison could falsely flag
+            // fresh leases as abandoned.
+            $select = $this->pdo->prepare(
+                'SELECT id FROM stardust_import_jobs'
+                . " WHERE status = 'processing'"
+                . '   AND heartbeat_at IS NOT NULL'
+                . '   AND heartbeat_at < (UTC_TIMESTAMP() - INTERVAL ' . $this->leaseTimeoutSeconds . ' SECOND)'
+                . ' ORDER BY heartbeat_at ASC'
+                . ' LIMIT 1 FOR UPDATE SKIP LOCKED'
+            );
+            $select->execute();
+            $id = $select->fetchColumn();
+            if ($id === false) {
+                $this->pdo->commit();
+                return null;
+            }
+
+            $jobId = (int) $id;
+            $update = $this->pdo->prepare(
+                'UPDATE stardust_import_jobs'
+                . ' SET worker_identity = ?, heartbeat_at = ?'
+                . ' WHERE id = ?'
+            );
+            $update->execute([$workerIdentity, $now, $jobId]);
+            $this->pdo->commit();
+
+            return $jobId;
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * @return array{id: int|string, tenant_id: int|string, artifact_path: string, manifest: string|null}|null
      */
     private function loadJob(int $jobId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, tenant_id, artifact_path FROM stardust_import_jobs WHERE id = ?'
+            'SELECT id, tenant_id, artifact_path, manifest FROM stardust_import_jobs WHERE id = ?'
         );
         $stmt->execute([$jobId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row === false ? null : $row;
+    }
+
+    /**
+     * Decodes the `{chunks, entries_written}` checkpoint manifest. A
+     * NULL or malformed manifest yields the zero checkpoint (start from
+     * the top).
+     *
+     * @return array{chunks: int, entries_written: int}
+     */
+    private function decodeManifest(mixed $raw): array
+    {
+        if (!is_string($raw) || $raw === '') {
+            return ['chunks' => 0, 'entries_written' => 0];
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return ['chunks' => 0, 'entries_written' => 0];
+        }
+        return [
+            'chunks'          => isset($decoded['chunks']) ? (int) $decoded['chunks'] : 0,
+            'entries_written' => isset($decoded['entries_written']) ? (int) $decoded['entries_written'] : 0,
+        ];
     }
 
     /**
@@ -209,20 +326,30 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
 
     /**
      * @param array{tenant_id: int, entries: list<array{tenant_id: int, model_id: int, fields: array<string, mixed>}>} $payload
-     * @return array{chunks: int, entries_written: int}|null `null` ⇒ job was failed; caller must NOT call completeJob
+     * @return array{chunks: int, entries_written: int}|null `null` ⇒ job was failed OR the lease was lost; caller must NOT call completeJob
      */
-    private function processEntries(int $jobId, int $tenantId, array $payload, string $chunkCorrelationId): ?array
-    {
+    private function processEntries(
+        int $jobId,
+        int $tenantId,
+        array $payload,
+        string $chunkCorrelationId,
+        string $workerIdentity,
+        int $resumeOffset,
+        int $priorChunks,
+    ): ?array {
         $entries = $payload['entries'];
         $totalEntries = count($entries);
-        $entriesWritten = 0;
-        $chunkCount = 0;
+        // Resume from the committed boundary. entries_written counts
+        // entries, not chunks, so this is exact even if chunkSize changed
+        // since the prior worker (entries are position-indexed).
+        $entriesWritten = $resumeOffset;
+        $chunkCount = $priorChunks;
 
-        for ($offset = 0; $offset < $totalEntries; $offset += $this->chunkSize) {
+        for ($offset = $resumeOffset; $offset < $totalEntries; $offset += $this->chunkSize) {
             // Apply inter-chunk delay BEFORE every chunk except the
             // first — matches BulkIngestor's "between chunks, never
             // before the first or after the last" semantics.
-            if ($offset > 0 && $this->interChunkDelayMicros > 0) {
+            if ($offset > $resumeOffset && $this->interChunkDelayMicros > 0) {
                 ($this->sleepFn)($this->interChunkDelayMicros);
             }
 
@@ -240,10 +367,40 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
                     $entriesWritten++;
                 }
 
-                $heartbeat = $this->pdo->prepare(
-                    'UPDATE stardust_import_jobs SET heartbeat_at = ? WHERE id = ?'
+                // Checkpoint the running manifest + heartbeat in the same
+                // transaction as the chunk's writes. The
+                // `worker_identity = self` predicate is the lease-loss
+                // detector: 0 rows matched ⇒ a re-claimer overwrote our
+                // identity. entries_written strictly increases, so a
+                // matched row is always *changed* — rowCount()===0 can
+                // only mean the identity no longer matches, never a
+                // no-op update.
+                $manifest = json_encode(
+                    ['chunks' => $chunkCount, 'entries_written' => $entriesWritten],
+                    JSON_THROW_ON_ERROR,
                 );
-                $heartbeat->execute([$this->utcNow(), $jobId]);
+                $checkpoint = $this->pdo->prepare(
+                    'UPDATE stardust_import_jobs'
+                    . ' SET heartbeat_at = ?, manifest = ?'
+                    . ' WHERE id = ? AND worker_identity = ?'
+                );
+                $checkpoint->execute([$this->utcNow(), $manifest, $jobId, $workerIdentity]);
+                if ($checkpoint->rowCount() === 0) {
+                    // Lease lost — roll back this chunk's writes so the
+                    // re-claimer's copy is authoritative, and stop WITHOUT
+                    // failing the row (the re-claimer owns terminal state,
+                    // per schema_reference §5.5 / ADR 0025).
+                    $this->pdo->rollBack();
+                    $this->logger->warning('import_job lease lost', [
+                        'event'          => 'lease_lost',
+                        'source'         => 'reconciler',
+                        'correlation_id' => $chunkCorrelationId,
+                        'queue'          => 'import_jobs',
+                        'job_id'         => $jobId,
+                        'tenant_id'      => $tenantId,
+                    ]);
+                    return null;
+                }
 
                 $this->pdo->commit();
             } catch (Throwable $e) {

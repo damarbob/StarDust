@@ -150,7 +150,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 - **Writes** — single-entry, synchronous chunked bulk (≤ 1 000 per call), and async submission for larger batches. Writes stay available even when slot capacity is exhausted: the value still lands in the JSON payload and is queued for backfill.
 - **Reads** — cursor-paginated, two-query bounded read; tenant-isolated SQL on every `WHERE` and `JOIN`; an in-process schema-version cache.
 - **Search** — a unified `search()` surface; JSON wire format decoded into a closed filter AST (twelve operators, full AND/OR/NOT); three-stage pre-flight validation; a swappable driver (MySQL-native default keeps pure-AND filters on indexed joins and switches to `EXISTS` subqueries for OR/NOT — inject your own to delegate to an external search service).
-- **Background daemons** (all runnable via `bin/stardust`): the **Watcher** keeps slot capacity provisioned, the **Reconciler** drains the sync queue / async imports / retype backfills (with a dead-letter queue and operator replay), the **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
+- **Background daemons** (all runnable via `bin/stardust`): the **Watcher** keeps slot capacity provisioned, the **Reconciler** drains the sync queue / async imports / retype backfills (with a dead-letter queue and operator replay, and auto-recovery of import jobs abandoned by a crashed worker — resumed from the last committed checkpoint), the **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
 - **Field lifecycle** — online field retype and filterability promotion through a type-coercion matrix, with JSON-payload fallback throughout the backfill window.
 
 **Not yet available:**
@@ -408,6 +408,7 @@ $engine = new StarDust(new Config(
     reconcilerChunkSize:                 500,       // SKIP LOCKED LIMIT N
     reconcilerInterChunkDelayMicros:     0,         // pace drain throughput (0 = no pacing)
     reconcilerCapacityWaitMillis:        5_000,     // sleep after a capacity_wait tick
+    reconcilerImportLeaseTimeoutSeconds: 30,        // import-job abandoned-claim sweep threshold
     pidFileDir:                          '/var/run/stardust',  // watcher.pid, liberator.pid + *.shutdown flag files
     liberatorIdleIntervalSeconds:        10,        // poll interval when nothing is tombstoned
     liberatorBatchSize:                  50,        // max tombstoned slots per Liberator tick

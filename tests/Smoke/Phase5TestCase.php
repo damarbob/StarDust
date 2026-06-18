@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Tests\Smoke;
 
 use DateTimeZone;
+use Psr\Clock\ClockInterface;
 use Psr\Log\NullLogger;
 use StarDust\Clock\SystemClock;
 use StarDust\Page\PageProvisioner;
@@ -92,6 +93,67 @@ abstract class Phase5TestCase extends ReadPathTestCase
         return [(int) $this->pdo->lastInsertId(), $path];
     }
 
+    /**
+     * Writes a JSON artifact on disk and inserts a `processing`
+     * stardust_import_jobs row with a controllable heartbeat age,
+     * manifest checkpoint, and worker_identity — the fixture for
+     * abandoned-claim / resume tests. Returns `[jobId, artifactPath]`.
+     *
+     * @param list<array{tenant_id: int, model_id: int, fields: array<string, mixed>}> $entries
+     * @param array{chunks: int, entries_written: int}|null $manifest
+     * @return array{0: int, 1: string}
+     */
+    protected function writeProcessingImportJob(
+        int $tenantId,
+        array $entries,
+        int $heartbeatAgoSeconds,
+        ?array $manifest = null,
+        string $workerIdentity = 'origin-host:1:00000000-0000-0000-0000-000000000000',
+        ?string $artifactDir = null,
+    ): array {
+        $artifactDir ??= sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'stardust';
+        if (!is_dir($artifactDir)) {
+            mkdir($artifactDir, 0777, true);
+        }
+
+        $filename = 'import_' . $tenantId . '_' . bin2hex(random_bytes(8)) . '.json';
+        $path = $artifactDir . DIRECTORY_SEPARATOR . $filename;
+
+        $payload = ['tenant_id' => $tenantId, 'entries' => $entries];
+        file_put_contents(
+            $path,
+            json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            LOCK_EX,
+        );
+
+        $clock = new SystemClock();
+        $nowDt = $clock->now()->setTimezone(new DateTimeZone('UTC'));
+        $heartbeat = $nowDt->modify("-{$heartbeatAgoSeconds} seconds")->format('Y-m-d H:i:s');
+        // claimed_at predates the heartbeat so its preservation across a
+        // re-claim is observable.
+        $claimedAt = $nowDt->modify('-' . ($heartbeatAgoSeconds + 5) . ' seconds')->format('Y-m-d H:i:s');
+        $manifestJson = $manifest === null ? null : json_encode($manifest, JSON_THROW_ON_ERROR);
+
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO stardust_import_jobs'
+            . ' (tenant_id, status, artifact_path, entry_count, manifest,'
+            . '  worker_identity, claimed_at, heartbeat_at, created_at)'
+            . " VALUES (?, 'processing', ?, ?, ?, ?, ?, ?, ?)"
+        );
+        $stmt->execute([
+            $tenantId,
+            $filename,
+            count($entries),
+            $manifestJson,
+            $workerIdentity,
+            $claimedAt,
+            $heartbeat,
+            $claimedAt,
+        ]);
+
+        return [(int) $this->pdo->lastInsertId(), $path];
+    }
+
     protected function makeBackfillExecutor(): BackfillExecutor
     {
         return new BackfillExecutor(
@@ -127,6 +189,8 @@ abstract class Phase5TestCase extends ReadPathTestCase
         ?\Psr\Log\LoggerInterface $logger = null,
         ?string $artifactDir = null,
         int $chunkSize = 500,
+        int $leaseTimeoutSeconds = 30,
+        ?ClockInterface $clock = null,
     ): ImportJobWorkSource {
         $log = $logger ?? new NullLogger();
         $entryWriter = new EntryWriter(
@@ -137,12 +201,13 @@ abstract class Phase5TestCase extends ReadPathTestCase
         );
         return new ImportJobWorkSource(
             pdo: $this->pdo,
-            clock: new SystemClock(),
+            clock: $clock ?? new SystemClock(),
             logger: $log,
             entryWriter: $entryWriter,
             dlqWriter: $this->makeDlqWriter($log),
             artifactDir: $artifactDir ?? (sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'stardust'),
             chunkSize: $chunkSize,
+            leaseTimeoutSeconds: $leaseTimeoutSeconds,
         );
     }
 
