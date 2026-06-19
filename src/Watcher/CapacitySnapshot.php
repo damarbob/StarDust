@@ -15,6 +15,11 @@ namespace StarDust\Watcher;
  * `globalFreeRatio()` returns `0.0` — i.e. "definitely below
  * threshold", which is the right answer (the Watcher should provision
  * page 1).
+ *
+ * `pagesInspected` is the count of distinct pages backing the slot
+ * inventory (`COUNT(DISTINCT page_id)` over `stardust_slot_assignments`)
+ * — i.e. the pages the capacity scan actually read this cycle. It is
+ * `0` on a fresh database with no provisioned pages.
  */
 final class CapacitySnapshot
 {
@@ -27,6 +32,7 @@ final class CapacitySnapshot
         public readonly array $totalByFamily,
         public readonly int $totalFree,
         public readonly int $totalSlots,
+        public readonly int $pagesInspected,
     ) {
     }
 

@@ -47,11 +47,16 @@ final class CapacityReporter
             }
         }
 
+        $pagesInspected = (int) $this->pdo
+            ->query('SELECT COUNT(DISTINCT page_id) FROM stardust_slot_assignments')
+            ->fetchColumn();
+
         return new CapacitySnapshot(
             freeByFamily: $freeByFamily,
             totalByFamily: $totalByFamily,
             totalFree: $totalFree,
             totalSlots: $totalSlots,
+            pagesInspected: $pagesInspected,
         );
     }
 }

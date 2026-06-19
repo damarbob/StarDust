@@ -65,6 +65,35 @@ final class WatcherProvisionTest extends Phase5TestCase
         }
     }
 
+    public function testPollStartedReportsPagesInspected(): void
+    {
+        // No pages yet: the Watcher inspects an empty inventory, then provisions.
+        $stream = fopen('php://memory', 'r+');
+        self::assertNotFalse($stream);
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        $this->makeWatcher($logger, threshold: 0.20)->tick();
+
+        $pollStarted = $this->firstEventNamed($this->readStream($stream), 'poll_started');
+        self::assertArrayHasKey('pages_inspected', $pollStarted);
+        self::assertSame(0, $pollStarted['pages_inspected']);
+    }
+
+    public function testPollStartedCountsExistingPages(): void
+    {
+        $this->provisionPage();
+
+        $stream = fopen('php://memory', 'r+');
+        self::assertNotFalse($stream);
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        // Healthy capacity → no provisioning, so the count reflects the one seeded page.
+        $this->makeWatcher($logger, threshold: 0.20)->tick();
+
+        $pollStarted = $this->firstEventNamed($this->readStream($stream), 'poll_started');
+        self::assertSame(1, $pollStarted['pages_inspected']);
+    }
+
     public function testProvisioningBumpsSchemaVersion(): void
     {
         $startVersion = $this->fetchSchemaVersion();
@@ -85,6 +114,20 @@ final class WatcherProvisionTest extends Phase5TestCase
     private function fetchSchemaVersion(): int
     {
         return (int) $this->pdo->query('SELECT version FROM stardust_schema_version WHERE id = 1')->fetchColumn();
+    }
+
+    /**
+     * @param list<array<string, mixed>> $events
+     * @return array<string, mixed>
+     */
+    private function firstEventNamed(array $events, string $name): array
+    {
+        foreach ($events as $event) {
+            if (($event['event'] ?? null) === $name) {
+                return $event;
+            }
+        }
+        self::fail("No '$name' event was emitted.");
     }
 
     /** @return list<array<string, mixed>> */

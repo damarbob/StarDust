@@ -70,6 +70,7 @@ final class Watcher implements Tickable
             'threshold'         => $this->capacityThreshold,
             'total_slots'       => $snapshot->totalSlots,
             'free_slots'        => $snapshot->totalFree,
+            'pages_inspected'   => $snapshot->pagesInspected,
         ]);
 
         $action = 'no_action';
