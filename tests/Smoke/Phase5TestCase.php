@@ -230,11 +230,15 @@ abstract class Phase5TestCase extends ReadPathTestCase
         ?\Psr\Log\LoggerInterface $logger = null,
         float $threshold = 0.20,
         int $lockTimeoutSeconds = 10,
+        ?ClockInterface $clock = null,
+        ?\Closure $jitterFn = null,
+        int $cardinalityIntervalSeconds = 86_400,
+        int $cardinalityJitterSeconds = 8_640,
     ): Watcher {
         $log = $logger ?? new NullLogger();
         return new Watcher(
             pdo: $this->pdo,
-            clock: new SystemClock(),
+            clock: $clock ?? new SystemClock(),
             logger: $log,
             capacityReporter: new CapacityReporter($this->pdo),
             pageProvisioner: new PageProvisioner(
@@ -250,7 +254,9 @@ abstract class Phase5TestCase extends ReadPathTestCase
                 distinctFloor: 10,
             ),
             capacityThreshold: $threshold,
-            cardinalityIntervalSeconds: 86_400,
+            cardinalityIntervalSeconds: $cardinalityIntervalSeconds,
+            cardinalityJitterSeconds: $cardinalityJitterSeconds,
+            jitterFn: $jitterFn,
             provisionLockTimeoutSeconds: $lockTimeoutSeconds,
         );
     }

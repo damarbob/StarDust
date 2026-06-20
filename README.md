@@ -402,6 +402,7 @@ $engine = new StarDust(new Config(
     watcherCapacityThreshold:            0.20,      // provision when free-ratio falls below
     watcherProvisionLockTimeoutSeconds:  10,        // GET_LOCK wait — production stays at 10
     cardinalityIntervalSeconds:          86_400,    // 24 h cadence
+    cardinalityJitterSeconds:            8_640,     // randomized ± window around the cadence (de-correlates a fleet)
     cardinalitySelectivityThreshold:     0.01,
     cardinalityRowFloor:                 10_000,
     cardinalityDistinctFloor:            10,

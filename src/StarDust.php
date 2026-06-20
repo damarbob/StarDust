@@ -344,6 +344,7 @@ final class StarDust
             ),
             capacityThreshold: $this->config->watcherCapacityThreshold,
             cardinalityIntervalSeconds: $this->config->cardinalityIntervalSeconds,
+            cardinalityJitterSeconds: $this->config->cardinalityJitterSeconds,
             provisionLockTimeoutSeconds: $this->config->watcherProvisionLockTimeoutSeconds,
         );
     }

@@ -30,6 +30,7 @@ final class Config
     public readonly float $watcherCapacityThreshold;
     public readonly int $watcherProvisionLockTimeoutSeconds;
     public readonly int $cardinalityIntervalSeconds;
+    public readonly int $cardinalityJitterSeconds;
     public readonly float $cardinalitySelectivityThreshold;
     public readonly int $cardinalityRowFloor;
     public readonly int $cardinalityDistinctFloor;
@@ -100,6 +101,7 @@ final class Config
         ?FilterLimits $queryFilterLimits = null,
         ?PdoConnector $pdoConnector = null,
         ?int $reconcilerImportLeaseTimeoutSeconds = null,
+        ?int $cardinalityJitterSeconds = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -119,6 +121,13 @@ final class Config
         // Default 10 s per blueprint AC#2 — `GET_LOCK('stardust_page_provision', 10)`.
         $this->watcherProvisionLockTimeoutSeconds = $watcherProvisionLockTimeoutSeconds ?? 10;
         $this->cardinalityIntervalSeconds         = $cardinalityIntervalSeconds         ?? 86_400;
+        // Randomized ± window around the periodic cardinality cadence. The
+        // Watcher draws a fresh offset in [-jitter, +jitter] each cycle and
+        // phase-randomizes the first sample across the whole interval, so a
+        // fleet started in lockstep does not stampede on the same schedule.
+        // Default 10 % of the interval (8 640 s for the 24 h default).
+        $this->cardinalityJitterSeconds        = $cardinalityJitterSeconds
+            ?? (int) round($this->cardinalityIntervalSeconds * 0.10);
         $this->cardinalitySelectivityThreshold = $cardinalitySelectivityThreshold ?? 0.01;
         $this->cardinalityRowFloor             = $cardinalityRowFloor             ?? 10_000;
         $this->cardinalityDistinctFloor        = $cardinalityDistinctFloor        ?? 10;
