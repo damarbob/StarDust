@@ -32,6 +32,19 @@ use Throwable;
  *      proceeds, on failure the tick returns CAPACITY_WAIT so the
  *      Reconciler sleeps and lets the Watcher provision before
  *      retrying.
+ *
+ *      That reservation passes `$checkpoint->targetIsFilterable`, and
+ *      under ADR 0034 the reserver rejects a non-filterable field. The
+ *      two are consistent by construction: {@see RetypeInitiator} only
+ *      writes a checkpoint when the target is filterable, so a claimed
+ *      checkpoint always carries `targetIsFilterable = true`. A row
+ *      that violated that (a hand-edited registry, or a `running`
+ *      checkpoint predating ADR 0034) would surface the rejection as an
+ *      uncaught throw and stop the daemon rather than looping. That is
+ *      accepted at `0.3.0-alpha.1`, where no such row can exist; if
+ *      real deployments ever accumulate them, the fix is to fail the
+ *      checkpoint here instead — which needs a new event name and so an
+ *      ADR 0020 amendment.
  *   3. Resolve the page's `entry_slots_page_N` table name.
  *   4. Hand the chunk to {@see RetypeBackfillExecutor::processChunk()}.
  *   5. Advance the checkpoint cursor. If the executor reports
