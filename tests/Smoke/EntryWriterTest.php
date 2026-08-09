@@ -67,12 +67,15 @@ final class EntryWriterTest extends WritePathTestCase
     /** Exit criterion: slots exhausted → entry_data ✓, no slot row, one sync_queue row, no throw. */
     public function testWriteEnqueuesToSyncQueueWhenSlotsExhausted(): void
     {
-        // Set up a model with one field that has NO reserved slot — the
-        // field exists in the registry but no live slot exists for it.
+        // Set up a model with one FILTERABLE field that has NO reserved
+        // slot — the field exists in the registry and wants a slot, but
+        // no live slot exists for it. Filterability is what makes this
+        // the ADR 0007 exhaustion case rather than the ADR 0034
+        // JSON-only steady state.
         $this->provisionPage();
         $modelId = $this->createModel(1);
         $fieldName = 'orphan_field';
-        $this->createField($modelId, 'string', false, $fieldName);
+        $this->createField($modelId, 'string', true, $fieldName);
         // Note: no reserveSlotFor() call → no live slot for this field.
 
         $payload = new EntryPayload(
@@ -265,7 +268,9 @@ final class EntryWriterTest extends WritePathTestCase
         $this->provisionPage();
         $modelId = $this->createModel(1);
         $fieldName = 'no_slot_field';
-        $this->createField($modelId, 'string', false, $fieldName);
+        // Filterable: only a filterable field lacking a slot triggers
+        // the ADR 0007 fallback (ADR 0034).
+        $this->createField($modelId, 'string', true, $fieldName);
 
         $stream = fopen('php://memory', 'r+');
         $writer = new EntryWriter(

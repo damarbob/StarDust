@@ -10,6 +10,7 @@ use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Clock\SystemClock;
+use StarDust\Exception\NonFilterableFieldSlotException;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
@@ -20,6 +21,9 @@ use StarDust\Slot\SlotReserver;
  * Verifies the `free → assigned` transition is atomic, single-row, type-
  * correct, version-bumping, log-emitting, and gracefully returns null when
  * no free slot of the requested family is available.
+ *
+ * Also covers the ADR 0034 filterability guard: only a filterable field
+ * may hold a slot, and the rejection lands before any row is touched.
  */
 final class SlotReserverTest extends TestCase
 {
@@ -147,7 +151,7 @@ final class SlotReserverTest extends TestCase
     public function testReserveTransitionsExactlyOneSlot(): void
     {
         $this->newProvisioner()->provision();
-        $fieldId = $this->registerField('string');
+        $fieldId = $this->registerField('string', isFilterable: true);
 
         $assignment = $this->newReserver()->reserve($fieldId);
 
@@ -185,7 +189,7 @@ final class SlotReserverTest extends TestCase
     public function testReserveMapsDeclaredTypeToCorrectSlotType(string $declaredType, string $expectedSlotType): void
     {
         $this->newProvisioner()->provision();
-        $fieldId = $this->registerField($declaredType);
+        $fieldId = $this->registerField($declaredType, isFilterable: true);
 
         $assignment = $this->newReserver()->reserve($fieldId);
 
@@ -209,7 +213,7 @@ final class SlotReserverTest extends TestCase
     public function testReserveReturnsNullWhenNoFreeSlotOfType(): void
     {
         $pageId = $this->newProvisioner()->provision();
-        $fieldId = $this->registerField('string');
+        $fieldId = $this->registerField('string', isFilterable: true);
 
         // Tombstone every str slot so the family has no free inventory.
         // `tombstoned` rows have field_id NULL, which keeps the partial
@@ -237,7 +241,7 @@ final class SlotReserverTest extends TestCase
     public function testReserveRejectsSecondLiveSlotForSameField(): void
     {
         $this->newProvisioner()->provision();
-        $fieldId = $this->registerField('string');
+        $fieldId = $this->registerField('string', isFilterable: true);
 
         $first = $this->newReserver()->reserve($fieldId);
         self::assertNotNull($first);
@@ -250,7 +254,7 @@ final class SlotReserverTest extends TestCase
     public function testReserveIncrementsSchemaVersion(): void
     {
         $this->newProvisioner()->provision();
-        $fieldId = $this->registerField('int');
+        $fieldId = $this->registerField('int', isFilterable: true);
 
         $before = (int) $this->pdo
             ->query('SELECT version FROM stardust_schema_version WHERE id = 1')
@@ -268,7 +272,7 @@ final class SlotReserverTest extends TestCase
     public function testReserveEmitsStructuredLogEvent(): void
     {
         $this->newProvisioner()->provision();
-        $fieldId = $this->registerField('datetime');
+        $fieldId = $this->registerField('datetime', isFilterable: true);
 
         $stream = fopen('php://memory', 'r+');
         self::assertNotFalse($stream);
@@ -307,5 +311,113 @@ final class SlotReserverTest extends TestCase
         $this->newProvisioner()->provision();
         $this->expectException(\InvalidArgumentException::class);
         $this->newReserver()->reserve(99999);
+    }
+
+    /**
+     * ADR 0034: a non-filterable field is JSON-only and never holds a
+     * slot. Reservation is refused and the registry is untouched.
+     */
+    public function testReserveRejectsNonFilterableField(): void
+    {
+        $this->newProvisioner()->provision();
+        $fieldId = $this->registerField('string', isFilterable: false);
+
+        $versionBefore = (int) $this->pdo
+            ->query('SELECT version FROM stardust_schema_version WHERE id = 1')
+            ->fetchColumn();
+
+        try {
+            $this->newReserver()->reserve($fieldId);
+            self::fail('Expected NonFilterableFieldSlotException');
+        } catch (NonFilterableFieldSlotException) {
+            // expected
+        }
+
+        $free = (int) $this->pdo
+            ->query("SELECT COUNT(*) FROM stardust_slot_assignments WHERE status = 'free'")
+            ->fetchColumn();
+        self::assertSame(
+            PageProvisioner::SLOTS_PER_PAGE,
+            $free,
+            'A rejected reservation must leave every slot free.',
+        );
+
+        $versionAfter = (int) $this->pdo
+            ->query('SELECT version FROM stardust_schema_version WHERE id = 1')
+            ->fetchColumn();
+        self::assertSame($versionBefore, $versionAfter, 'A rejected reservation must not bump schema version.');
+    }
+
+    /**
+     * ADR 0034 requires the rejection "before any row is touched" — on
+     * the own-transaction path that means before the transaction is
+     * even opened, so no `FOR UPDATE` gap locks are taken.
+     */
+    public function testReserveRejectsNonFilterableFieldBeforeOpeningATransaction(): void
+    {
+        $this->newProvisioner()->provision();
+        $fieldId = $this->registerField('string', isFilterable: false);
+
+        try {
+            $this->newReserver()->reserve($fieldId);
+            self::fail('Expected NonFilterableFieldSlotException');
+        } catch (NonFilterableFieldSlotException) {
+            // expected
+        }
+
+        self::assertFalse(
+            $this->pdo->inTransaction(),
+            'The guard must fire before beginTransaction(), leaving no open transaction.',
+        );
+    }
+
+    /** The guard covers the backfill variant too (ADR 0034 §1). */
+    public function testReserveForBackfillRejectsNonFilterableField(): void
+    {
+        $this->newProvisioner()->provision();
+        $fieldId = $this->registerField('string', isFilterable: false);
+
+        $this->expectException(NonFilterableFieldSlotException::class);
+        $this->newReserver()->reserveForBackfill($fieldId, requireIndexed: true);
+    }
+
+    /**
+     * The within-transaction variant rejects too, and the caller's own
+     * transaction is still intact enough to roll back cleanly.
+     */
+    public function testReserveForBackfillWithinTransactionRejectsNonFilterableField(): void
+    {
+        $this->newProvisioner()->provision();
+        $fieldId = $this->registerField('string', isFilterable: false);
+
+        $this->pdo->beginTransaction();
+        try {
+            $this->newReserver()->reserveForBackfillWithinTransaction($fieldId, requireIndexed: true);
+            self::fail('Expected NonFilterableFieldSlotException');
+        } catch (NonFilterableFieldSlotException) {
+            self::assertTrue($this->pdo->inTransaction());
+            $this->pdo->rollBack();
+        }
+
+        self::assertFalse($this->pdo->inTransaction());
+    }
+
+    /**
+     * Guard ordering regression: an unknown field must still surface as
+     * InvalidArgumentException, not swallowed by the filterability check
+     * (a missing row has no `is_filterable` to read).
+     */
+    public function testUnknownFieldStillThrowsInvalidArgumentNotNonFilterable(): void
+    {
+        $this->newProvisioner()->provision();
+
+        try {
+            $this->newReserver()->reserve(99999);
+            self::fail('Expected InvalidArgumentException');
+        } catch (NonFilterableFieldSlotException $e) {
+            self::fail('Unknown field must not be reported as non-filterable: ' . $e->getMessage());
+        } catch (\InvalidArgumentException $e) {
+            self::assertStringContainsString('unknown field id 99999', $e->getMessage());
+        }
     }
 }

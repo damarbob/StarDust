@@ -18,11 +18,13 @@ use StarDust\Filter\Limits\FilterLimits;
  *   - `slotWrites`: `array<int $pageId, array<string $slotColumn, mixed $value>>`
  *     ready for `INSERT … ON DUPLICATE KEY UPDATE` against each
  *     `entry_slots_page_N`.
- *   - `missingSlotFields`: list of *registered* field names that appear
- *     in the payload but have no live slot. Unknown payload keys (not in
- *     `stardust_fields` for this model) are silently dropped and never
- *     appear here. The write path enqueues into `stardust_sync_queue`
- *     iff this list is non-empty (ADR 0007 exhaustion fallback).
+ *   - `missingSlotFields`: list of *registered, filterable* field names
+ *     that appear in the payload but have no live slot. Unknown payload
+ *     keys (not in `stardust_fields` for this model) and non-filterable
+ *     fields (JSON-only per ADR 0034 — having no slot is their steady
+ *     state, not a degradation) are silently dropped and never appear
+ *     here. The write path enqueues into `stardust_sync_queue` iff this
+ *     list is non-empty (ADR 0007 exhaustion fallback).
  *
  * Coercion rules (Phase 3 first-write policy, distinct from the
  * Reconciler retype-backfill rules in ADR 0024):
@@ -52,20 +54,33 @@ final class PayloadSplitter
         $missingSlotFields = [];
 
         foreach ($fields as $fieldName => $value) {
-            $entry = $map->get((string) $fieldName);
+            $name = (string) $fieldName;
+
+            // Two silent-drop cases, both leaving the value in
+            // entry_data.fields (ADR 0013):
+            //   - not registered in stardust_fields for this model;
+            //   - registered but non-filterable — JSON-only per ADR
+            //     0034, so it has no slot to write and must never
+            //     enqueue. This also covers a grandfathered legacy slot:
+            //     the check precedes the entry lookup, so a pre-0034
+            //     slot held by a non-filterable field is left untouched
+            //     rather than being kept up to date for a read path
+            //     that never consults it.
+            //
+            // Ordering is load-bearing: putting the entry lookup first
+            // would route a slotless non-filterable field into
+            // $missingSlotFields and re-create the unsatisfiable
+            // capacity_wait loop ADR 0034 exists to kill.
+            if (! $map->isFilterable($name)) {
+                continue;
+            }
+
+            $entry = $map->get($name);
             if ($entry === null) {
-                if (!$map->isKnown((string) $fieldName)) {
-                    // Not registered in stardust_fields for this model.
-                    // Silently drop — value persists in entry_data.fields
-                    // per ADR 0013; there is no slot to enqueue for
-                    // (ADR 0007 exhaustion fallback is scoped to registered
-                    // fields only).
-                    continue;
-                }
-                // Registered field with no live slot — ADR 0007 exhaustion
-                // fallback: enqueue so the Reconciler can backfill once
-                // capacity is restored.
-                $missingSlotFields[] = (string) $fieldName;
+                // Filterable registered field with no live slot — ADR
+                // 0007 exhaustion fallback: enqueue so the Reconciler
+                // can backfill once capacity is restored.
+                $missingSlotFields[] = $name;
                 continue;
             }
 

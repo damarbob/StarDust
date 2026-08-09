@@ -20,9 +20,9 @@ final class LiberatorOrderingTest extends Phase6aTestCase
         $pageId = $this->provisionPage();
         $modelId = $this->createModel(1);
 
-        $fieldA = $this->createField($modelId, 'string', false, 'a');
-        $fieldB = $this->createField($modelId, 'string', false, 'b');
-        $fieldC = $this->createField($modelId, 'string', false, 'c');
+        $fieldA = $this->createField($modelId, 'string', true, 'a');
+        $fieldB = $this->createField($modelId, 'string', true, 'b');
+        $fieldC = $this->createField($modelId, 'string', true, 'c');
         $this->reserveSlotFor($fieldA);
         $this->reserveSlotFor($fieldB);
         $this->reserveSlotFor($fieldC);

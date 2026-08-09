@@ -22,11 +22,19 @@ use Throwable;
  *      {@see PayloadSplitter}, INSERT … ON DUPLICATE KEY UPDATE into
  *      `entry_slots_page_N`. UPSERT semantics (Architecture Blueprint
  *      §5) make replays safe and satisfy implementation_phases.md §3.
- *   3. If `PayloadSplitter` flagged one or more fields whose live slot
- *      is missing (none assigned, all tombstoned, capacity exhausted),
- *      INSERT one row into `stardust_sync_queue` so the Phase 5
- *      Reconciler will backfill once a slot is available — the ADR
- *      0007 exhaustion fallback.
+ *   3. If `PayloadSplitter` flagged one or more *filterable* fields
+ *      whose live slot is missing (none assigned, all tombstoned,
+ *      capacity exhausted), INSERT one row into `stardust_sync_queue`
+ *      so the Phase 5 Reconciler will backfill once a slot is
+ *      available — the ADR 0007 exhaustion fallback. Non-filterable
+ *      fields are JSON-only (ADR 0034): holding no slot is their
+ *      steady state, so they never enqueue.
+ *
+ * Step 2 can plan zero pages. An entry whose payload touches only
+ * non-filterable fields writes no `entry_slots_page_N` row at all —
+ * normal under ADR 0034, and harmless: the read path LEFT-JOINs pages
+ * and the Liberator's sweep nullifies by `entry_id` without requiring
+ * the row to exist.
  *
  * All three writes commit together; any failure rolls everything back.
  * The caller receives an {@see EntryWriteResult}; no exception is

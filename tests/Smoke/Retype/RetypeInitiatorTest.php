@@ -28,7 +28,7 @@ final class RetypeInitiatorTest extends Phase6bTestCase
         // Field starts as int; attempt to retype to datetime.
         $this->provisionPage();
         $modelId = $this->createModel(1);
-        $fieldId = $this->createField($modelId, 'int', false, 'count');
+        $fieldId = $this->createField($modelId, 'int', true, 'count');
         $this->reserveSlotFor($fieldId);
 
         $versionBefore = $this->fetchSchemaVersion();
@@ -52,11 +52,40 @@ final class RetypeInitiatorTest extends Phase6bTestCase
         self::assertNotNull($this->fetchLiveSlotForField($fieldId));
     }
 
+    /**
+     * The bump condition is shared with the registry-only path (ADR
+     * 0034), so pin the already-correct branch: a reservation that
+     * succeeds bumps inside `SlotReserver` and must not be
+     * double-counted by the initiator's compensating bump.
+     */
+    public function testFilterableRetypeStillBumpsSchemaVersionExactlyOnce(): void
+    {
+        $this->provisionPage(['i_int_01']);
+        $modelId = $this->createModel(1);
+        $fieldId = $this->createField($modelId, 'string', true, 'value');
+        $this->reserveSlotFor($fieldId);
+
+        $before = $this->fetchSchemaVersion();
+
+        $this->makeRetypeInitiator()->initiate(
+            tenantId: 1,
+            fieldId: $fieldId,
+            newDeclaredType: 'int',
+            newIsFilterable: null,
+        );
+
+        self::assertNotNull($this->fetchLiveSlotForField($fieldId), 'Reservation must have succeeded.');
+        self::assertSame($before + 1, $this->fetchSchemaVersion());
+    }
+
     public function testAtomicRegistryTransactionPopulatesEveryRow(): void
     {
-        $this->provisionPage();
+        // The field is filterable, so its replacement slot must be an
+        // indexed one (ADR 0016 commitment 1) — index the int column
+        // the string → int retype will land on.
+        $this->provisionPage(['i_int_01']);
         $modelId = $this->createModel(1);
-        $fieldId = $this->createField($modelId, 'string', false, 'name');
+        $fieldId = $this->createField($modelId, 'string', true, 'name');
         $this->reserveSlotFor($fieldId);
 
         $oldSlot = $this->fetchLiveSlotForField($fieldId);
@@ -114,7 +143,7 @@ final class RetypeInitiatorTest extends Phase6bTestCase
     {
         $this->provisionPage();
         $modelId = $this->createModel(1);
-        $fieldId = $this->createField($modelId, 'string', false, 'name');
+        $fieldId = $this->createField($modelId, 'string', true, 'name');
         $this->reserveSlotFor($fieldId);
 
         $initiator = $this->makeRetypeInitiator();
@@ -147,7 +176,7 @@ final class RetypeInitiatorTest extends Phase6bTestCase
     {
         $pageId = $this->provisionPage();
         $modelId = $this->createModel(7); // model belongs to tenant 7
-        $fieldId = $this->createField($modelId, 'string', false, 'name');
+        $fieldId = $this->createField($modelId, 'string', true, 'name');
         $this->reserveSlotFor($fieldId);
 
         $this->expectException(FieldNotFoundException::class);
