@@ -19,12 +19,12 @@ final class RetypeBackfillTest extends Phase6bTestCase
 {
     public function testStringToIntBackfillCoercesAndStoresNullForInvalid(): void
     {
-        // Provision page with i_str_01 filterable (so we can seed
-        // string values via the real write path) — the new int slot
-        // will pick the first free i_int_NN column.
-        $this->provisionPage();
+        // The subject field is filterable, so the retype's replacement
+        // slot must be indexed (ADR 0016 commitment 1) — index the
+        // i_int_01 column the string → int retype will land on.
+        $this->provisionPage(['i_int_01']);
         $modelId = $this->createModel(1);
-        $fieldId = $this->createField($modelId, 'string', false, 'value');
+        $fieldId = $this->createField($modelId, 'string', true, 'value');
         $this->reserveSlotFor($fieldId);
 
         // Seed four entries via real write path: two coercible, two not.
@@ -83,9 +83,9 @@ final class RetypeBackfillTest extends Phase6bTestCase
 
     public function testReadDuringBackfillFallsBackToJsonPayload(): void
     {
-        $this->provisionPage();
+        $this->provisionPage(['i_int_01']);
         $modelId = $this->createModel(1);
-        $fieldId = $this->createField($modelId, 'string', false, 'name');
+        $fieldId = $this->createField($modelId, 'string', true, 'name');
         $this->reserveSlotFor($fieldId);
 
         $entryId = $this->seedEntry(1, $modelId, ['name' => 'Acme']);
@@ -113,9 +113,9 @@ final class RetypeBackfillTest extends Phase6bTestCase
 
     public function testIdempotentResumeAfterChunkSizeBoundary(): void
     {
-        $this->provisionPage();
+        $this->provisionPage(['i_int_01']);
         $modelId = $this->createModel(1);
-        $fieldId = $this->createField($modelId, 'string', false, 'value');
+        $fieldId = $this->createField($modelId, 'string', true, 'value');
         $this->reserveSlotFor($fieldId);
 
         // Seed 5 entries (more than our chunk size of 2 so we'll need
@@ -168,9 +168,9 @@ final class RetypeBackfillTest extends Phase6bTestCase
 
     public function testSchemaVersionBumpedAtInitiationAndAgainAtPromotion(): void
     {
-        $this->provisionPage();
+        $this->provisionPage(['i_int_01']);
         $modelId = $this->createModel(1);
-        $fieldId = $this->createField($modelId, 'string', false, 'value');
+        $fieldId = $this->createField($modelId, 'string', true, 'value');
         $this->reserveSlotFor($fieldId);
 
         $this->seedEntry(1, $modelId, ['value' => '42']);

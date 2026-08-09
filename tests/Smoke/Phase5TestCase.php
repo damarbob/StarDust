@@ -39,7 +39,7 @@ abstract class Phase5TestCase extends ReadPathTestCase
 
         $modelId = $this->createModel(1, 'filler_model_' . bin2hex(random_bytes(3)));
         for ($i = 0; $i < $free; $i++) {
-            $fieldId = $this->createField($modelId, 'string', false, 'filler_' . $i);
+            $fieldId = $this->createField($modelId, 'string', true, 'filler_' . $i);
             $this->reserveSlotFor($fieldId);
         }
     }

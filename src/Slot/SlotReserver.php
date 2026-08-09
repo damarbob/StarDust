@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Exception\NonFilterableFieldSlotException;
 use Throwable;
 
 /**
@@ -20,6 +21,13 @@ use Throwable;
  * matches the field's `declared_type → slot_type` family and is taken
  * from the oldest page first so assignments stay compactly packed (helps
  * Liberator efficiency later).
+ *
+ * Only a filterable field may hold a slot. Per ADR 0034 a non-filterable
+ * field is JSON-only, so every entry point rejects one with a
+ * {@see NonFilterableFieldSlotException} before any row is touched —
+ * before the transaction opens on the own-transaction paths. The guard
+ * lives in {@see self::resolveReservableSlotType()}, whose return value
+ * `reserveCore()` requires, so no reservation path can bypass it.
  *
  * If no free slot of the required family exists, `reserve()` commits a
  * no-op transaction and returns `null`. The caller (Phase 3 write path,
@@ -84,7 +92,9 @@ final class SlotReserver
         int $fieldId,
         bool $requireIndexed = false,
     ): ?SlotAssignment {
-        return $this->reserveCore($fieldId, 'backfilling', $requireIndexed);
+        $slotType = $this->resolveReservableSlotType($fieldId);
+
+        return $this->reserveCore($fieldId, $slotType, 'backfilling', $requireIndexed);
     }
 
     private function reserveInOwnTransaction(
@@ -92,9 +102,14 @@ final class SlotReserver
         string $targetStatus,
         bool $requireIndexed,
     ): ?SlotAssignment {
+        // Resolved (and guarded) before `beginTransaction()` so a
+        // rejected field never opens a transaction or takes the
+        // `FOR UPDATE` gap locks the candidate SELECT would acquire.
+        $slotType = $this->resolveReservableSlotType($fieldId);
+
         $this->pdo->beginTransaction();
         try {
-            $assignment = $this->reserveCore($fieldId, $targetStatus, $requireIndexed);
+            $assignment = $this->reserveCore($fieldId, $slotType, $targetStatus, $requireIndexed);
             $this->pdo->commit();
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -110,17 +125,18 @@ final class SlotReserver
         return $assignment;
     }
 
+    /**
+     * @param string $slotType the family resolved by
+     *                         {@see self::resolveReservableSlotType()} —
+     *                         taking it as a parameter is what keeps the
+     *                         ADR 0034 filterability guard unbypassable
+     */
     private function reserveCore(
         int $fieldId,
+        string $slotType,
         string $targetStatus,
         bool $requireIndexed,
     ): ?SlotAssignment {
-        $declaredType = $this->resolveDeclaredType($fieldId);
-        $slotType = self::DECLARED_TYPE_TO_SLOT_TYPE[$declaredType]
-            ?? throw new InvalidArgumentException(
-                "SlotReserver: field {$fieldId} has unrecognised declared_type '{$declaredType}'."
-            );
-
         $now = $this->clock->now()
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
@@ -206,16 +222,46 @@ final class SlotReserver
         ]);
     }
 
-    private function resolveDeclaredType(int $fieldId): string
+    /**
+     * Resolves the field's slot-type family, rejecting any field that
+     * may not hold a slot at all.
+     *
+     * Returns the `slot_type` rather than the raw `declared_type` so
+     * that `reserveCore()` cannot be reached without passing through
+     * this guard — a future fourth entry point gets the ADR 0034 check
+     * for free.
+     *
+     * @throws NonFilterableFieldSlotException when the field is
+     *                                         non-filterable (ADR 0034 —
+     *                                         JSON-only, never slotted)
+     * @throws InvalidArgumentException        when the field does not
+     *                                         exist or carries an
+     *                                         unrecognised declared_type
+     */
+    private function resolveReservableSlotType(int $fieldId): string
     {
-        $stmt = $this->pdo->prepare('SELECT declared_type FROM stardust_fields WHERE id = ?');
+        $stmt = $this->pdo->prepare(
+            'SELECT declared_type, is_filterable FROM stardust_fields WHERE id = ?'
+        );
         $stmt->execute([$fieldId]);
-        $type = $stmt->fetchColumn();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($type === false) {
+        if ($row === false) {
             throw new InvalidArgumentException("SlotReserver: unknown field id {$fieldId}.");
         }
 
-        return (string) $type;
+        if (! (bool) $row['is_filterable']) {
+            throw new NonFilterableFieldSlotException(
+                "SlotReserver: field {$fieldId} is not filterable and cannot hold a slot"
+                . ' (ADR 0034 — non-filterable fields are JSON-only).'
+            );
+        }
+
+        $declaredType = (string) $row['declared_type'];
+
+        return self::DECLARED_TYPE_TO_SLOT_TYPE[$declaredType]
+            ?? throw new InvalidArgumentException(
+                "SlotReserver: field {$fieldId} has unrecognised declared_type '{$declaredType}'."
+            );
     }
 }

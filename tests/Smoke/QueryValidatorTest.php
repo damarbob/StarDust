@@ -52,13 +52,16 @@ final class QueryValidatorTest extends ReadPathTestCase
 
     public function testFilterOnNonFilterableFieldIsRejected(): void
     {
-        // Provision page; create field with is_filterable=false but
-        // still reserve a slot (so the rejection reason is "not
-        // filterable", not "not indexed").
+        // A non-filterable field that still holds a live slot, so the
+        // rejection reason is "not filterable" rather than "not
+        // indexed". Under ADR 0034 the reserver refuses to create this
+        // shape, so it has to be forced — it is precisely the
+        // grandfathered legacy state the ADR declines to migrate, and
+        // the read path must keep rejecting it.
         $this->provisionPage(['i_str_01']);
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', false, 'note');
-        $this->reserveSlotFor($fieldId);
+        $this->forceGrandfatheredSlotFor($fieldId);
 
         [$logger, $stream] = $this->newRecordingLogger();
 

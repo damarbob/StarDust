@@ -8,31 +8,34 @@ use StarDust\Tests\Smoke\Phase6bTestCase;
 
 /**
  * Phase 6b exit criterion #6 — promoting a field from
- * `is_filterable = false` to `is_filterable = true` on a field that
- * already has data on its current unindexed slot.
+ * `is_filterable = false` to `is_filterable = true`.
  *
  * The pipeline:
- *   - old slot (unindexed) tombstones;
+ *   - a grandfathered (pre-ADR-0034) unindexed slot, if the field
+ *     still carries one, tombstones;
  *   - new slot must land on an indexed `(tenant_id, slot_column)`
  *     column (PageProvisioner's `ix_<table>_<slot>` composite);
  *   - declared_type stays the same, so no coercion is attempted;
  *   - on promotion, filter queries against the field use the new
  *     slot's index.
+ *
+ * Both shapes are covered: the legacy one (field arrives holding an
+ * unindexed slot) and the ADR 0034 normal one (a non-filterable field
+ * is JSON-only, so promotion has no old slot to tombstone).
  */
 final class RetypeFilterabilityPromotionTest extends Phase6bTestCase
 {
-    public function testPromotionMovesFieldFromUnindexedToIndexedSlot(): void
+    public function testPromotionOfGrandfatheredUnindexedSlotMovesToIndexedSlot(): void
     {
-        // Page 1 has i_str_01 filterable but our field reserves the
-        // NEXT free slot — to force the field onto an unindexed slot
-        // we provision a page where the str slot we land on is NOT
-        // indexed. Simplest: provision a single page with NO
-        // filterable slots, reserve our field there, then provision
-        // a SECOND page that DOES make i_str_01 indexed.
+        // A non-filterable field holding a live unindexed slot is the
+        // pre-ADR-0034 legacy shape — SlotReserver refuses to create
+        // it now, so force it directly. Provision an unindexed page
+        // first so the forced slot lands there, then a SECOND page
+        // that DOES make i_str_01 indexed for the promotion to target.
         $unindexedPage = $this->provisionPage([]);                  // no indexed slots
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', false, 'name');
-        $this->reserveSlotFor($fieldId);
+        $this->forceGrandfatheredSlotFor($fieldId);
 
         // Confirm the field landed on the unindexed page.
         $oldSlot = $this->fetchLiveSlotForField($fieldId);
@@ -86,14 +89,14 @@ final class RetypeFilterabilityPromotionTest extends Phase6bTestCase
 
     public function testPromotionDefersWhenNoIndexedSlotAvailable(): void
     {
-        // Provision one unindexed page. The field reserves a slot on
-        // it. We then promote — the initiator must find no indexed
-        // free slot and defer (new slot reservation returns null,
-        // field is left without a live slot).
+        // Provision one unindexed page. The field is JSON-only and
+        // holds no slot at all — the ADR 0034 normal shape for a
+        // non-filterable field. We then promote: the initiator must
+        // find no indexed free slot and defer (new slot reservation
+        // returns null, field is left without a live slot).
         $this->provisionPage([]);
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', false, 'name');
-        $this->reserveSlotFor($fieldId);
 
         $this->seedEntry(1, $modelId, ['name' => 'Acme']);
 
@@ -105,8 +108,8 @@ final class RetypeFilterabilityPromotionTest extends Phase6bTestCase
             newIsFilterable: true,
         );
 
-        // Field has NO live slot after initiation — old tombstoned,
-        // new not reserved.
+        // Field has NO live slot after initiation — it had none to
+        // begin with, and the new one could not be reserved.
         self::assertNull($this->fetchLiveSlotForField($fieldId));
 
         // Checkpoint exists and is running.

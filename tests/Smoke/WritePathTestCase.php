@@ -151,6 +151,11 @@ abstract class WritePathTestCase extends TestCase
 
     /**
      * Reserve a slot for a field (calls Phase 2 SlotReserver).
+     *
+     * The field must be filterable — SlotReserver rejects a
+     * non-filterable one per ADR 0034. Use
+     * {@see self::forceGrandfatheredSlotFor()} to construct the legacy
+     * shape instead.
      */
     protected function reserveSlotFor(int $fieldId): void
     {
@@ -162,6 +167,52 @@ abstract class WritePathTestCase extends TestCase
     }
 
     /**
+     * Assign a slot by direct registry UPDATE, bypassing SlotReserver.
+     *
+     * The only way to construct a pre-ADR-0034 *grandfathered* slot —
+     * a live slot held by a non-filterable field — now that the
+     * reserver rejects them. Runs the same three statements
+     * `reserveCore()` does (claim the oldest free slot of the family,
+     * flip it to `assigned`, bump the schema version), minus the guard.
+     */
+    protected function forceGrandfatheredSlotFor(int $fieldId, string $slotType = 'str'): void
+    {
+        $select = $this->pdo->prepare(
+            'SELECT id FROM stardust_slot_assignments'
+            . " WHERE status = 'free' AND slot_type = ?"
+            . ' ORDER BY page_id, id LIMIT 1'
+        );
+        $select->execute([$slotType]);
+        $assignmentId = $select->fetchColumn();
+
+        if ($assignmentId === false) {
+            $this->fail("No free {$slotType} slot available to grandfather onto field {$fieldId}.");
+        }
+
+        $update = $this->pdo->prepare(
+            'UPDATE stardust_slot_assignments'
+            . " SET status = 'assigned', field_id = ?, updated_at = UTC_TIMESTAMP()"
+            . ' WHERE id = ?'
+        );
+        $update->execute([$fieldId, $assignmentId]);
+
+        $this->pdo->exec(
+            'UPDATE stardust_schema_version'
+            . ' SET version = version + 1, updated_at = UTC_TIMESTAMP()'
+            . ' WHERE id = 1'
+        );
+    }
+
+    /**
+     * Model with one filterable field holding a live (unindexed) slot.
+     *
+     * The field is filterable because a reserved slot implies
+     * filterability under ADR 0034 — only filterable fields may hold
+     * one. The page itself carries no composite index, so this is the
+     * "filterable but not indexed" fixture; see
+     * {@see ReadPathTestCase::setupFilterableStringField()} for the
+     * indexed twin.
+     *
      * @return array{0: int, 1: int, 2: int, 3: string} [modelId, fieldId, pageId, fieldName]
      */
     protected function setupModelWithReservedField(
@@ -171,7 +222,7 @@ abstract class WritePathTestCase extends TestCase
         $pageId = $this->provisionPage();
         $modelId = $this->createModel($tenantId);
         $fieldName = 'field_' . bin2hex(random_bytes(4));
-        $fieldId = $this->createField($modelId, $declaredType, false, $fieldName);
+        $fieldId = $this->createField($modelId, $declaredType, true, $fieldName);
         $this->reserveSlotFor($fieldId);
         return [$modelId, $fieldId, $pageId, $fieldName];
     }

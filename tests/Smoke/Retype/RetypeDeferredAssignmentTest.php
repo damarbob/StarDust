@@ -22,7 +22,7 @@ final class RetypeDeferredAssignmentTest extends Phase6bTestCase
     {
         // Provision page 1 with no indexed slots so the only int
         // slots are unindexed. We'll exhaust them, then retype.
-        $pageId = $this->provisionPage([]);
+        $pageId = $this->provisionPage(['i_int_01']);
         $modelId = $this->createModel(1);
 
         // Reserve EVERY int slot so the retype's new int reservation
@@ -33,14 +33,14 @@ final class RetypeDeferredAssignmentTest extends Phase6bTestCase
 
         $fillerFieldIds = [];
         for ($i = 0; $i < $intSlotsFree; $i++) {
-            $fid = $this->createField($modelId, 'int', false, 'filler_' . $i);
+            $fid = $this->createField($modelId, 'int', true, 'filler_' . $i);
             $this->reserveSlotFor($fid);
             $fillerFieldIds[] = $fid;
         }
 
         // Subject field: a string field with data, retype to int when
         // all int slots are already taken.
-        $fieldId = $this->createField($modelId, 'string', false, 'amount');
+        $fieldId = $this->createField($modelId, 'string', true, 'amount');
         $this->reserveSlotFor($fieldId);
         $this->seedEntry(1, $modelId, ['amount' => '42']);
 
