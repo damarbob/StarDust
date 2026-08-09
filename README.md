@@ -93,10 +93,11 @@ Every entry's full payload is stored as JSON in `entry_data` — that's the syst
    └─────────────────────────────────────────────────────────────┘
         ▲ composite index (tenant_id, i_str_01), (tenant_id, i_int_01), …
 
-   "city" was never made filterable → it lives in JSON only:
-   still readable, just not indexed. A filterable field that
-   outruns slot capacity also stays in JSON and is queued for
-   backfill — the write never fails for lack of a slot.
+   "city" was never made filterable → it never occupies a slot
+   column at all. It lives in JSON only: still readable, just not
+   indexed. A filterable field that outruns slot capacity also
+   stays in JSON and is queued for backfill — the write never
+   fails for lack of a slot.
 ```
 
 Four background daemons keep the slot machinery healthy. They never talk to each other directly — MySQL is the only coordination point:
@@ -441,8 +442,10 @@ use StarDust\Write\EntryPayload;
 // Single-entry write. Atomic INSERT into entry_data + per-page
 // INSERT … ON DUPLICATE KEY UPDATE into entry_slots_page_N for
 // each field with a live slot; falls back to stardust_sync_queue
-// (in the same transaction) if any field lacks a live slot
-// (exhaustion fallback — the call still succeeds).
+// (in the same transaction) if any *filterable* field lacks a
+// live slot (exhaustion fallback — the call still succeeds).
+// Non-filterable fields live in the JSON payload only, so they
+// never occupy a slot and never queue.
 $result = $engine->write(new EntryPayload(
     tenantId: 42,
     modelId:  $modelId,
@@ -646,14 +649,18 @@ $engine->retypeField(
     newDeclaredType: 'int',
 );
 
-// Promote an existing unfiltered field to filterable. Same lifecycle
-// as retype but the new slot reservation demands an indexed column;
-// declared_type stays the same so no coercion is attempted.
+// Promote an existing unfiltered field to filterable. A fresh
+// indexed slot is reserved and backfilled from the JSON payload;
+// declared_type stays the same so no coercion is attempted. There
+// is normally no old slot to tombstone — the field held none while
+// it was non-filterable.
 $engine->promoteFieldToFilterable(
     tenantId: 42,
     fieldId:  $fieldId,
 );
 ```
+
+Only filterable fields occupy slots, so only a filterable field has anything to backfill. Retyping a field that is not filterable — or demoting one back to non-filterable — is a registry-only change: the metadata updates, any slot the field held is released, and the operation is complete when the call returns. There is no backfill window and nothing for the Reconciler to do, because the JSON payload was already the authoritative copy. A demoted field keeps reading correctly and immediately stops being a valid filter target.
 
 Retypes between numeric / int and datetime are categorically rejected at registry-write time (`IncompatibleRetypeException`) — epoch interpretation is a caller policy, not engine behaviour; bridge through a `string` intermediate field if you need it. Initiating a second retype for the same field while one is already running throws `RetypeInProgressException`. The Reconciler picks up `running` retype checkpoints on every tick (alongside `stardust_sync_queue` and `stardust_import_jobs`); when the partition is exhausted it promotes the slot to `ready`, bumps `stardust_schema_version`, emits `promote_to_ready`, and triggers a one-shot post-backfill `cardinality_sampled` event.
 
@@ -719,6 +726,7 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `IncompatibleRetypeException` | A retype crosses a categorically rejected pair (`int ↔ datetime`, `numeric ↔ datetime`). |
 | `RetypeInProgressException` | A retype is initiated for a field that already has one running. |
 | `FieldNotFoundException` | `retypeField()` / `promoteFieldToFilterable()` receive a field id that doesn't exist for the tenant. |
+| `NonFilterableFieldSlotException` | A slot reservation was attempted for a non-filterable field. Such fields live in the JSON payload only and never occupy a slot, so this signals a caller bug rather than a capacity problem — distinct from `FieldNotFilterableException`, which rejects a *query* that filters on one. |
 | `ExportJobActiveCapExceededException` | A tenant is already at its active-export cap (carries `$tenantId`, `$activeCount`, `$cap`). |
 
 ### Handling wire-format rejections
