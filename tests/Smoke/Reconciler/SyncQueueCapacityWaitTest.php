@@ -12,18 +12,23 @@ use StarDust\Tests\Smoke\Phase5TestCase;
 /**
  * Exhaustion → enqueue → capacity-wait round-trip.
  *
- * The setup creates an entry whose registered field has NO live slot
- * (no page provisioned yet). `EntryWriter::write()` enqueues; the
- * Reconciler tick claims the row but discovers the field still has
+ * The setup creates an entry whose registered *filterable* field has NO
+ * live slot (no page provisioned yet). `EntryWriter::write()` enqueues;
+ * the Reconciler tick claims the row but discovers the field still has
  * no slot, emits `capacity_wait`, and rolls the chunk back so the
  * queue row stays claimable for a future tick.
+ *
+ * Filterability is the discriminator: a non-filterable field is
+ * JSON-only under ADR 0034, never enqueues, and therefore can never
+ * produce the unsatisfiable capacity_wait loop this round-trip used to
+ * be able to spin forever on. That negative case is covered alongside.
  */
 final class SyncQueueCapacityWaitTest extends Phase5TestCase
 {
     public function testCapacityWaitRollsBackAndEmitsEvent(): void
     {
         $modelId = $this->createModel(1);
-        $this->createField($modelId, 'string', false, 'no_slot');
+        $this->createField($modelId, 'string', true, 'no_slot');
 
         // Write directly (no page provisioned). EntryWriter handles
         // the exhaustion enqueue.
@@ -52,6 +57,41 @@ final class SyncQueueCapacityWaitTest extends Phase5TestCase
         self::assertContains('chunk_claimed', $names);
         self::assertContains('capacity_wait', $names);
         self::assertNotContains('chunk_complete', $names);
+    }
+
+    /**
+     * ADR 0034: a non-filterable field is JSON-only, so a slotless one
+     * never enqueues — which is what eliminates the unsatisfiable
+     * capacity_wait loop. Before ADR 0034 this exact setup produced a
+     * queue row whose backfill could never succeed, so every Reconciler
+     * tick re-claimed it, rolled the chunk back, and emitted
+     * `capacity_wait` again, indefinitely.
+     */
+    public function testNonFilterableFieldNeverProducesAQueueRowOrCapacityWait(): void
+    {
+        $modelId = $this->createModel(1);
+        $this->createField($modelId, 'string', false, 'json_only');
+
+        $this->seedEntry(1, $modelId, ['json_only' => 'x']);
+
+        self::assertSame(0, $this->countQueueRows(), 'A JSON-only field must never enqueue.');
+
+        $stream = fopen('php://memory', 'r+');
+        self::assertNotFalse($stream);
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        $outcome = $this->makeSyncQueueWorkSource($logger)->tickOne('test-corr-json-only');
+
+        self::assertSame(TickOutcome::IDLE, $outcome);
+        self::assertSame(0, $this->countDlqRows());
+
+        rewind($stream);
+        $lines = array_values(array_filter(explode("\n", (string) stream_get_contents($stream))));
+        $names = array_map(
+            static fn (string $l) => json_decode($l, true, flags: JSON_THROW_ON_ERROR)['event'] ?? null,
+            $lines,
+        );
+        self::assertNotContains('capacity_wait', $names);
     }
 
     private function countQueueRows(): int
