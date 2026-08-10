@@ -44,7 +44,9 @@ final class WatcherCardinalityJitterTest extends Phase5TestCase
 
         $watcher = $this->makeWatcher(
             $logger,
-            threshold: 0.0,                  // 0.0 ⇒ never provision; isolate scheduling
+            threshold: 0.0,                  // suppresses the low-capacity trigger; the fixture
+                                             // has no waiting fields, so the demand trigger
+                                             // stays quiet too and scheduling is isolated
             clock: $clock,
             jitterFn: $jitterFn,
             cardinalityIntervalSeconds: 1000,

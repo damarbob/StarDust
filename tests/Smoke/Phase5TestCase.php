@@ -16,6 +16,7 @@ use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\SyncQueueWorkSource;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
+use StarDust\Watcher\PendingDemandReader;
 use StarDust\Watcher\Watcher;
 use StarDust\Write\BackfillExecutor;
 use StarDust\Write\EntryWriter;
@@ -42,6 +43,27 @@ abstract class Phase5TestCase extends ReadPathTestCase
             $fieldId = $this->createField($modelId, 'string', true, 'filler_' . $i);
             $this->reserveSlotFor($fieldId);
         }
+    }
+
+    /**
+     * Provision a page whose first `$count` columns of `$family` carry
+     * a composite index — i.e. capacity a `requireIndexed` reservation
+     * can actually claim.
+     */
+    protected function provisionPageWithIndexedFamily(string $family, int $count = 1): int
+    {
+        return $this->provisionPage(
+            array_slice(PageProvisioner::slotColumnsForType($family), 0, $count)
+        );
+    }
+
+    /**
+     * Seed exactly one unit of Watcher demand: a filterable field that
+     * deliberately holds no slot.
+     */
+    protected function unmappedFilterableField(int $modelId, string $declaredType = 'string'): int
+    {
+        return $this->createField($modelId, $declaredType, true, 'waiting_' . bin2hex(random_bytes(4)));
     }
 
     protected function enqueueSyncRow(int $entryId): void
@@ -241,6 +263,7 @@ abstract class Phase5TestCase extends ReadPathTestCase
             clock: $clock ?? new SystemClock(),
             logger: $log,
             capacityReporter: new CapacityReporter($this->pdo),
+            pendingDemandReader: new PendingDemandReader($this->pdo),
             pageProvisioner: new PageProvisioner(
                 pdo: $this->pdo,
                 clock: new SystemClock(),
