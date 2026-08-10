@@ -36,8 +36,14 @@ use Throwable;
  */
 final class SlotReserver
 {
-    /** Maps `stardust_fields.declared_type` to `stardust_slot_assignments.slot_type`. */
-    private const DECLARED_TYPE_TO_SLOT_TYPE = [
+    /**
+     * Maps `stardust_fields.declared_type` to `stardust_slot_assignments.slot_type`.
+     *
+     * Public because the Watcher's demand reader folds waiting fields
+     * into slot families with the same mapping; one source keeps the
+     * reserver and the provisioner's demand view from drifting.
+     */
+    public const DECLARED_TYPE_TO_SLOT_TYPE = [
         'string'   => 'str',
         'int'      => 'int',
         'numeric'  => 'num',
@@ -145,21 +151,17 @@ final class SlotReserver
         // pages; FOR UPDATE prevents two concurrent reservers from
         // claiming the same row.
         //
-        // When the caller demands an indexed slot, an EXISTS subquery
-        // against `information_schema.STATISTICS` filters to columns
-        // that participate in a `(tenant_id, <slot>)` composite index
-        // (PageProvisioner names these `ix_<table>_<slot>`).
+        // When the caller demands an indexed slot, the shared
+        // {@see IndexedSlotPredicate} filters to columns that carry an
+        // index. It is shared because the Watcher counts usable
+        // capacity with the same predicate — if the two drift, the
+        // Watcher reports capacity this method refuses.
         $sql = 'SELECT a.id, a.page_id, a.slot_column'
             . ' FROM stardust_slot_assignments a';
         if ($requireIndexed) {
             $sql .= ' JOIN stardust_pages p ON p.id = a.page_id'
                 . ' WHERE a.status = \'free\' AND a.slot_type = ?'
-                . ' AND EXISTS ('
-                . '   SELECT 1 FROM information_schema.STATISTICS s'
-                . '   WHERE s.TABLE_SCHEMA = DATABASE()'
-                . '     AND s.TABLE_NAME = p.table_name'
-                . '     AND s.COLUMN_NAME = a.slot_column'
-                . ' )';
+                . ' AND ' . IndexedSlotPredicate::existsSql('a', 'p');
         } else {
             $sql .= ' WHERE a.status = \'free\' AND a.slot_type = ?';
         }

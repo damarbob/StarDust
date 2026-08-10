@@ -232,8 +232,17 @@ final class PageProvisioner
         $stmt->execute($params);
     }
 
-    /** @return list<string> */
-    private static function slotColumnsForType(string $type): array
+    /**
+     * The slot column names of one type family, in declaration order.
+     *
+     * Public because the Watcher's provisioning planner picks the
+     * columns to index from this list and uses its length as the
+     * family's per-page capacity — so the layout has exactly one
+     * definition. Mirrors {@see self::allSlotColumns()}.
+     *
+     * @return list<string>
+     */
+    public static function slotColumnsForType(string $type): array
     {
         $count = self::SLOT_TYPE_DEFINITIONS[$type]['count'];
         $cols = [];
