@@ -19,15 +19,42 @@ use Throwable;
  * Singleton page-provisioning daemon (ADR 0008, ADR 0027).
  *
  * Each `tick()`:
- *   1. Emits `poll_started`.
- *   2. Asks {@see CapacityReporter} for the global free-ratio.
- *   3. If below threshold, acquires
+ *   1. Asks {@see CapacityReporter} for slot capacity and
+ *      {@see PendingDemandReader} for the fields waiting on a slot,
+ *      then {@see ProvisioningPlanner} for the verdict. Emits
+ *      `poll_started` carrying both.
+ *   2. If the plan says provision, acquires
  *      `GET_LOCK('stardust_page_provision', 10)`, emits
- *      `provision_started`, calls {@see PageProvisioner::provision([])},
- *      emits `provision_complete`, and releases the lock.
- *   4. If the jittered cardinality timer is due, runs
+ *      `provision_started`, calls {@see PageProvisioner::provision()}
+ *      with the planner's indexed-column set, emits
+ *      `provision_complete`, and releases the lock.
+ *   3. If the jittered cardinality timer is due, runs
  *      {@see CardinalitySampler::sample()} and schedules the next sample.
- *   5. Emits `poll_complete`.
+ *   4. Emits `poll_complete`.
+ *
+ * ## Provisioning is demand-driven, not just capacity-driven
+ *
+ * Two triggers, OR-composed, and the planner owns the arithmetic:
+ *   - **`unsatisfiable_demand`** — a slot family someone is waiting on
+ *     has no claimable (indexed, free) slot. Fires regardless of the
+ *     threshold; this is the starvation-freedom guarantee, and without
+ *     it satisfiable demand in one family dilutes the ratio and starves
+ *     a waiter in another indefinitely.
+ *   - **`low_capacity`** — the global free ratio fell below
+ *     `Config::$watcherCapacityThreshold`. Unchanged behaviour.
+ *
+ * The new page's indexed columns come from that demand: enough of each
+ * demanded family to cover its shortfall, floored at one column per
+ * demanded family and capped at the family's per-page capacity. With no
+ * demand the set is empty and the page is pure headroom.
+ *
+ * `usable_free_ratio` is reported on every poll but is deliberately NOT
+ * a trigger — as a threshold it diverges, provisioning a page per tick.
+ * {@see ProvisioningPlanner} carries the proof; do not turn it into one.
+ *
+ * Because `threshold` is no longer the only trigger, setting it to
+ * `0.0` no longer means "never provision": a starved family still
+ * provisions.
  *
  * Cardinality scheduling (ADR 0019 "every 24 h, jittered to avoid
  * stampedes"). Two mechanisms, off the injected `$jitterFn` RNG:
@@ -45,10 +72,6 @@ use Throwable;
  *
  * Process-level singleton enforcement is the CLI's job
  * ({@see \StarDust\Daemon\PidFileGuard}); this class assumes it.
- *
- * The Watcher passes `filterableSlots = []` because its trigger is
- * capacity, not field demand. Field-driven indexed slot provisioning
- * is Phase 6b's territory and runs through a different path.
  */
 final class Watcher implements Tickable
 {
@@ -69,6 +92,7 @@ final class Watcher implements Tickable
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
         private readonly CapacityReporter $capacityReporter,
+        private readonly PendingDemandReader $pendingDemandReader,
         private readonly PageProvisioner $pageProvisioner,
         private readonly CardinalitySampler $cardinalitySampler,
         private readonly float $capacityThreshold,
@@ -84,21 +108,29 @@ final class Watcher implements Tickable
     {
         $correlationId = UuidV4::generate();
         $snapshot = $this->capacityReporter->report();
+        $demand   = $this->pendingDemandReader->read();
+        $plan     = ProvisioningPlanner::plan($snapshot, $demand, $this->capacityThreshold);
 
         $this->logger->info('watcher poll started', [
-            'event'             => 'poll_started',
-            'source'            => 'watcher',
-            'correlation_id'    => $correlationId,
-            'free_ratio'        => round($snapshot->globalFreeRatio(), 4),
-            'threshold'         => $this->capacityThreshold,
-            'total_slots'       => $snapshot->totalSlots,
-            'free_slots'        => $snapshot->totalFree,
-            'pages_inspected'   => $snapshot->pagesInspected,
+            'event'              => 'poll_started',
+            'source'             => 'watcher',
+            'correlation_id'     => $correlationId,
+            'free_ratio'         => round($snapshot->globalFreeRatio(), 4),
+            'threshold'          => $this->capacityThreshold,
+            'total_slots'        => $snapshot->totalSlots,
+            'free_slots'         => $snapshot->totalFree,
+            'pages_inspected'    => $snapshot->pagesInspected,
+            'usable_free_slots'  => $plan->usableFree,
+            'usable_total_slots' => $plan->usableTotal,
+            'usable_free_ratio'  => round($plan->usableFreeRatio, 4),
+            'pending_demand'     => $demand->forLog(),
+            'pending_waiters'    => $demand->totalWaiters(),
+            'starved_families'   => $plan->starvedFamilies,
         ]);
 
         $action = 'no_action';
-        if ($snapshot->globalFreeRatio() < $this->capacityThreshold) {
-            $action = $this->tryProvision($correlationId);
+        if ($plan->shouldProvision) {
+            $action = $this->tryProvision($correlationId, $plan, $demand);
         }
 
         if ($this->shouldSampleCardinality()) {
@@ -111,11 +143,24 @@ final class Watcher implements Tickable
             'source'         => 'watcher',
             'correlation_id' => $correlationId,
             'action'         => $action,
+            'trigger'        => $plan->trigger,
         ]);
     }
 
-    private function tryProvision(string $correlationId): string
-    {
+    /**
+     * The plan is read before the lock is acquired, so a concurrent
+     * reservation during a lock wait can stale it. Considered and
+     * accepted rather than re-reading under the lock: the worst case is
+     * one redundant page (page growth is already monotonic by design)
+     * or a one-tick delay that the next poll corrects, and the
+     * singleton guarantee narrows the race to a single other writer.
+     * Re-reading would double the round-trips for that.
+     */
+    private function tryProvision(
+        string $correlationId,
+        ProvisioningPlan $plan,
+        PendingDemand $demand,
+    ): string {
         try {
             $lock = AdvisoryLock::acquire($this->pdo, 'stardust_page_provision', $this->provisionLockTimeoutSeconds);
         } catch (AdvisoryLockTimeoutException $e) {
@@ -129,28 +174,38 @@ final class Watcher implements Tickable
         }
 
         try {
+            // Logged before the DDL so the intent survives a crash
+            // inside the provisioning window.
             $this->logger->info('page provision started', [
-                'event'          => 'provision_started',
-                'source'         => 'watcher',
-                'correlation_id' => $correlationId,
+                'event'           => 'provision_started',
+                'source'          => 'watcher',
+                'correlation_id'  => $correlationId,
+                'trigger'         => $plan->trigger,
+                'indexed_columns' => $plan->indexedColumns,
+                'pending_demand'  => $demand->forLog(),
             ]);
 
-            $pageId = $this->pageProvisioner->provision([]);
+            $pageId = $this->pageProvisioner->provision($plan->indexedColumns);
 
             $this->logger->info('page provision complete', [
-                'event'          => 'provision_complete',
-                'source'         => 'watcher',
-                'correlation_id' => $correlationId,
-                'page_id'        => $pageId,
+                'event'           => 'provision_complete',
+                'source'          => 'watcher',
+                'correlation_id'  => $correlationId,
+                'page_id'         => $pageId,
+                'trigger'         => $plan->trigger,
+                'indexed_columns' => $plan->indexedColumns,
+                'pending_demand'  => $demand->forLog(),
             ]);
 
             return 'provisioned';
         } catch (Throwable $e) {
             $this->logger->error('page provision failed', [
-                'event'          => 'provision_failed',
-                'source'         => 'watcher',
-                'correlation_id' => $correlationId,
-                'message'        => $e->getMessage(),
+                'event'           => 'provision_failed',
+                'source'          => 'watcher',
+                'correlation_id'  => $correlationId,
+                'message'         => $e->getMessage(),
+                // A rejected column name is diagnosed by exactly this.
+                'indexed_columns' => $plan->indexedColumns,
             ]);
             throw $e;
         } finally {

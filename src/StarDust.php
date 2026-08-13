@@ -55,6 +55,7 @@ use StarDust\Search\SearchService;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
+use StarDust\Watcher\PendingDemandReader;
 use StarDust\Watcher\Watcher;
 use StarDust\Write\BackfillExecutor;
 use StarDust\Write\BulkIngestOptions;
@@ -330,6 +331,7 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             capacityReporter: new CapacityReporter($this->config->pdo),
+            pendingDemandReader: new PendingDemandReader($this->config->pdo),
             pageProvisioner: new PageProvisioner(
                 pdo: $this->config->pdo,
                 clock: $this->config->clock,

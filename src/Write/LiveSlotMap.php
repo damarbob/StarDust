@@ -46,7 +46,16 @@ use PDO;
  */
 final class LiveSlotMap
 {
-    private const LIVE_STATUSES = ['assigned', 'backfilling', 'ready'];
+    /**
+     * Slot statuses the write path treats as live.
+     *
+     * Public because the Watcher's demand reader needs the same
+     * definition of "this field already has a slot" — a second literal
+     * would let the two drift. Note {@see \StarDust\Retype\RetypeBackfillWorkSource}
+     * deliberately uses a narrower `('backfilling','ready')` set; that
+     * one is not this invariant.
+     */
+    public const LIVE_STATUSES = ['assigned', 'backfilling', 'ready'];
 
     /**
      * @param array<string, LiveSlotEntry> $byFieldName
