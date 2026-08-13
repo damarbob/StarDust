@@ -77,4 +77,19 @@ final class PendingDemand
     {
         return $this->waitersByFamily;
     }
+
+    /**
+     * The log-payload form: always a JSON **object**, never an array.
+     *
+     * `json_encode([])` is `[]` but `json_encode(['str' => 1])` is
+     * `{"str":1}`, so emitting the raw map would change the field's
+     * JSON type the moment demand became non-zero. A strict-mapping
+     * sink types the field from the first document it sees and then
+     * rejects the other shape — which would drop the demand signal
+     * exactly when it starts mattering. Casting to an object pins it.
+     */
+    public function forLog(): object
+    {
+        return (object) $this->waitersByFamily;
+    }
 }

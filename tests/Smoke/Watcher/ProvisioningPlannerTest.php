@@ -174,11 +174,18 @@ final class ProvisioningPlannerTest extends TestCase
         self::assertSame(['i_dt_01', 'i_str_01', 'i_str_02'], $plan->indexedColumns);
     }
 
-    public function testUsableRatioEqualsGlobalRatioWhenDemandIsEmpty(): void
+    /**
+     * With nobody waiting, all three usable figures report the global
+     * ones. Reporting the ratio globally but the counts as 0 would emit
+     * a self-contradictory log line ("0 free of 0 total, ratio 0.5").
+     */
+    public function testUsableFiguresEqualTheGlobalOnesWhenDemandIsEmpty(): void
     {
         $plan = $this->plan($this->snapshot(totalFree: 30, totalSlots: 60));
 
         self::assertSame(0.5, $plan->usableFreeRatio);
+        self::assertSame(30, $plan->usableFree);
+        self::assertSame(60, $plan->usableTotal);
     }
 
     public function testUsableRatioIsZeroWhenDemandedFamiliesHaveNoIndexedInventory(): void

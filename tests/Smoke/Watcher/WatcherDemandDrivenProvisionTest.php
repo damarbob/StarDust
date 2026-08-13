@@ -19,8 +19,8 @@ use StarDust\Tests\Smoke\Phase5TestCase;
  */
 final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
 {
-    /** @return list<array<string, mixed>> */
-    private function tickAndReadLog(float $threshold = 0.20): array
+    /** @return list<string> raw NDJSON lines, before decoding */
+    private function tickAndReadRawLog(float $threshold = 0.20): array
     {
         $stream = fopen('php://memory', 'r+');
         self::assertNotFalse($stream);
@@ -28,11 +28,16 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
         $this->makeWatcher(new StdoutNdjsonLogger(new SystemClock(), $stream), threshold: $threshold)->tick();
 
         rewind($stream);
-        $lines = array_values(array_filter(explode("\n", (string) stream_get_contents($stream))));
 
+        return array_values(array_filter(explode("\n", (string) stream_get_contents($stream))));
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function tickAndReadLog(float $threshold = 0.20): array
+    {
         return array_map(
             static fn (string $l): array => json_decode($l, true, flags: JSON_THROW_ON_ERROR),
-            $lines,
+            $this->tickAndReadRawLog($threshold),
         );
     }
 
@@ -148,6 +153,51 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
         self::assertSame(['str' => 1], $started['pending_demand']);
         self::assertSame(1, $started['pending_waiters']);
         self::assertSame([], $started['starved_families']);
+    }
+
+    /**
+     * `pending_demand` must be a JSON object in every poll, empty or
+     * not. Asserted on the raw line because `json_decode($s, true)`
+     * renders `[]` and `{}` identically, so a decoded assertion cannot
+     * see the difference — which is precisely how the field could have
+     * changed type between polls unnoticed.
+     */
+    public function testPendingDemandIsAlwaysAJsonObjectNeverAnArray(): void
+    {
+        $empty = $this->tickAndReadRawLog();
+        $emptyPoll = array_values(array_filter(
+            $empty,
+            static fn (string $l): bool => str_contains($l, '"event":"poll_started"'),
+        ));
+        self::assertNotSame([], $emptyPoll);
+        self::assertStringContainsString('"pending_demand":{}', $emptyPoll[0], 'Empty demand must encode as {}.');
+
+        $modelId = $this->createModel(1);
+        $this->unmappedFilterableField($modelId, 'string');
+
+        $withDemand = $this->tickAndReadRawLog();
+        $demandPoll = array_values(array_filter(
+            $withDemand,
+            static fn (string $l): bool => str_contains($l, '"event":"poll_started"'),
+        ));
+        self::assertStringContainsString('"pending_demand":{"str":1}', $demandPoll[0]);
+    }
+
+    public function testPollStartedReportsGlobalFiguresAsUsableWhenNothingIsWaiting(): void
+    {
+        $this->provisionPage();
+
+        $started = $this->record($this->tickAndReadLog(), 'poll_started');
+
+        self::assertNotNull($started);
+        self::assertSame([], (array) $started['pending_demand']);
+        self::assertSame(
+            $started['free_slots'],
+            $started['usable_free_slots'],
+            'With nobody waiting, every free slot is usable — the counts must say so, not just the ratio.',
+        );
+        self::assertSame($started['total_slots'], $started['usable_total_slots']);
+        self::assertSame((float) $started['free_ratio'], (float) $started['usable_free_ratio']);
     }
 
     /** With nobody waiting, a headroom page indexes nothing — no speculative indexes. */

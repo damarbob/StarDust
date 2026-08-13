@@ -83,11 +83,17 @@ final class ProvisioningPlanner
 
         // With nobody waiting, every free slot is usable by whatever
         // arrives next, so the honest reading of "usable" is the global
-        // ratio. Reporting 0/0 here would make an idle deployment
-        // provision on every tick.
-        $usableFreeRatio = $demand->isEmpty()
-            ? $snapshot->globalFreeRatio()
-            : ($usableTotal === 0 ? 0.0 : $usableFree / $usableTotal);
+        // figure — counts included, not just the ratio. Leaving the
+        // counts at 0 here would emit a self-contradictory log line
+        // ("0 free of 0 total, ratio 1.0"), and reporting a 0/0 ratio
+        // instead would make an idle deployment provision every tick.
+        if ($demand->isEmpty()) {
+            $usableFree      = $snapshot->totalFree;
+            $usableTotal     = $snapshot->totalSlots;
+            $usableFreeRatio = $snapshot->globalFreeRatio();
+        } else {
+            $usableFreeRatio = $usableTotal === 0 ? 0.0 : $usableFree / $usableTotal;
+        }
 
         $lowCapacity = $snapshot->globalFreeRatio() < $threshold;
 
@@ -133,10 +139,9 @@ final class ProvisioningPlanner
         $columns = [];
 
         foreach ($demand->families() as $family) {
+            // Families originate from SlotReserver's declared-type map,
+            // so this always resolves to a real per-page layout.
             $available = PageProvisioner::slotColumnsForType($family);
-            if ($available === []) {
-                continue;
-            }
 
             $shortfall = $demand->waitersFor($family) - $snapshot->indexedFreeFor($family);
             $take = max(1, min($shortfall, count($available)));

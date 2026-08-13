@@ -123,7 +123,7 @@ final class Watcher implements Tickable
             'usable_free_slots'  => $plan->usableFree,
             'usable_total_slots' => $plan->usableTotal,
             'usable_free_ratio'  => round($plan->usableFreeRatio, 4),
-            'pending_demand'     => $demand->toArray(),
+            'pending_demand'     => $demand->forLog(),
             'pending_waiters'    => $demand->totalWaiters(),
             'starved_families'   => $plan->starvedFamilies,
         ]);
@@ -182,7 +182,7 @@ final class Watcher implements Tickable
                 'correlation_id'  => $correlationId,
                 'trigger'         => $plan->trigger,
                 'indexed_columns' => $plan->indexedColumns,
-                'pending_demand'  => $demand->toArray(),
+                'pending_demand'  => $demand->forLog(),
             ]);
 
             $pageId = $this->pageProvisioner->provision($plan->indexedColumns);
@@ -194,7 +194,7 @@ final class Watcher implements Tickable
                 'page_id'         => $pageId,
                 'trigger'         => $plan->trigger,
                 'indexed_columns' => $plan->indexedColumns,
-                'pending_demand'  => $demand->toArray(),
+                'pending_demand'  => $demand->forLog(),
             ]);
 
             return 'provisioned';
