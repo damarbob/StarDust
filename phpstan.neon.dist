@@ -6,6 +6,13 @@ parameters:
     paths:
         - src
         - bin
+    # composer.json requires ^8.1 and CI runs the smoke suite on 8.1-8.4.
+    # Analysing the whole supported span (rather than just the local
+    # runtime) catches both "uses an 8.2+ API" and "relies on behaviour
+    # removed by 8.4" without waiting for the CI matrix to fail.
+    phpVersion:
+        min: 80100
+        max: 80400
     # Pre-existing findings are captured in phpstan-baseline.neon so this
     # check is green today while still holding all NEW code to level 6.
     # Shrink the baseline as files are touched; raise `level` when it empties.

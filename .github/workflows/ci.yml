@@ -34,6 +34,25 @@ jobs:
       - name: Run PHPStan
         run: vendor/bin/phpstan analyse --no-progress
 
+  markdown-lint:
+    name: markdownlint (no DB)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Pinned: a floating version can turn CI red on an unrelated day when
+      # markdownlint adds or tightens a rule. Rule config lives in
+      # .markdownlint.json. The globs cover every tracked markdown file and
+      # deliberately exclude vendor/.
+      - name: Run markdownlint
+        run: npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md"
+
   mysql-smoke:
     name: Smoke against MySQL 8.0 on PHP ${{ matrix.php-version }} (must pass)
     runs-on: ubuntu-latest

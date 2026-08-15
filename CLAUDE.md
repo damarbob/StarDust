@@ -60,6 +60,9 @@ composer install
 # This is the FIRST CI job: run it before calling any change done.
 vendor/bin/phpstan analyse
 
+# Markdown lint — same version and globs CI uses. No database needed.
+npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md"
+
 # Run the full smoke suite — requires a reachable MySQL 8.0.13+
 cp phpunit.xml.dist phpunit.xml          # gitignored; edit with DB creds
 vendor/bin/phpunit --testsuite Smoke
@@ -107,11 +110,11 @@ bin/stardust --help
 
 The smoke suite **skips** (does not fail) when `STARDUST_TEST_DSN` / `STARDUST_TEST_USER` are unset. CI provides them via the MySQL service container. `phpunit.xml.dist` sets `failOnWarning`, `failOnRisky`, `beStrictAboutOutputDuringTests`, and `beStrictAboutTestsThatDoNotTestAnything` — keep tests strict-clean.
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs: `static-analysis` (PHPStan, no DB), `mysql-smoke` (the suite across the full PHP matrix), and `mariadb-rejection` (below).
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs four jobs: `static-analysis` (PHPStan, no DB), `markdown-lint` (markdownlint, no DB), `mysql-smoke` (the suite across the full PHP matrix), and `mariadb-rejection` (below).
 
 ## PHP floor and static analysis
 
-- **The floor is PHP 8.1** (`composer.json` requires `^8.1`) and CI runs the smoke suite on **8.1, 8.2, 8.3, and 8.4**. Do not use syntax newer than 8.1 — `readonly` *classes*, `json_validate()`, DNF types, and `#[\Override]` all compile locally on 8.4 and break the 8.1 job. Readonly *properties* and enums are 8.1 and fine. Where a note in these files mentions 8.4 behaviour (e.g. `Exception::$code` readonly redeclaration, the `str_getcsv()` `$escape` deprecation), that is a *constraint the code must satisfy on 8.4*, not permission to target 8.4.
+- **The floor is PHP 8.1** (`composer.json` requires `^8.1`) and CI runs the smoke suite on **8.1, 8.2, 8.3, and 8.4**. [phpstan.neon.dist](phpstan.neon.dist) pins `phpVersion: {min: 80100, max: 80400}`, so the analyser enforces the whole supported span locally — you no longer have to push and wait for the 8.1 matrix job to find out. Do not use syntax newer than 8.1 — `readonly` *classes*, `json_validate()`, DNF types, and `#[\Override]` all compile locally on 8.4 and break the 8.1 job. Readonly *properties* and enums are 8.1 and fine. Where a note in these files mentions 8.4 behaviour (e.g. `Exception::$code` readonly redeclaration, the `str_getcsv()` `$escape` deprecation), that is a *constraint the code must satisfy on 8.4*, not permission to target 8.4.
 - **PHPStan runs at level 6** over `src/` and `bin/` ([phpstan.neon.dist](phpstan.neon.dist)). Pre-existing findings are parked in [phpstan-baseline.neon](phpstan-baseline.neon) so the check is green today while **all new code is held to level 6**.
 - **Never regenerate the baseline to make a failure go away.** The baseline shrinks as files are touched; the `level` rises when it empties. Adding an entry for code you just wrote inverts the whole arrangement. If new code can't pass level 6, fix the code or say so explicitly.
 

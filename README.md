@@ -24,7 +24,7 @@ foreach ($page->rows as $company) {
 
 If you've ever reached for an EAV table and then watched the self-joins melt your database, StarDust is the engine you wanted instead. The complete JSON payload is always the system of record; filterable fields are mirrored into pre-provisioned, indexed slot columns — so reads hit real indexes while writes stay available even when capacity runs low.
 
-### Try it in five minutes
+## Try it in five minutes
 
 ```bash
 docker compose up
@@ -72,7 +72,7 @@ StarDust ships as a **framework-neutral Composer library** with zero runtime fra
 
 Every entry's full payload is stored as JSON in `entry_data` — that's the system of record, and it always holds the complete record. Filterable fields are *mirrored* into typed, indexed slot columns on an extension page, so a filter query reads an index instead of scanning JSON:
 
-```
+```text
                        write(EntryPayload)
                                 │
                                 ▼
@@ -102,7 +102,7 @@ Every entry's full payload is stored as JSON in `entry_data` — that's the syst
 
 Four background daemons keep the slot machinery healthy. They never talk to each other directly — MySQL is the only coordination point:
 
-```
+```text
         ┌──────────── MySQL — sole coordination point ──────────────┐
         │   entry_data · entry_slots_page_N · stardust_* registry   │
         └───────────────────────────────────────────────────────────┘
