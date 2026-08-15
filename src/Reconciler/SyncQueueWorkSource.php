@@ -130,9 +130,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
                 return TickOutcome::CAPACITY_WAIT;
             }
 
-            if ($processedQueueIds !== []) {
-                $this->deleteQueueRows($processedQueueIds);
-            }
+            $this->deleteQueueRows($processedQueueIds);
 
             $event = $dlqCount > 0 ? 'chunk_partial' : 'chunk_complete';
             $this->logger->info('sync_queue chunk processed', [
@@ -197,6 +195,15 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
     /** @param list<int> $queueIds */
     private function deleteQueueRows(array $queueIds): void
     {
+        // An empty list would render `IN ()` — a MySQL syntax error. The
+        // caller cannot currently reach this (every loop path either
+        // appends an id or breaks into the CAPACITY_WAIT return), but the
+        // guard belongs next to the SQL that depends on it rather than at
+        // the call site, where it read as unreachable-false.
+        if ($queueIds === []) {
+            return;
+        }
+
         $placeholders = implode(',', array_fill(0, count($queueIds), '?'));
         $stmt = $this->pdo->prepare(
             "DELETE FROM stardust_sync_queue WHERE id IN ({$placeholders})"
