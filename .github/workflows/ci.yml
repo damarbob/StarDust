@@ -51,7 +51,7 @@ jobs:
       # .markdownlint.json. The globs cover every tracked markdown file and
       # deliberately exclude vendor/.
       - name: Run markdownlint
-        run: npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md"
+        run: npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md" ".agent/**/*.md"
 
   mysql-smoke:
     name: Smoke against MySQL 8.0 on PHP ${{ matrix.php-version }} (must pass)

@@ -63,6 +63,7 @@ StarDust ships as a **framework-neutral Composer library** with zero runtime fra
 - [Errors](#errors)
 - [CLI](#cli)
 - [Testing](#testing)
+- [Contributing](#contributing)
 - [Legacy](#legacy)
 - [License](#license)
 
@@ -836,6 +837,14 @@ A handful of the suite's tests need no database at all (e.g. the wire-format dec
 GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
 
 For the full setup guide and a phase-by-phase breakdown of exactly what each behaviour the suite proves, see **[TESTING.md](TESTING.md)**.
+
+---
+
+## Contributing
+
+Bug reports, questions, and pull requests are welcome.
+
+Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers the requirements, the setup, and the three commands to run before pushing. Most of this project's conventions are enforced by tests rather than by review, so you will hear about a mistake immediately instead of days later.
 
 ---
 

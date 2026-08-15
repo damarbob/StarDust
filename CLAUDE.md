@@ -38,6 +38,9 @@ Amending an ADR: edit in place only for editorial fixes. A change that alters wh
 
 ### Sibling docs and what each owns
 
+- [CONTRIBUTING.md](CONTRIBUTING.md) — the human entry point: requirements, setup, the three pre-push commands, and a table of which conventions are enforced by tests. Deliberately thin and pointer-heavy; put depth in this file or TESTING.md rather than growing it.
+- [AGENTS.md](AGENTS.md) — tool-neutral agent entry point (Cursor, Codex, and others read it, as this file is Claude Code's). **A pointer, not a copy** — never duplicate guidance into it.
+- [.agent/rules/](.agent/rules/) — commit-message and changelog style, in the format Windsurf reads. The two CodeIgniter-era guides that used to live here were deleted with the 0.2.x line they described.
 - [TESTING.md](TESTING.md) — contributor-facing narrative of what the smoke suite *proves*, phase by phase. This file owns test *conventions* (fixtures, base classes, gotchas); TESTING.md owns *coverage claims*. Keep them from contradicting each other.
 - [README.md](README.md) — consumer-facing, and a first-class deliverable. When a phase ships, update it in the same change as this file: Status line, usage examples, smoke-suite bullets. **README must never cite an ADR** — ADRs are internal; the README explains behaviour on its own terms.
 - [CHANGELOG.md](CHANGELOG.md) — Keep a Changelog format, grouped under the single `[0.3.0-alpha.1]` heading for the whole v0.3.0 build.
@@ -61,7 +64,7 @@ composer install
 vendor/bin/phpstan analyse
 
 # Markdown lint — same version and globs CI uses. No database needed.
-npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md"
+npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md" ".agent/**/*.md"
 
 # Run the full smoke suite — requires a reachable MySQL 8.0.13+
 cp phpunit.xml.dist phpunit.xml          # gitignored; edit with DB creds
