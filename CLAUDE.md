@@ -32,9 +32,11 @@ The legacy 0.2.x line (CodeIgniter 4 + Virtual Columns) was removed in `02eccd4`
 - [SDDPG/schemas/schema_reference.md](SDDPG/schemas/schema_reference.md) — "schema_reference §N". [SDDPG/schemas/queryfilter.schema.json](SDDPG/schemas/queryfilter.schema.json) is the source of truth for the in-package copy at [schemas/queryfilter.schema.json](schemas/queryfilter.schema.json); change the SDDPG one first.
 - [SDDPG/glossary.md](SDDPG/glossary.md), [SDDPG/implementation_phases.md](SDDPG/implementation_phases.md), [SDDPG/runbooks/](SDDPG/runbooks/).
 
-**Search the ADRs before surfacing a design question as open** — most already have a ruling. On any conflict between a doc and an ADR, the ADR governs. An ADR's status (Proposed vs Accepted) is a human-review milestone, not a build gate: Proposed never blocks implementation.
+**Search the ADRs before surfacing a design question as open** — most already have a ruling. On any conflict between a doc and an ADR, the ADR governs.
 
-Amending an ADR: edit in place only for editorial fixes. A change that alters what code someone would write needs a **new** ADR plus a dated pointer added to the superseded one.
+**Status semantics.** An ADR's `Status` is a human-review milestone, not a build gate: `Proposed` never blocks implementation, and the whole engine was built while every ADR was still Proposed. Acceptance means the maintainer has personally reviewed that ADR and internalised it — so **new ADRs always enter as `Proposed`, and only the maintainer flips one to `Accepted`.** Never change a status on your own initiative. Acceptance is also need-driven rather than linear: read the individual ADR's `Status` line rather than assuming everything below some number is accepted. When new work leans on a still-`Proposed` ADR, say so — review has changed ADR semantics before and can again.
+
+**Amending an ADR.** A `Proposed` ADR may be edited freely in place; the append-only discipline binds `Accepted` ones. For those, edit in place only for editorial fixes — a change that alters what code someone would write needs a **new** ADR plus a dated pointer added to the superseded one.
 
 ### Sibling docs and what each owns
 
