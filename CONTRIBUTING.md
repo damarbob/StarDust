@@ -43,9 +43,15 @@ and the MariaDB rejection check.
 
 Two notes on static analysis. PHPStan runs at level 6 over `src/` and `bin/`, and
 it is pinned to analyse the whole supported PHP range rather than your local
-runtime. A small baseline file absorbs some pre-existing findings — **never add to
-it to silence something you just wrote.** The baseline shrinks as files are
-touched; growing it inverts the arrangement.
+runtime. There is **no baseline file** and the check reports zero errors — please
+don't add one; if new code can't pass level 6, fix the code.
+
+If PHPStan tells you a runtime check is redundant, look hard at the docblock
+before deleting the check. PHP enforces only `array` at runtime — never
+`list<string>` or an `array{...}` shape — so a `@param` can promise more than
+callers actually deliver, and the analyser will flag the guard that defends
+against the gap. A few parameter types are deliberately widened for this reason,
+each with a comment explaining why.
 
 ## Conventions that check themselves
 

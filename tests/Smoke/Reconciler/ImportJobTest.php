@@ -95,6 +95,44 @@ final class ImportJobTest extends Phase5TestCase
         }
     }
 
+    /**
+     * An artifact entry with no `fields` key writes an empty payload rather
+     * than fataling.
+     *
+     * The decoded artifact's shape is whatever `json_decode` produced from a
+     * file on disk, not something the type system verified, so the `?? []`
+     * fallback in `ImportJobWorkSource` is a real guard. Static analysis reads
+     * the declared shape and calls it redundant; this test is the evidence it
+     * is not. A missing key is a lesser corruption than invalid JSON — it never
+     * reaches the `malformed_json` path — so without the fallback the worker
+     * would die on an entry the decoder happily accepted.
+     */
+    public function testEntryWithoutFieldsKeyWritesEmptyPayload(): void
+    {
+        [$modelId] = $this->setupModelWithReservedField(1, 'string');
+
+        $artifactDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'stardust-test-' . bin2hex(random_bytes(4));
+        mkdir($artifactDir, 0777, true);
+
+        try {
+            $entries = [['tenant_id' => 1, 'model_id' => $modelId]];
+            [$jobId] = $this->writePendingImportJob(1, $entries, $artifactDir);
+
+            $source  = $this->makeImportJobWorkSource(artifactDir: $artifactDir);
+            $outcome = $source->tickOne('test-corr-nofields');
+
+            self::assertSame(TickOutcome::WORK_DONE, $outcome);
+            self::assertSame('completed', $this->fetchJob($jobId)['status']);
+
+            $fields = $this->pdo->query(
+                'SELECT fields FROM entry_data WHERE model_id = ' . $modelId
+            )->fetchColumn();
+            self::assertSame([], json_decode((string) $fields, true, flags: JSON_THROW_ON_ERROR));
+        } finally {
+            $this->cleanupDir($artifactDir);
+        }
+    }
+
     public function testIdleWhenNoPendingJob(): void
     {
         $source = $this->makeImportJobWorkSource();

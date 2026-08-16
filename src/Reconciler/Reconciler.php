@@ -37,7 +37,10 @@ final class Reconciler implements Tickable
     private readonly array $workSources;
 
     /**
-     * @param list<ReconcilerWorkSource> $workSources         Iterated in order each tick.
+     * @param array<ReconcilerWorkSource> $workSources        Iterated in order each tick. Typed
+     *                                                        `array` rather than `list` because the
+     *                                                        constructor is what normalises it; PHP
+     *                                                        would accept a keyed array here.
      * @param int                        $capacityWaitMillis  Sleep on CAPACITY_WAIT.
      * @param int                        $interChunkDelayMicros Sleep after each WORK_DONE outcome.
      * @param callable(int):void|null    $sleepFn             Injected for tests; defaults to `usleep`.

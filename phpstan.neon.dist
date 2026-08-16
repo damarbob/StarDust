@@ -1,11 +1,12 @@
-includes:
-    - phpstan-baseline.neon
-
 parameters:
     level: 6
     paths:
         - src
         - bin
+    # There is deliberately no baseline file. The suppression list was emptied
+    # rather than capped, because an absent baseline enforces itself: you cannot
+    # quietly grow a file that does not exist, and re-introducing one shows up in
+    # review as a new file. If new code cannot pass level 6, fix the code.
     # composer.json requires ^8.1 and CI runs the smoke suite on 8.1-8.4.
     # Analysing the whole supported span (rather than just the local
     # runtime) catches both "uses an 8.2+ API" and "relies on behaviour

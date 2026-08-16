@@ -43,7 +43,7 @@ final class ResultAssembler
         array $slotColumnByField,
         ?array $selectFields,
     ): array {
-        $fieldNames = $selectFields ?? array_values(array_keys($snapshot->fieldsByName));
+        $fieldNames = $selectFields ?? array_keys($snapshot->fieldsByName);
 
         $out = [];
         foreach ($rows as $row) {

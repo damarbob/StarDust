@@ -40,9 +40,12 @@ final class EntryQuery
     public const MIN_PAGE_SIZE = 1;
 
     /**
-     * @param list<string>|null $selectFields field names to populate on result rows;
-     *                                        `null` → engine returns every registered
-     *                                        field for the model
+     * @param array<string>|null $selectFields field names to populate on result rows;
+     *                                         `null` → engine returns every registered
+     *                                         field for the model. Typed `array` rather
+     *                                         than `list` because this is a public DTO a
+     *                                         consumer constructs directly and PHP accepts
+     *                                         a keyed array here; `BoundedFetch` normalises.
      */
     public function __construct(
         public readonly int $tenantId,

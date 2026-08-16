@@ -284,7 +284,13 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     }
 
     /**
-     * @return array{tenant_id: int, entries: list<array{tenant_id: int, model_id: int, fields: array<string, mixed>}>}
+     * `fields` is optional because this shape is whatever `json_decode` returned
+     * from a file on disk, not something the type system verified. A malformed
+     * artifact is an expected failure mode here — it has its own
+     * `failed_reason='malformed_json'` path — so the consumer's `?? []` at the
+     * write call is a real guard, not dead code.
+     *
+     * @return array{tenant_id: int, entries: list<array{tenant_id: int, model_id: int, fields?: array<string, mixed>}>}
      */
     private function loadArtifact(string $artifactPath): array
     {
@@ -325,7 +331,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     }
 
     /**
-     * @param array{tenant_id: int, entries: list<array{tenant_id: int, model_id: int, fields: array<string, mixed>}>} $payload
+     * @param array{tenant_id: int, entries: list<array{tenant_id: int, model_id: int, fields?: array<string, mixed>}>} $payload
      * @return array{chunks: int, entries_written: int}|null `null` ⇒ job was failed OR the lease was lost; caller must NOT call completeJob
      */
     private function processEntries(

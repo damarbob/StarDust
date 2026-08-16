@@ -489,6 +489,7 @@ final class JsonFilterDecoder
         }
     }
 
+    /** @param array<mixed> $value */
     private function isAssocArray(array $value): bool
     {
         // PHP's json_decode(..., true) of a JSON object always yields an

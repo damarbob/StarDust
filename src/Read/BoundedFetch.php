@@ -124,6 +124,6 @@ final class BoundedFetch
         if ($query->selectFields !== null) {
             return array_values($query->selectFields);
         }
-        return array_values(array_keys($snapshot->fieldsByName));
+        return array_keys($snapshot->fieldsByName);
     }
 }

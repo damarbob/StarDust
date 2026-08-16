@@ -138,7 +138,9 @@ final class PageProvisioner
             'source'           => 'registry',
             'page_id'          => $pageNumber,
             'table_name'       => $tableName,
-            'filterable_slots' => array_values($filterableSlots),
+            // Already a normalised list — validateFilterableSlots() rewrote
+            // the variable through its by-reference parameter.
+            'filterable_slots' => $filterableSlots,
         ]);
 
         return $pageNumber;
@@ -162,7 +164,15 @@ final class PageProvisioner
      * multiple pending-field events) cannot trigger a MySQL errno 1061
      * "Duplicate key name" by passing the same column twice.
      *
-     * @param list<string> $filterableSlots
+     * Deliberately typed `array<mixed>` rather than `list<string>`: this is the
+     * function that *establishes* that shape, and PHP enforces none of it at
+     * runtime. `provision()` is public API of a published package, so a consumer
+     * can pass `['i_str_01', 123]` past the `array` hint with nothing raised. The
+     * `is_string()` check below is what turns that into a clear exception instead
+     * of an obscure SQL error — it is unreachable only if you believe the
+     * docblock. Covered by `PageProvisionerTest::testProvisionRejectsNonStringSlotColumn`.
+     *
+     * @param array<mixed> $filterableSlots
      */
     private function validateFilterableSlots(array &$filterableSlots): void
     {

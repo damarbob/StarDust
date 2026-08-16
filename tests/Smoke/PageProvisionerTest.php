@@ -309,6 +309,24 @@ final class PageProvisionerTest extends TestCase
         $this->newProvisioner()->provision(['i_str_99']);
     }
 
+    /**
+     * Non-string slot entries are rejected with a readable message.
+     *
+     * `provision()` documents `list<string>`, but PHP enforces only `array` —
+     * a consumer of this package can pass anything past that hint and nothing
+     * is raised. Static analysis reads the docblock and calls the `is_string()`
+     * check unreachable; this test is the evidence that it is not, so the guard
+     * does not get deleted the next time an analyser complains about it.
+     */
+    public function testProvisionRejectsNonStringSlotColumn(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('(non-string)');
+
+        /** @phpstan-ignore argument.type (deliberately violating the documented contract) */
+        $this->newProvisioner()->provision([123]);
+    }
+
     /** Duplicate slot names are silently deduplicated so MySQL errno 1061 cannot leak. */
     public function testProvisionDeduplicatesFilterableSlots(): void
     {
