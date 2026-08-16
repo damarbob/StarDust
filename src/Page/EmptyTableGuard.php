@@ -6,6 +6,7 @@ namespace StarDust\Page;
 
 use InvalidArgumentException;
 use PDO;
+use StarDust\Support\PdoQuery;
 
 /**
  * Engine-level guard implementing ADR 0012's Empty-Table-Only DDL rule:
@@ -36,7 +37,7 @@ final class EmptyTableGuard
             );
         }
 
-        $populated = $pdo->query("SELECT 1 FROM {$tableName} LIMIT 1")->fetchColumn();
+        $populated = PdoQuery::run($pdo, "SELECT 1 FROM {$tableName} LIMIT 1")->fetchColumn();
         if ($populated !== false) {
             throw new PopulatedPageDDLException(
                 "ADR 0012: DDL is forbidden on populated extension page '{$tableName}'."

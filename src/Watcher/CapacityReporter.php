@@ -6,6 +6,7 @@ namespace StarDust\Watcher;
 
 use PDO;
 use StarDust\Slot\IndexedSlotPredicate;
+use StarDust\Support\PdoQuery;
 
 /**
  * Reads `stardust_slot_assignments` and computes the per-family /
@@ -38,7 +39,7 @@ final class CapacityReporter
 
     public function report(): CapacitySnapshot
     {
-        $stmt = $this->pdo->query(
+        $stmt = PdoQuery::run($this->pdo,
             'SELECT slot_type,'
             . ' COUNT(*) AS total_cnt,'
             . ' SUM(is_free) AS free_cnt,'
@@ -76,9 +77,10 @@ final class CapacityReporter
             $totalFree  += $free;
         }
 
-        $pagesInspected = (int) $this->pdo
-            ->query('SELECT COUNT(DISTINCT page_id) FROM stardust_slot_assignments')
-            ->fetchColumn();
+        $pagesInspected = (int) PdoQuery::run(
+            $this->pdo,
+            'SELECT COUNT(DISTINCT page_id) FROM stardust_slot_assignments',
+        )->fetchColumn();
 
         return new CapacitySnapshot(
             freeByFamily: $freeByFamily,

@@ -85,12 +85,15 @@ final class JsonArtifactStream implements ArtifactStream
 
     public function close(): void
     {
-        if ($this->handle === null) {
+        // Held in a local: the writeRaw() call below would otherwise
+        // invalidate any narrowing of the property.
+        $handle = $this->handle;
+        if ($handle === null) {
             return;
         }
         $this->writeRaw(']');
-        @fflush($this->handle);
-        @fclose($this->handle);
+        @fflush($handle);
+        @fclose($handle);
         $this->handle = null;
     }
 
@@ -112,8 +115,19 @@ final class JsonArtifactStream implements ArtifactStream
 
     private function writeRaw(string $bytes): void
     {
+        $handle = $this->handle;
+        if ($handle === null) {
+            // See CsvArtifactStream::writeRaw() — unreachable today because
+            // every caller narrows first, but this is the only place fwrite()
+            // itself is protected, and a programming error here is not the
+            // disk-full condition the processor knows how to handle.
+            throw new RuntimeException(
+                "JSON artifact stream at '{$this->path}' is not open; call open() first."
+            );
+        }
+
         $expected = strlen($bytes);
-        $written = @fwrite($this->handle, $bytes);
+        $written = @fwrite($handle, $bytes);
         if ($written === false || $written !== $expected) {
             throw new ChroniclerArtifactDiskFullException(
                 "JSON artifact write truncated at '{$this->path}'; "

@@ -82,7 +82,11 @@ final class SearchRequest
             tenantId:     $query->tenantId,
             modelId:      $query->modelId,
             filter:       $query->filter,
-            selectFields: $query->selectFields,
+            // EntryQuery accepts any string array (it is a public DTO and
+            // PHP does not enforce list-ness); normalise on the way in.
+            selectFields: $query->selectFields === null
+                ? null
+                : array_values($query->selectFields),
             pageSize:     $query->pageSize,
             cursor:       $query->cursor,
         );

@@ -35,9 +35,9 @@ final class HeaderResolver
             . ' ORDER BY f.name ASC'
         );
         $stmt->execute([$modelId, $tenantId]);
-        return array_map(
+        return array_values(array_map(
             static fn ($v) => (string) $v,
             $stmt->fetchAll(PDO::FETCH_COLUMN) ?: []
-        );
+        ));
     }
 }

@@ -188,7 +188,9 @@ final class SlotSweeper
         $stmt->bindValue(1, $cursor, PDO::PARAM_INT);
         $stmt->bindValue(2, $this->chunkSize, PDO::PARAM_INT);
         $stmt->execute();
-        return array_map(static fn ($v) => (int) $v, $stmt->fetchAll(PDO::FETCH_COLUMN));
+        return array_values(
+            array_map(static fn ($v) => (int) $v, $stmt->fetchAll(PDO::FETCH_COLUMN)),
+        );
     }
 
     /** @param list<int> $rowIds */

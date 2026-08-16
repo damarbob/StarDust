@@ -99,13 +99,20 @@ final class ExportJobProcessor
 
         while (true) {
             $chunkStart = microtime(true);
-            $rows = null;
+            // `$fetched` rather than a nullable `$rows`: every non-success
+            // path below returns, throws, or continues, so `$rows` is always
+            // populated by the time the loop exits — but that is invisible to
+            // static analysis through the nested try/catch, and a nullable
+            // would push a permanently-false null check downstream.
+            $rows = [];
+            $fetched = false;
             $retry = 0;
 
             // === Bounded probe with deadlock + disconnect handling ===
-            while ($rows === null) {
+            while (! $fetched) {
                 try {
                     $rows = $this->pager->fetchChunk($job->tenantId, $job->modelId, $cursor, $this->pageSize);
+                    $fetched = true;
                 } catch (PDOException $e) {
                     if ($this->isDeadlock($e)) {
                         $retry++;

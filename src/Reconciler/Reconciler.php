@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace StarDust\Reconciler;
 
+use Closure;
 use StarDust\Daemon\Tickable;
 use StarDust\Support\UuidV4;
 
@@ -37,6 +38,16 @@ final class Reconciler implements Tickable
     private readonly array $workSources;
 
     /**
+     * Normalised to a `Closure` rather than left as `?callable`: the
+     * constructor always supplies a default, so the property is never
+     * actually null, and a nullable type would force a redundant check
+     * at each invocation.
+     *
+     * @var Closure(int): void
+     */
+    private readonly Closure $sleepFn;
+
+    /**
      * @param array<ReconcilerWorkSource> $workSources        Iterated in order each tick. Typed
      *                                                        `array` rather than `list` because the
      *                                                        constructor is what normalises it; PHP
@@ -49,10 +60,12 @@ final class Reconciler implements Tickable
         array $workSources,
         private readonly int $capacityWaitMillis,
         private readonly int $interChunkDelayMicros = 0,
-        private $sleepFn = null,
+        ?callable $sleepFn = null,
     ) {
         $this->workSources = array_values($workSources);
-        $this->sleepFn = $sleepFn ?? static fn (int $micros) => usleep($micros);
+        $this->sleepFn = $sleepFn !== null
+            ? Closure::fromCallable($sleepFn)
+            : static fn (int $micros) => usleep($micros);
     }
 
     public function tick(): void

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace StarDust\Reconciler;
 
+use Closure;
 use DateTimeZone;
 use JsonException;
 use PDO;
@@ -60,6 +61,15 @@ use Throwable;
 final class ImportJobWorkSource implements ReconcilerWorkSource
 {
     /**
+     * Normalised to a `Closure` rather than left as `?callable`: the
+     * constructor always supplies a default, so the property is never
+     * actually null.
+     *
+     * @var Closure(int): void
+     */
+    private readonly Closure $sleepFn;
+
+    /**
      * @param callable(int):void|null $sleepFn Injected for tests; defaults to `usleep`.
      */
     public function __construct(
@@ -72,9 +82,11 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         private readonly int $chunkSize,
         private readonly int $interChunkDelayMicros = 0,
         private readonly int $leaseTimeoutSeconds = 30,
-        private $sleepFn = null,
+        ?callable $sleepFn = null,
     ) {
-        $this->sleepFn = $sleepFn ?? static fn (int $micros) => usleep($micros);
+        $this->sleepFn = $sleepFn !== null
+            ? Closure::fromCallable($sleepFn)
+            : static fn (int $micros) => usleep($micros);
     }
 
     public function tickOne(string $chunkCorrelationId): TickOutcome
@@ -290,7 +302,13 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
      * `failed_reason='malformed_json'` path — so the consumer's `?? []` at the
      * write call is a real guard, not dead code.
      *
-     * @return array{tenant_id: int, entries: list<array{tenant_id: int, model_id: int, fields?: array<string, mixed>}>}
+     * The declared shape is only what the checks below actually verify —
+     * that the top-level keys exist and `entries` is a list. Element
+     * contents stay `mixed` deliberately: validating every entry would
+     * mean a second full pass over a file that can hold tens of thousands
+     * of them, and the write path already coerces per field.
+     *
+     * @return array{tenant_id: mixed, entries: list<mixed>}
      */
     private function loadArtifact(string $artifactPath): array
     {
@@ -313,7 +331,8 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         }
 
         if (!is_array($decoded) || !array_key_exists('tenant_id', $decoded)
-            || !array_key_exists('entries', $decoded) || !is_array($decoded['entries'])) {
+            || !array_key_exists('entries', $decoded) || !is_array($decoded['entries'])
+            || !array_is_list($decoded['entries'])) {
             throw new ImportJobArtifactException(
                 "Artifact shape mismatch: expected {tenant_id, entries[]}."
             );

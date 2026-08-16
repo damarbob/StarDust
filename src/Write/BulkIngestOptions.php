@@ -15,8 +15,21 @@ use InvalidArgumentException;
  */
 final class BulkIngestOptions
 {
+    /**
+     * Positive by construction — the constructor rejects anything smaller,
+     * so consumers such as `array_chunk()` can rely on the bound.
+     *
+     * Not a promoted property: promotion would apply this narrowing to the
+     * *parameter* as well, and the parameter is untrusted input. PHPStan
+     * would then read the validation below as dead code and the guarantee
+     * would rest on nothing.
+     *
+     * @var int<1, max>
+     */
+    public readonly int $chunkSize;
+
     public function __construct(
-        public readonly int $chunkSize = 500,
+        int $chunkSize = 500,
         public readonly int $interChunkDelayMicros = 0,
     ) {
         if ($chunkSize < 1) {
@@ -30,5 +43,7 @@ final class BulkIngestOptions
                 . $interChunkDelayMicros . '.'
             );
         }
+
+        $this->chunkSize = $chunkSize;
     }
 }

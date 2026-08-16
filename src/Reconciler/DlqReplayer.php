@@ -96,7 +96,9 @@ final class DlqReplayer
             . ' ORDER BY id FOR UPDATE'
         );
         $stmt->execute($params);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        // See SyncQueueWorkSource::claimChunk() — `fetchAll()` is typed
+        // `array`, so this is what makes the `list<>` return type true.
+        return array_values($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**

@@ -425,8 +425,14 @@ final class JsonFilterDecoder
     }
 
     /**
+     * Non-empty by construction: the `$count < 1` branch below raises
+     * `VALUE_COUNT_MISMATCH`, so every returned list has at least one
+     * element. Saying so here is what lets `AndNode`/`OrNode` keep their
+     * `non-empty-list` parameter types without a second check at each
+     * construction site.
+     *
      * @param array<string, mixed> $raw
-     * @return list<mixed>
+     * @return non-empty-list<mixed>
      */
     private function requireCompositeArgs(array $raw, JsonPointer $pointer): array
     {

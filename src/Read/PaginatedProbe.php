@@ -48,6 +48,8 @@ final class PaginatedProbe
         $fragment = $this->compiler->compile($query->filter, $query, $snapshot);
         $stmt = $this->pdo->prepare($fragment->sql);
         $stmt->execute($fragment->bindings);
-        return array_map(static fn ($v): int => (int) $v, $stmt->fetchAll(PDO::FETCH_COLUMN));
+        return array_values(
+            array_map(static fn ($v): int => (int) $v, $stmt->fetchAll(PDO::FETCH_COLUMN)),
+        );
     }
 }

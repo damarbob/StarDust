@@ -1,5 +1,9 @@
 parameters:
-    level: 6
+    # Level 8 adds null-safety checks — calling a method on something that
+    # might be null or false. Level 9 is deliberately not the target: it
+    # costs ~163 findings here, almost all narrowing ceremony at the PDO and
+    # json_decode boundaries where ADR 0013 makes values mixed by design.
+    level: 8
     paths:
         - src
         - bin

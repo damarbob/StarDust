@@ -161,7 +161,12 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
         );
         $stmt->bindValue(1, $this->chunkSize, PDO::PARAM_INT);
         $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // `array_values()` is not decoration: `fetchAll()` is declared to
+        // return `array`, so nothing proves the keys are a 0..n-1 list. It
+        // is a no-op at runtime and the cheapest way to make the declared
+        // `list<>` return type honest. Do not "simplify" it away.
+        return array_values($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     private function writeDlq(

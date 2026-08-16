@@ -156,8 +156,7 @@ final class SqlFilterCompiler
         /** @var array<int, string> $aliasByPage */
         $aliasByPage = [];
         foreach ($leaves as $leaf) {
-            $descriptor = $this->descriptorFor($leaf);
-            $pageId = $descriptor->pageId;
+            [$pageId] = $this->resolvedSlotFor($leaf);
             if (isset($aliasByPage[$pageId])) {
                 continue;
             }
@@ -171,9 +170,9 @@ final class SqlFilterCompiler
 
         $predicates = [];
         foreach ($leaves as $leaf) {
-            $descriptor = $this->descriptorFor($leaf);
-            $alias = $aliasByPage[$descriptor->pageId];
-            $column = "{$alias}.{$descriptor->slotColumn}";
+            [$pageId, $slotColumn] = $this->resolvedSlotFor($leaf);
+            $alias = $aliasByPage[$pageId];
+            $column = "{$alias}.{$slotColumn}";
             $predicates[] = $this->compileLeafPredicate($leaf, $column, $bindings);
         }
 
@@ -213,9 +212,9 @@ final class SqlFilterCompiler
      */
     private function compileLeafAsExists(LeafNode $leaf, SnapshotEntry $snapshot, array &$bindings): string
     {
-        $descriptor = $this->descriptorFor($leaf);
-        $table = $snapshot->pageTableNames[$descriptor->pageId];
-        $column = "s.{$descriptor->slotColumn}";
+        [$pageId, $slotColumn] = $this->resolvedSlotFor($leaf);
+        $table = $snapshot->pageTableNames[$pageId];
+        $column = "s.{$slotColumn}";
         $predicate = $this->compileLeafPredicate($leaf, $column, $bindings);
         return "EXISTS (SELECT 1 FROM {$table} s"
             . ' WHERE s.tenant_id = entry_data.tenant_id'
@@ -307,7 +306,19 @@ final class SqlFilterCompiler
         return $v;
     }
 
-    private function descriptorFor(LeafNode $leaf): \StarDust\Read\FieldDescriptor
+    /**
+     * Resolves a leaf to its `[pageId, slotColumn]` pair.
+     *
+     * Returns the two values rather than the descriptor because both are
+     * `?int` / `?string` on `FieldDescriptor`, so handing back the object
+     * would lose the guarantee this method just established and push a
+     * permanently-false null check onto every call site. Pre-flight has
+     * already rejected unresolved leaves; reaching the null branch means
+     * something bypassed it, which is why it throws rather than degrades.
+     *
+     * @return array{int, string}
+     */
+    private function resolvedSlotFor(LeafNode $leaf): array
     {
         $d = $leaf->field->descriptor;
         if ($d === null || $d->pageId === null || $d->slotColumn === null) {
@@ -315,7 +326,7 @@ final class SqlFilterCompiler
                 "leaf for field '{$leaf->field->fieldName}' reached the compiler unresolved"
             );
         }
-        return $d;
+        return [$d->pageId, $d->slotColumn];
     }
 
     private function cursorIdOf(EntryQuery $query): int

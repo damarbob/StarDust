@@ -6,6 +6,7 @@ namespace StarDust\Watcher;
 
 use PDO;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\PdoQuery;
 use StarDust\Support\UuidV4;
 
 /**
@@ -38,7 +39,7 @@ final class CardinalitySampler
     {
         $correlationId = UuidV4::generate();
 
-        $slots = $this->pdo->query(
+        $slots = PdoQuery::run($this->pdo,
             "SELECT a.id AS slot_assignment_id, a.field_id, a.page_id, a.slot_column,"
             . ' p.table_name'
             . ' FROM stardust_slot_assignments a'
@@ -94,7 +95,7 @@ final class CardinalitySampler
         // Sample per-tenant per ADR 0019 — a slot's cardinality is
         // tenant-scoped because the composite index it's read through is
         // `(tenant_id, slot_column)`.
-        $tenants = $this->pdo->query(
+        $tenants = PdoQuery::run($this->pdo,
             "SELECT DISTINCT tenant_id FROM {$tableName}"
         )->fetchAll(PDO::FETCH_COLUMN);
 

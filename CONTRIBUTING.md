@@ -41,10 +41,10 @@ vendor/bin/phpunit --testsuite Smoke
 CI runs four jobs: PHPStan, markdownlint, the suite across the full PHP matrix,
 and the MariaDB rejection check.
 
-Two notes on static analysis. PHPStan runs at level 6 over `src/` and `bin/`, and
+Two notes on static analysis. PHPStan runs at level 8 over `src/` and `bin/`, and
 it is pinned to analyse the whole supported PHP range rather than your local
 runtime. There is **no baseline file** and the check reports zero errors — please
-don't add one; if new code can't pass level 6, fix the code.
+don't add one; if new code can't pass level 8, fix the code.
 
 If PHPStan tells you a runtime check is redundant, look hard at the docblock
 before deleting the check. PHP enforces only `array` at runtime — never

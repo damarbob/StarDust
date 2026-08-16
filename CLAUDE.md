@@ -61,7 +61,7 @@ docker compose up
 # phpunit, phpstan, opis/json-schema)
 composer install
 
-# Static analysis — PHPStan level 6 over src/ + bin/. No database needed.
+# Static analysis — PHPStan level 8 over src/ + bin/. No database needed.
 # This is the FIRST CI job: run it before calling any change done.
 vendor/bin/phpstan analyse
 
@@ -120,9 +120,10 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs four jobs: `stati
 ## PHP floor and static analysis
 
 - **The floor is PHP 8.1** (`composer.json` requires `^8.1`) and CI runs the smoke suite on **8.1, 8.2, 8.3, and 8.4**. [phpstan.neon.dist](phpstan.neon.dist) pins `phpVersion: {min: 80100, max: 80400}`, so the analyser enforces the whole supported span locally — you no longer have to push and wait for the 8.1 matrix job to find out. Do not use syntax newer than 8.1 — `readonly` *classes*, `json_validate()`, DNF types, and `#[\Override]` all compile locally on 8.4 and break the 8.1 job. Readonly *properties* and enums are 8.1 and fine. Where a note in these files mentions 8.4 behaviour (e.g. `Exception::$code` readonly redeclaration, the `str_getcsv()` `$escape` deprecation), that is a *constraint the code must satisfy on 8.4*, not permission to target 8.4.
-- **PHPStan runs at level 6** over `src/` and `bin/` ([phpstan.neon.dist](phpstan.neon.dist)) and reports **zero errors with no baseline file**. Do not reintroduce one: if new code can't pass level 6, fix the code or say so explicitly.
+- **PHPStan runs at level 8** over `src/` and `bin/` ([phpstan.neon.dist](phpstan.neon.dist)) and reports **zero errors with no baseline file**. Do not reintroduce one: if new code can't pass level 8, fix the code or say so explicitly.
 - **When PHPStan calls a runtime guard redundant, suspect the phpdoc before the guard.** PHP enforces only `array` — never `list<string>` or an `array{...}` shape — so a docblock can promise more than the runtime delivers, and the analyser will then flag the check that defends against the difference. Several `@param` types are deliberately widened to `array<mixed>` for exactly this reason, each with a comment saying so. The rule: where a method's job is to validate or normalise untrusted input, its parameter type must admit the input it is defending against.
-- **Raising the level is not free past 8.** Measured: level 7 → 20 errors, level 8 → 29, level 9 → 163, level 10 → 259. Levels 7–8 are real-bug-shaped and bounded. Level 9's cost is concentrated in `offsetAccess.nonOffsetAccessible` / `cast.int` / `cast.string` at PDO and `json_decode` boundaries, where ADR 0013 makes values `mixed` by design — reaching it means typed row hydration per repository, which is an architectural decision rather than a config change.
+- **Level 8 is the deliberate ceiling.** Measured before the raise: level 9 → 163 errors, level 10 → 259, against 31 for level 8. Level 9's cost is concentrated in `offsetAccess.nonOffsetAccessible` / `cast.int` / `cast.string` at PDO and `json_decode` boundaries, where ADR 0013 makes values `mixed` by design — `(int) $row['tenant_id']` is already a total operation, and satisfying the analyser there means narrowing ceremony rather than safety. Reaching 9 honestly means typed row hydration per repository, which is an architectural decision, not a config change. Don't raise the level without making that decision first.
+- **`PDO::query()` goes through `Support\PdoQuery::run()`**, which throws when the driver returns `false` instead of raising. The engine takes an injected PDO, so a consumer on `ERRMODE_SILENT` really can get `false` back. Two older sites (`GcSweeper`, `SchemaVersionCache`) handle it inline with different semantics and are deliberately left alone.
 
 ## Database support is intentionally narrow
 

@@ -6,6 +6,7 @@ namespace StarDust\Bootstrap;
 
 use PDO;
 use PDOException;
+use StarDust\Support\PdoQuery;
 
 /**
  * Phase 1 migration runner.
@@ -309,7 +310,7 @@ final class Bootstrapper
      */
     private function ensureSlotAssignmentFieldLiveUniqueIndex(): void
     {
-        $exists = (int) $this->pdo->query(<<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
             SELECT COUNT(*) FROM information_schema.STATISTICS
             WHERE table_schema = DATABASE()
               AND table_name = 'stardust_slot_assignments'
@@ -363,7 +364,7 @@ final class Bootstrapper
      */
     private function ensureSlotAssignmentSweepGapColumn(): void
     {
-        $exists = (int) $this->pdo->query(<<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
               AND table_name = 'stardust_slot_assignments'
@@ -399,7 +400,7 @@ final class Bootstrapper
      */
     private function ensureBackfillCheckpointsSourceTypeColumn(): void
     {
-        $exists = (int) $this->pdo->query(<<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
               AND table_name = 'backfill_checkpoints'

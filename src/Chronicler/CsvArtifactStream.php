@@ -177,8 +177,23 @@ final class CsvArtifactStream implements ArtifactStream
 
     private function writeRaw(string $bytes): void
     {
+        $handle = $this->handle;
+        if ($handle === null) {
+            // Unreachable today: every caller narrows first — open() has
+            // just assigned the handle, and appendRow() guards above. Kept
+            // because narrowing does not cross a method boundary, so this
+            // is the only place fwrite() itself is protected, and a future
+            // caller added inside this class would otherwise hit a
+            // TypeError. Deliberately not ChroniclerArtifactDiskFullException:
+            // the processor catches that and marks the job failed:disk_full,
+            // which would misreport a programming error as a disk problem.
+            throw new RuntimeException(
+                "CSV artifact stream at '{$this->path}' is not open; call open() first."
+            );
+        }
+
         $expected = strlen($bytes);
-        $written = @fwrite($this->handle, $bytes);
+        $written = @fwrite($handle, $bytes);
         if ($written === false || $written !== $expected) {
             // Short write or false: treat as disk-full. The processor
             // catches this and marks the job failed:disk_full.

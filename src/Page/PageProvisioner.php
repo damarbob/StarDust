@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\PdoQuery;
 use Throwable;
 
 /**
@@ -91,11 +92,12 @@ final class PageProvisioner
      */
     public function provision(array $filterableSlots = []): int
     {
-        $this->validateFilterableSlots($filterableSlots);
+        $filterableSlots = $this->validateFilterableSlots($filterableSlots);
 
-        $pageNumber = (int) $this->pdo
-            ->query('SELECT COALESCE(MAX(id), 0) + 1 FROM stardust_pages')
-            ->fetchColumn();
+        $pageNumber = (int) PdoQuery::run(
+            $this->pdo,
+            'SELECT COALESCE(MAX(id), 0) + 1 FROM stardust_pages',
+        )->fetchColumn();
         $tableName = "entry_slots_page_{$pageNumber}";
 
         // DDL auto-commits in MySQL. CREATE TABLE IF NOT EXISTS keeps the
@@ -138,8 +140,8 @@ final class PageProvisioner
             'source'           => 'registry',
             'page_id'          => $pageNumber,
             'table_name'       => $tableName,
-            // Already a normalised list — validateFilterableSlots() rewrote
-            // the variable through its by-reference parameter.
+            // Already a normalised list — reassigned from
+            // validateFilterableSlots() at the top of provision().
             'filterable_slots' => $filterableSlots,
         ]);
 
@@ -172,11 +174,17 @@ final class PageProvisioner
      * of an obscure SQL error — it is unreachable only if you believe the
      * docblock. Covered by `PageProvisionerTest::testProvisionRejectsNonStringSlotColumn`.
      *
-     * @param array<mixed> $filterableSlots
+     * Returns the narrowed list rather than mutating a reference, so the
+     * `array<mixed> → list<string>` transition is visible to the caller
+     * and to static analysis.
+     *
+     * @param  array<mixed> $filterableSlots
+     * @return list<string>
      */
-    private function validateFilterableSlots(array &$filterableSlots): void
+    private function validateFilterableSlots(array $filterableSlots): array
     {
         $valid = array_flip(self::allSlotColumns());
+        $checked = [];
         foreach ($filterableSlots as $slot) {
             if (!is_string($slot) || !isset($valid[$slot])) {
                 $rendered = is_string($slot) ? $slot : '(non-string)';
@@ -184,8 +192,9 @@ final class PageProvisioner
                     "PageProvisioner: '{$rendered}' is not a valid slot column."
                 );
             }
+            $checked[] = $slot;
         }
-        $filterableSlots = array_values(array_unique($filterableSlots));
+        return array_values(array_unique($checked));
     }
 
     /**
