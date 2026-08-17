@@ -34,6 +34,7 @@ final class Config
     public readonly float $cardinalitySelectivityThreshold;
     public readonly int $cardinalityRowFloor;
     public readonly int $cardinalityDistinctFloor;
+    public readonly int $spreadExcessPageThreshold;
     public readonly int $reconcilerChunkSize;
     public readonly int $reconcilerInterChunkDelayMicros;
     public readonly int $reconcilerCapacityWaitMillis;
@@ -102,6 +103,7 @@ final class Config
         ?PdoConnector $pdoConnector = null,
         ?int $reconcilerImportLeaseTimeoutSeconds = null,
         ?int $cardinalityJitterSeconds = null,
+        ?int $spreadExcessPageThreshold = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -128,6 +130,12 @@ final class Config
         // Default 10 % of the interval (8 640 s for the 24 h default).
         $this->cardinalityJitterSeconds        = $cardinalityJitterSeconds
             ?? (int) round($this->cardinalityIntervalSeconds * 0.10);
+        // ADR 0031: `high_spread_model` fires only when a model occupies
+        // at least two more pages than it needs. The default deliberately
+        // ignores one avoidable join — rarely worth a compaction's cost —
+        // and only alerts once fragmentation has compounded. Tighten to 1
+        // for latency-critical fleets.
+        $this->spreadExcessPageThreshold       = $spreadExcessPageThreshold       ?? 2;
         $this->cardinalitySelectivityThreshold = $cardinalitySelectivityThreshold ?? 0.01;
         $this->cardinalityRowFloor             = $cardinalityRowFloor             ?? 10_000;
         $this->cardinalityDistinctFloor        = $cardinalityDistinctFloor        ?? 10;

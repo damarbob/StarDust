@@ -13,6 +13,7 @@ use StarDust\Reconciler\TickOutcome;
 use StarDust\Slot\SlotAssignment;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CardinalitySampler;
+use StarDust\Watcher\SpreadSampler;
 use Throwable;
 
 /**
@@ -78,6 +79,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
         private readonly RetypeBackfillExecutor $executor,
         private readonly SlotReserver $slotReserver,
         private readonly CardinalitySampler $cardinalitySampler,
+        private readonly SpreadSampler $spreadSampler,
         private readonly int $chunkSize,
     ) {
     }
@@ -211,6 +213,15 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
             // Triggers `cardinality_sampled` (always) and
             // `low_cardinality_index` (conditionally) per ADR 0019.
             $this->cardinalitySampler->sampleSlot($newSlot->slotAssignmentId);
+
+            // ADR 0031 post-relocation one-shot. A retype vacates one
+            // slot and claims another, so it can move the model onto a
+            // page it did not previously occupy — this is the trigger
+            // that makes that delta visible immediately instead of at
+            // the next daily sample. Fires here rather than at
+            // initiation because the relocation is only complete once
+            // the slot reaches `ready`.
+            $this->spreadSampler->sampleModel($checkpoint->tenantId, $checkpoint->modelId);
         }
 
         return TickOutcome::WORK_DONE;

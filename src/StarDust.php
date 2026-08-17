@@ -57,6 +57,7 @@ use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
 use StarDust\Watcher\PendingDemandReader;
+use StarDust\Watcher\SpreadSampler;
 use StarDust\Watcher\Watcher;
 use StarDust\Write\BackfillExecutor;
 use StarDust\Write\BulkIngestOptions;
@@ -93,6 +94,7 @@ final class StarDust
     private ?PollLoop $pollLoop = null;
     private ?SlotReserver $slotReserver = null;
     private ?CardinalitySampler $cardinalitySampler = null;
+    private ?SpreadSampler $spreadSampler = null;
     private ?RetypeInitiator $retypeInitiator = null;
     private ?ExportJobSubmitter $exportSubmitter = null;
     private ?SchemaBuilder $schemaBuilder = null;
@@ -338,13 +340,8 @@ final class StarDust
                 clock: $this->config->clock,
                 logger: $this->config->logger,
             ),
-            cardinalitySampler: new CardinalitySampler(
-                pdo: $this->config->pdo,
-                logger: $this->config->logger,
-                selectivityThreshold: $this->config->cardinalitySelectivityThreshold,
-                rowFloor: $this->config->cardinalityRowFloor,
-                distinctFloor: $this->config->cardinalityDistinctFloor,
-            ),
+            cardinalitySampler: $this->cardinalitySampler(),
+            spreadSampler: $this->spreadSampler(),
             capacityThreshold: $this->config->watcherCapacityThreshold,
             cardinalityIntervalSeconds: $this->config->cardinalityIntervalSeconds,
             cardinalityJitterSeconds: $this->config->cardinalityJitterSeconds,
@@ -401,6 +398,7 @@ final class StarDust
             ),
             slotReserver: $this->slotReserver(),
             cardinalitySampler: $this->cardinalitySampler(),
+            spreadSampler: $this->spreadSampler(),
             chunkSize: $this->config->reconcilerChunkSize,
         );
 
@@ -659,6 +657,20 @@ final class StarDust
             selectivityThreshold: $this->config->cardinalitySelectivityThreshold,
             rowFloor: $this->config->cardinalityRowFloor,
             distinctFloor: $this->config->cardinalityDistinctFloor,
+        );
+    }
+
+    /**
+     * The ADR 0031 spread advisory. Shared by the Watcher (periodic
+     * trigger), the retype work source (post-relocation one-shot), and
+     * `bin/stardust spread:report` (on demand).
+     */
+    public function spreadSampler(): SpreadSampler
+    {
+        return $this->spreadSampler ??= new SpreadSampler(
+            pdo: $this->config->pdo,
+            logger: $this->config->logger,
+            excessPageThreshold: $this->config->spreadExcessPageThreshold,
         );
     }
 

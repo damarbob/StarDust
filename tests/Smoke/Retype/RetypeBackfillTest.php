@@ -79,6 +79,41 @@ final class RetypeBackfillTest extends Phase6bTestCase
         $cardinality = $this->recordsWithEvent($records, 'cardinality_sampled');
         self::assertNotEmpty($cardinality);
         self::assertSame('post_backfill', $cardinality[0]['context']['trigger']);
+
+        // ADR 0031 post-relocation one-shot. A retype can move the model
+        // onto a page it did not previously occupy, so the spread delta
+        // is published as soon as the relocation completes rather than
+        // waiting up to a day for the periodic sample.
+        $spread = $this->recordsWithEvent($records, 'spread_sampled');
+        self::assertNotEmpty($spread, 'A completed relocation must publish a spread sample.');
+        self::assertSame('post_relocation', $spread[0]['context']['trigger']);
+        self::assertSame(1, $spread[0]['context']['tenant_id']);
+        self::assertSame($modelId, $spread[0]['context']['model_id']);
+    }
+
+    /**
+     * The one-shot fires only when the relocation actually completes.
+     * A retype still mid-backfill has not moved anything a query can
+     * see, so publishing a spread delta then would be premature.
+     */
+    public function testNoSpreadSampleUntilThePromotionCommits(): void
+    {
+        $this->provisionPage(['i_int_01']);
+        $modelId = $this->createModel(1);
+        $fieldId = $this->createField($modelId, 'string', true, 'value');
+        $this->reserveSlotFor($fieldId);
+        $this->seedEntry(1, $modelId, ['value' => '42']);
+
+        $logger = $this->makeRecordingLogger();
+        $this->makeRetypeInitiator()->initiate(
+            tenantId: 1,
+            fieldId: $fieldId,
+            newDeclaredType: 'int',
+            newIsFilterable: null,
+        );
+
+        // Initiation alone — no chunk ticked, so no promotion.
+        self::assertSame([], $this->recordsWithEvent($logger->records(), 'spread_sampled'));
     }
 
     public function testReadDuringBackfillFallsBackToJsonPayload(): void

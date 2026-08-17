@@ -120,6 +120,50 @@ final class WatcherCardinalityJitterTest extends Phase5TestCase
         self::assertTrue($fired(1970), 'sample fires at prior + interval - 80');
     }
 
+    /**
+     * ADR 0031 §Sampling Triggers 1: the spread advisory rides the
+     * cardinality schedule rather than owning one. This pins that there
+     * is exactly ONE due-check driving both samplers — a second timer
+     * would be a second stampede surface, and the two advisories drifting
+     * apart is precisely what the shared gate exists to prevent.
+     */
+    public function testOneTimerDrivesBothAdvisories(): void
+    {
+        [$modelId, $_fieldId, $_pageId, $fieldName] = $this->setupModelWithReservedField(1, 'string');
+        $this->seedEntry(1, $modelId, [$fieldName => 'a']);
+        $this->seedEntry(1, $modelId, [$fieldName => 'b']);
+
+        $stream = fopen('php://memory', 'r+');
+        self::assertNotFalse($stream);
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        $clock = $this->mutableClock();
+        $watcher = $this->makeWatcher(
+            $logger,
+            threshold: 0.0,
+            clock: $clock,
+            jitterFn: $this->scriptedJitter([0, 0]),
+            cardinalityIntervalSeconds: 1000,
+            cardinalityJitterSeconds: 100,
+        );
+
+        // First tick only schedules — so NEITHER advisory may fire.
+        $clock->ts = 0;
+        $watcher->tick();
+        self::assertSame(0, $this->countEvent($stream, 'cardinality_sampled'));
+        self::assertSame(0, $this->countEvent($stream, 'spread_sampled'));
+
+        // Timer due — both fire on the same tick.
+        $clock->ts = 0;
+        $watcher->tick();
+        self::assertGreaterThan(0, $this->countEvent($stream, 'cardinality_sampled'));
+        self::assertGreaterThan(
+            0,
+            $this->countEvent($stream, 'spread_sampled'),
+            'The spread advisory must ride the same gate as the cardinality advisory.',
+        );
+    }
+
     private function mutableClock(): ClockInterface
     {
         return new class implements ClockInterface {
@@ -148,12 +192,17 @@ final class WatcherCardinalityJitterTest extends Phase5TestCase
 
     private function countSampled($stream): int
     {
+        return $this->countEvent($stream, 'cardinality_sampled');
+    }
+
+    private function countEvent($stream, string $eventName): int
+    {
         rewind($stream);
         $lines = array_values(array_filter(explode("\n", (string) stream_get_contents($stream))));
         $count = 0;
         foreach ($lines as $line) {
             $event = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
-            if (($event['event'] ?? null) === 'cardinality_sampled') {
+            if (($event['event'] ?? null) === $eventName) {
                 $count++;
             }
         }

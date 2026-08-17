@@ -28,8 +28,10 @@ use Throwable;
  *      `provision_started`, calls {@see PageProvisioner::provision()}
  *      with the planner's indexed-column set, emits
  *      `provision_complete`, and releases the lock.
- *   3. If the jittered cardinality timer is due, runs
- *      {@see CardinalitySampler::sample()} and schedules the next sample.
+ *   3. If the jittered advisory timer is due, runs BOTH
+ *      {@see CardinalitySampler::sample()} (ADR 0019) and
+ *      {@see SpreadSampler::sampleAll()} (ADR 0031), then schedules the
+ *      next sample.
  *   4. Emits `poll_complete`.
  *
  * ## Provisioning is demand-driven, not just capacity-driven
@@ -56,7 +58,21 @@ use Throwable;
  * `0.0` no longer means "never provision": a starved family still
  * provisions.
  *
- * Cardinality scheduling (ADR 0019 "every 24 h, jittered to avoid
+ * ## One advisory timer, two samplers
+ *
+ * The cardinality advisory (ADR 0019) and the spread advisory (ADR 0031)
+ * share a single schedule and a single due-check. ADR 0031 §Sampling
+ * Triggers 1 requires this explicitly: spread drifts only on registry
+ * mutation, so a daily cadence is generous, and a second timer would be
+ * a second stampede surface for no benefit. If you add a third advisory,
+ * hang it off this same gate rather than giving it its own.
+ *
+ * The `Config::$cardinality*` field names are unchanged even though they
+ * now pace both samplers — they are public surface, and renaming them
+ * would break every consumer's constructor call for a comment's worth of
+ * clarity.
+ *
+ * Advisory scheduling (ADR 0019 "every 24 h, jittered to avoid
  * stampedes"). Two mechanisms, off the injected `$jitterFn` RNG:
  *   - The FIRST sample is phase-randomized across the whole interval
  *     (`now + rand(0, interval)`), so a fleet of daemons started in
@@ -75,8 +91,8 @@ use Throwable;
  */
 final class Watcher implements Tickable
 {
-    /** UTC epoch second at which the next cardinality sample becomes due. */
-    private ?int $nextCardinalitySampleAt = null;
+    /** UTC epoch second at which the next advisory sample becomes due. */
+    private ?int $nextAdvisorySampleAt = null;
 
     /** @var Closure(int, int): int RNG returning a value in [min, max]. */
     private readonly Closure $jitterFn;
@@ -95,6 +111,7 @@ final class Watcher implements Tickable
         private readonly PendingDemandReader $pendingDemandReader,
         private readonly PageProvisioner $pageProvisioner,
         private readonly CardinalitySampler $cardinalitySampler,
+        private readonly SpreadSampler $spreadSampler,
         private readonly float $capacityThreshold,
         private readonly int $cardinalityIntervalSeconds,
         private readonly int $cardinalityJitterSeconds,
@@ -133,9 +150,10 @@ final class Watcher implements Tickable
             $action = $this->tryProvision($correlationId, $plan, $demand);
         }
 
-        if ($this->shouldSampleCardinality()) {
+        if ($this->shouldSampleAdvisories()) {
             $this->cardinalitySampler->sample();
-            $this->scheduleNextCardinalitySample($this->clock->now()->getTimestamp());
+            $this->spreadSampler->sampleAll();
+            $this->scheduleNextAdvisorySample($this->clock->now()->getTimestamp());
         }
 
         $this->logger->info('watcher poll complete', [
@@ -213,30 +231,30 @@ final class Watcher implements Tickable
         }
     }
 
-    private function shouldSampleCardinality(): bool
+    private function shouldSampleAdvisories(): bool
     {
         $now = $this->clock->now()->getTimestamp();
 
-        if ($this->nextCardinalitySampleAt === null) {
+        if ($this->nextAdvisorySampleAt === null) {
             // First fire: phase-randomize across the whole interval so a
             // lockstep-started fleet spreads over the full day (ADR 0019).
             $phase = $this->cardinalityIntervalSeconds > 0
                 ? ($this->jitterFn)(0, $this->cardinalityIntervalSeconds)
                 : 0;
-            $this->nextCardinalitySampleAt = $now + $phase;
+            $this->nextAdvisorySampleAt = $now + $phase;
             return false;
         }
 
-        return $now >= $this->nextCardinalitySampleAt;
+        return $now >= $this->nextAdvisorySampleAt;
     }
 
-    private function scheduleNextCardinalitySample(int $from): void
+    private function scheduleNextAdvisorySample(int $from): void
     {
         // Steady state: interval ± jitter, a fresh draw each cycle to
         // prevent the fleet from re-synchronizing. Clamp the offset so a
         // misconfigured `jitter > interval` can never schedule in the past.
         $jitter = min($this->cardinalityJitterSeconds, $this->cardinalityIntervalSeconds);
         $offset = $jitter > 0 ? ($this->jitterFn)(-$jitter, $jitter) : 0;
-        $this->nextCardinalitySampleAt = $from + $this->cardinalityIntervalSeconds + $offset;
+        $this->nextAdvisorySampleAt = $from + $this->cardinalityIntervalSeconds + $offset;
     }
 }

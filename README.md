@@ -436,6 +436,7 @@ $engine = new StarDust(new Config(
     chroniclerPerTenantActiveCap:        3,         // submission cap on pending+processing
     chroniclerDbDisconnectBackoffSeconds:[1, 4, 16],// fixed backoff schedule
     pdoConnector:                        null,      // reconnect factory for mid-export DB drops (CLI wires one automatically)
+    spreadExcessPageThreshold:           2,         // avoidable pages before a model is flagged as over-spread
 ));
 ```
 
@@ -668,7 +669,7 @@ $engine->promoteFieldToFilterable(
 
 Only filterable fields occupy slots, so only a filterable field has anything to backfill. Retyping a field that is not filterable — or demoting one back to non-filterable — is a registry-only change: the metadata updates, any slot the field held is released, and the operation is complete when the call returns. There is no backfill window and nothing for the Reconciler to do, because the JSON payload was already the authoritative copy. A demoted field keeps reading correctly and immediately stops being a valid filter target.
 
-Retypes between numeric / int and datetime are categorically rejected at registry-write time (`IncompatibleRetypeException`) — epoch interpretation is a caller policy, not engine behaviour; bridge through a `string` intermediate field if you need it. Initiating a second retype for the same field while one is already running throws `RetypeInProgressException`. The Reconciler picks up `running` retype checkpoints on every tick (alongside `stardust_sync_queue` and `stardust_import_jobs`); when the partition is exhausted it promotes the slot to `ready`, bumps `stardust_schema_version`, emits `promote_to_ready`, and triggers a one-shot post-backfill `cardinality_sampled` event.
+Retypes between numeric / int and datetime are categorically rejected at registry-write time (`IncompatibleRetypeException`) — epoch interpretation is a caller policy, not engine behaviour; bridge through a `string` intermediate field if you need it. Initiating a second retype for the same field while one is already running throws `RetypeInProgressException`. The Reconciler picks up `running` retype checkpoints on every tick (alongside `stardust_sync_queue` and `stardust_import_jobs`); when the partition is exhausted it promotes the slot to `ready`, bumps `stardust_schema_version`, emits `promote_to_ready`, and triggers two one-shot advisory samples — `cardinality_sampled` for the new slot, and `spread_sampled` for the model, since a retype can move a field onto a page its model did not previously occupy.
 
 ## Async exports
 
@@ -816,6 +817,14 @@ vendor/bin/stardust liberator
 # guard; SELECT … FOR UPDATE SKIP LOCKED is the only coordination
 # primitive.
 vendor/bin/stardust chronicler
+
+# Report slot spread: how many extension pages each model's filterable
+# fields are scattered across, versus the fewest they could occupy.
+# EXCESS is the number of avoidable joins every filtered query on that
+# model pays — 0 is optimal packing. Registry-only and read-only, so it
+# is safe to run against production at any time.
+vendor/bin/stardust spread:report
+vendor/bin/stardust spread:report --tenant=1 --model=7
 ```
 
 Daemons honour both `SIGTERM`/`SIGINT` (when `ext-pcntl` is loaded) and

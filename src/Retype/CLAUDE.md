@@ -61,6 +61,8 @@ Implements `ReconcilerWorkSource` — the third work source in the Reconciler's 
 3. Processes one chunk and advances the cursor.
 4. On `isFinalChunk`, flips slot `backfilling → ready`, marks the checkpoint `completed`, and bumps `stardust_schema_version` **in the same tx**.
 
-Post-commit it emits per-row `coercion_null`, `chunk_complete`, and on promotion `promote_to_ready` plus a `CardinalitySampler::sampleSlot()` call for the one-shot post-backfill cardinality event.
+Post-commit it emits per-row `coercion_null`, `chunk_complete`, and on promotion `promote_to_ready` plus two one-shot advisory samples: `CardinalitySampler::sampleSlot()` (ADR 0019, `trigger=post_backfill`) and `SpreadSampler::sampleModel()` (ADR 0031, `trigger=post_relocation`).
+
+The spread one-shot fires **at promotion, not at initiation**. A retype vacates one slot and claims another, so it can land the model on a page it did not previously occupy — but the relocation is only real once the new slot reaches `ready`, and publishing a spread delta while the field is still `backfilling` would report a move that no query can yet see. `RetypeInitiator`'s registry-only path (a non-filterable target, or a demotion) deliberately does **not** sample: it tombstones without replacing, and the next periodic sample covers it. ADR 0031 accepts that latency explicitly.
 
 **There is no DLQ path here.** Coercion failures are silent-NULL with audit events; the JSON payload remains authoritative per ADR 0013.

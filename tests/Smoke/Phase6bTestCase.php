@@ -69,6 +69,7 @@ abstract class Phase6bTestCase extends Phase6aTestCase
                 rowFloor: 10_000,
                 distinctFloor: 10,
             ),
+            spreadSampler: $this->makeSpreadSampler($log),
             chunkSize: $chunkSize,
         );
     }

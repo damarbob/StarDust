@@ -132,6 +132,11 @@ switch ($command) {
           chronicler       Multi-worker async export daemon (Phase 7):
                            claims pending export jobs, paginates entry_data,
                            writes CSV/JSON artifacts under Config::artifactDir.
+          spread:report [--tenant=N] [--model=N]
+                           Report how many extension pages each model's
+                           filterable slots occupy, and how many of those
+                           are avoidable. Registry-only and read-only;
+                           safe against production at any time.
 
         Subsequent phases are tracked in the project's design notes.
         HELP;
@@ -270,6 +275,41 @@ switch ($command) {
             exit(1);
         } catch (\Throwable $e) {
             fwrite(STDERR, "stardust: reconciler:dlq:replay failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'spread:report':
+        try {
+            $flags = $parseFlags(array_slice($argv, 2));
+            $tenantId = isset($flags['tenant']) && is_string($flags['tenant']) ? (int) $flags['tenant'] : null;
+            $modelId  = isset($flags['model'])  && is_string($flags['model'])  ? (int) $flags['model']  : null;
+
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $samples = $stardust->spreadSampler()->report($tenantId, $modelId);
+
+            if ($samples === []) {
+                echo "stardust: no model has a live filterable slot in that scope.\n";
+                exit(0);
+            }
+
+            // Read excess_pages, not pages_occupied: a model that
+            // genuinely needs three pages reports excess 0 and wants
+            // nothing from the operator.
+            printf("%-10s %-10s %-8s %-10s %-8s %s\n",
+                'TENANT', 'MODEL', 'PAGES', 'MIN_PAGES', 'EXCESS', 'LIVE_SLOTS');
+            foreach ($samples as $sample) {
+                printf("%-10d %-10d %-8d %-10d %-8d %d\n",
+                    $sample->tenantId,
+                    $sample->modelId,
+                    $sample->pagesOccupied,
+                    $sample->theoreticalMinPages,
+                    $sample->excessPages(),
+                    $sample->liveSlotCount);
+            }
+            exit(0);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: spread:report failed: " . $e->getMessage() . "\n");
             exit(1);
         }
 

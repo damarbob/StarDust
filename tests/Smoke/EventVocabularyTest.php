@@ -51,6 +51,8 @@ final class EventVocabularyTest extends TestCase
         'slot_reserved',
         'cardinality_sampled',
         'low_cardinality_index',
+        'spread_sampled',
+        'high_spread_model',
         'retype_started',
         'promote_to_ready',
     ];

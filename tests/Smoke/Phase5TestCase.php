@@ -19,6 +19,7 @@ use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
 use StarDust\Watcher\PendingDemandReader;
+use StarDust\Watcher\SpreadSampler;
 use StarDust\Watcher\Watcher;
 use StarDust\Write\BackfillExecutor;
 use StarDust\Write\EntryWriter;
@@ -195,6 +196,22 @@ abstract class Phase5TestCase extends ReadPathTestCase
         );
     }
 
+    /**
+     * ADR 0031 spread advisory. `$excessPageThreshold` mirrors
+     * `Config::$spreadExcessPageThreshold` so a test can prove the
+     * `high_spread_model` gate from either side of the bound.
+     */
+    protected function makeSpreadSampler(
+        ?\Psr\Log\LoggerInterface $logger = null,
+        int $excessPageThreshold = 2,
+    ): SpreadSampler {
+        return new SpreadSampler(
+            pdo: $this->pdo,
+            logger: $logger ?? new NullLogger(),
+            excessPageThreshold: $excessPageThreshold,
+        );
+    }
+
     protected function makeUnmappedFieldReserver(
         ?\Psr\Log\LoggerInterface $logger = null,
     ): UnmappedFieldReserver {
@@ -292,6 +309,7 @@ abstract class Phase5TestCase extends ReadPathTestCase
                 rowFloor: 10_000,
                 distinctFloor: 10,
             ),
+            spreadSampler: $this->makeSpreadSampler($log),
             capacityThreshold: $threshold,
             cardinalityIntervalSeconds: $cardinalityIntervalSeconds,
             cardinalityJitterSeconds: $cardinalityJitterSeconds,
