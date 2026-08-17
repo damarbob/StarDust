@@ -8,12 +8,16 @@ namespace StarDust\Write;
  * Outcome of one {@see BackfillExecutor::backfill()} call.
  *
  * `slotsWritten` lists each `(pageId, slotColumn)` pair the backfill
- * UPSERTed; `stillUnmapped` carries the registered field names that
- * STILL have no live slot after the attempt. A non-empty
- * `stillUnmapped` is the Reconciler's signal that this entry needs to
- * remain enqueued — capacity is still exhausted for one or more of its
- * fields — and the Reconciler emits a `capacity_wait` event and rolls
- * back the chunk transaction so the queue rows stay claimable.
+ * UPSERTed; `stillUnmapped` carries the registered *filterable* field
+ * names that STILL have no live slot after the attempt (ADR 0034 scopes
+ * the enqueue to those, so a JSON-only field never appears here).
+ *
+ * A non-empty `stillUnmapped` is the Reconciler's signal that this entry
+ * must stay enqueued: it rolls the chunk transaction back so the queue
+ * rows stay claimable, and then feeds these names to
+ * `UnmappedFieldReserver` to claim the slots they are waiting on
+ * (ADR 0007). Only when that reserves nothing does the tick emit
+ * `capacity_wait` and hand off to the Watcher.
  */
 final class BackfillResult
 {

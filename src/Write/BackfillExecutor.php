@@ -18,8 +18,10 @@ use StarDust\Exception\EntryDataMissingException;
  * own concern.
  *
  * Returns a {@see BackfillResult} listing every slot UPSERTed plus any
- * registered fields that still have no live slot (capacity still
- * exhausted — caller rolls back and emits `capacity_wait`).
+ * registered filterable fields that still have no live slot. The caller
+ * rolls the chunk back and then tries to reserve one for each
+ * (`UnmappedFieldReserver`, the ADR 0007 path), falling through to
+ * `capacity_wait` only when no indexed free slot exists.
  *
  * Phase 6b's retype-backfill will extend this same executor with the
  * ADR 0024 coercion-matrix path; today it leans on

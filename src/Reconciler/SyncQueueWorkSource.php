@@ -28,14 +28,42 @@ use Throwable;
  *      - On any other Throwable: DLQ with `reason='other'`, deletes
  *        the queue row.
  *      - On {@see \StarDust\Write\BackfillResult::hasStillUnmapped()}:
- *        emits `capacity_wait`, ROLLS BACK the whole chunk so every
- *        claimed row goes back on the queue, returns CAPACITY_WAIT.
+ *        ROLLS BACK the whole chunk so every claimed row goes back on
+ *        the queue, then hands the unmapped field names to
+ *        {@see UnmappedFieldReserver} (step 3a below).
  *   4. Deletes successfully-backfilled queue rows.
  *   5. Emits `chunk_complete` (or `chunk_partial` if any DLQ rows
  *      were inserted) and commits.
  *
  * `chunk_partial` and `chunk_complete` are alternatives, not
  * cumulative — every successful tick emits exactly one of them.
+ *
+ * ## 3a. The exhaustion reservation (ADR 0007)
+ *
+ * ADR 0007 resolves slot exhaustion as "write now, backfill once a free
+ * slot becomes available", but for a long time nothing in `src/` ever
+ * *made* one available for a plain unmapped filterable field: this work
+ * source rolled back and emitted `capacity_wait` forever, and the
+ * Watcher's `pending_demand` gauge had nothing that drained it.
+ *
+ * So after the rollback — deliberately after, see
+ * {@see UnmappedFieldReserver} for why it must not happen inside the
+ * chunk transaction — the still-unmapped fields get one reservation
+ * attempt each:
+ *
+ *   - **At least one reserved** ⇒ the wait is over. Return WORK_DONE
+ *     and emit NO `capacity_wait`: the reserver's own `slot_reserved`
+ *     event is the record of what happened, and firing `capacity_wait`
+ *     on a successful recovery would make every recovery look like an
+ *     alert. The next tick re-claims the same rows and drains them.
+ *   - **None reserved** ⇒ genuinely out of indexed capacity. Emit
+ *     `capacity_wait` and return CAPACITY_WAIT, exactly as before, so
+ *     the Reconciler sleeps and lets the Watcher's ADR 0035
+ *     unsatisfiable-demand trigger provision a page carrying the
+ *     starved family's index.
+ *
+ * `capacity_wait` therefore keeps its precise meaning — *blocked, the
+ * Watcher must provision* — rather than becoming a routine event.
  */
 final class SyncQueueWorkSource implements ReconcilerWorkSource
 {
@@ -44,6 +72,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
         private readonly LoggerInterface $logger,
         private readonly BackfillExecutor $backfillExecutor,
         private readonly DlqWriter $dlqWriter,
+        private readonly UnmappedFieldReserver $unmappedFieldReserver,
         private readonly int $chunkSize,
     ) {
     }
@@ -70,6 +99,9 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
             $dlqCount = 0;
             $successCount = 0;
             $capacityWait = false;
+            $stalledEntryId = 0;
+            /** @var list<string> $stalledFields */
+            $stalledFields = [];
 
             foreach ($rows as $row) {
                 $queueId = (int) $row['id'];
@@ -111,6 +143,8 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
 
                 if ($result->hasStillUnmapped()) {
                     $capacityWait = true;
+                    $stalledEntryId = $entryId;
+                    $stalledFields = $result->stillUnmapped;
                     break;
                 }
 
@@ -120,6 +154,21 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
 
             if ($capacityWait) {
                 $this->pdo->rollBack();
+
+                // The ADR 0007 reservation, outside any transaction now
+                // that the chunk has been rolled back. Reserving here
+                // rather than in the loop is what keeps the chunk's
+                // shape unchanged and the schema_version bump out of a
+                // chunk transaction — see UnmappedFieldReserver.
+                if ($this->unmappedFieldReserver->reserveFor($stalledEntryId, $stalledFields) > 0) {
+                    // Capacity now exists. Emitting `capacity_wait`
+                    // here would report a resolved wait as an alert;
+                    // the reserver's `slot_reserved` event already
+                    // records what changed. The next tick re-claims
+                    // these same rows and drains them.
+                    return TickOutcome::WORK_DONE;
+                }
+
                 $this->logger->warning('reconciler capacity wait', [
                     'event'          => 'capacity_wait',
                     'source'         => 'reconciler',

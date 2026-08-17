@@ -152,12 +152,12 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 - **Writes** — single-entry, synchronous chunked bulk (≤ 1 000 per call), and async submission for larger batches. Writes stay available even when slot capacity is exhausted: the value still lands in the JSON payload and is queued for backfill.
 - **Reads** — cursor-paginated, two-query bounded read; tenant-isolated SQL on every `WHERE` and `JOIN`; an in-process schema-version cache.
 - **Search** — a unified `search()` surface; JSON wire format decoded into a closed filter AST (twelve operators, full AND/OR/NOT); three-stage pre-flight validation; a swappable driver (MySQL-native default keeps pure-AND filters on indexed joins and switches to `EXISTS` subqueries for OR/NOT — inject your own to delegate to an external search service).
-- **Background daemons** (all runnable via `bin/stardust`): the **Watcher** keeps slot capacity provisioned and indexes each new page for the fields currently waiting on one, the **Reconciler** drains the sync queue / async imports / retype backfills (with a dead-letter queue and operator replay, and auto-recovery of import jobs abandoned by a crashed worker — resumed from the last committed checkpoint), the **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
+- **Background daemons** (all runnable via `bin/stardust`): the **Watcher** keeps slot capacity provisioned and indexes each new page for the fields currently waiting on one, the **Reconciler** drains the sync queue / async imports / retype backfills (claiming a slot for any filterable field still waiting on one, with a dead-letter queue and operator replay, and auto-recovery of import jobs abandoned by a crashed worker — resumed from the last committed checkpoint), the **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
 - **Field lifecycle** — online field retype and filterability promotion through a type-coercion matrix, with JSON-payload fallback throughout the backfill window.
 
 **Not yet available:**
 
-- **No first-class model/field definition API yet.** `StarDust::schemaBuilder()` is a convenience helper that registers models and fields for you (get-or-create, so it's safe to re-run) — no raw `INSERT`s required for the registry. It's a stopgap, not the full definition API: making a filterable field genuinely queryable still means provisioning a page and reserving a slot. The Watcher provisions the page for you — it sees the waiting field and indexes the new page for its type — but reserving the slot is still yours to do via `SlotReserver` (or `PageProvisioner` + `SlotReserver` for fully manual setup). Without a reserved indexed slot you can still store and point-read entries (the JSON payload is always authoritative), but the field won't be on the indexed filter path. The first-class definition API that ties all of this together is on the roadmap.
+- **No first-class model/field definition API yet.** `StarDust::schemaBuilder()` is a convenience helper that registers models and fields for you (get-or-create, so it's safe to re-run) — no raw `INSERT`s required for the registry. It's a stopgap, not the full definition API, though with the daemons running it is now enough on its own: the Watcher sees the waiting field and provisions a page indexed for its type, and the Reconciler claims the slot for it. Until that completes you can still store and point-read entries (the JSON payload is always authoritative), but the field isn't on the indexed filter path yet. Without the daemons running you must provision and reserve by hand via `PageProvisioner` + `SlotReserver`. The first-class definition API that ties all of this together is on the roadmap.
 - **Export predicate filtering** — a submitted export currently writes *every* non-deleted entry for the model. The supplied filter is stored verbatim but not yet applied by the Chronicler.
 - **Async import-job status reads** — `submitBulkWrite()` returns an `ImportJobId`, but there is no `getImportJob()` polling method yet (exports do have `getExportJob()`).
 
@@ -248,7 +248,11 @@ $modelId = $company->modelId;
 
 ### 3 — Make the filterable fields queryable
 
-Registering a field records *intent*; the field becomes filterable once its value lands in an indexed slot column. In a running deployment the Watcher daemon notices fields waiting on a slot and provisions pages indexed for them — but it provisions the capacity, it does not claim it, so the field still needs a slot reserved. For one-off setup, provision a page (60 typed slots) and reserve one slot per field:
+Registering a field records *intent*; the field becomes filterable once its value lands in an indexed slot column.
+
+**In a running deployment this is automatic.** The Watcher notices fields waiting on a slot and provisions pages indexed for them; the Reconciler then claims a slot for any registered filterable field it finds still unmapped while draining the sync queue. Write an entry touching the field and it becomes queryable a moment later, without you reserving anything.
+
+The manual route below is for one-off setup — a seed script, a test fixture, or a deployment where you want the slot in place before the first write. Provision a page (60 typed slots) and reserve one slot per field:
 
 ```php
 use StarDust\Page\PageProvisioner;

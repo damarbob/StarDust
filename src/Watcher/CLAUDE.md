@@ -38,6 +38,8 @@ Covers both demand sources named by the blueprint in **one** query over unmapped
 
 Phase 6b never provisions pages (ADR 0016 commitment 4 — no eager DDL); it is one of the two demand *sources*, not a provisioner.
 
+**`pending_demand` is self-draining.** It was not when this gauge first shipped: nothing in `src/` reserved a slot for a plain unmapped filterable field, so a field registered through `schemaBuilder()` sat in this query forever and the gauge showed permanent backlog. The Reconciler's `UnmappedFieldReserver` now closes that loop (`src/Reconciler/CLAUDE.md`), so a demand entry that persists across many polls is a genuine signal — either the Reconciler is not running, or the family has no indexed free capacity and the provisioning path is stuck.
+
 ## `CardinalitySampler`
 
 `sample()` is the Phase 5 24-h periodic scan over every live slot (`trigger='periodic'`), running the ADR 0019 normative aggregate per `(tenant, slot)`. Emits `cardinality_sampled` always, and `low_cardinality_index` when the selectivity or distinct floor is breached.

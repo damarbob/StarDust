@@ -29,10 +29,10 @@ use Throwable;
  * lives in {@see self::resolveReservableSlotType()}, whose return value
  * `reserveCore()` requires, so no reservation path can bypass it.
  *
- * If no free slot of the required family exists, `reserve()` commits a
- * no-op transaction and returns `null`. The caller (Phase 3 write path,
- * Phase 5 Watcher loop) decides whether to provision a new page, fall
- * back to a JSON-only write, or enqueue.
+ * If no free slot of the required family exists, the own-transaction
+ * entry points commit a no-op transaction and return `null`. The caller
+ * decides whether to fall back to a JSON-only write, enqueue, or wait
+ * for the Watcher to provision.
  */
 final class SlotReserver
 {
@@ -63,24 +63,37 @@ final class SlotReserver
     }
 
     /**
-     * Phase 6b retype + filterability-promotion variant.
+     * The ADR 0007 exhaustion-backfill entry point.
      *
-     * Transitions a free slot to `backfilling` (not `assigned`) and,
-     * when `$requireIndexed === true`, restricts candidates to slot
-     * columns that have a `(tenant_id, slot_column)` composite index
-     * on their page. The Reconciler's retype work source calls this
-     * (a) when a retype was deferred at initiation because no
-     * matching free slot existed, or (b) on every filterability
-     * promotion (which must land on an indexed slot per ADR 0016
-     * commitment 1).
+     * Called by the Reconciler's sync-queue work source when a
+     * registered *filterable* field turns out to still have no live
+     * slot — the condition ADR 0007 resolves with "once a free slot
+     * becomes available … the Reconciler … writes the field value into
+     * the newly freed slot". Before this existed, nothing in `src/`
+     * reserved for a plain unmapped filterable field, so the Watcher's
+     * `pending_demand` gauge had nothing that drained it.
      *
-     * Returns `null` if no candidate exists — the caller treats that
-     * as a capacity-wait and retries on the next tick after the
-     * Watcher provisions.
+     * Two differences from {@see self::reserve()}, both load-bearing:
+     *
+     *   - `$requireIndexed` is hardcoded `true`, not defaulted. The
+     *     slot goes live as `assigned`, which makes
+     *     `MysqlNativeDriver::supportsFilterOn()` return true at once;
+     *     landing on an unindexed column would then have the compiler
+     *     emit a predicate against a column with no index, violating
+     *     ADR 0004.
+     *   - It is called AFTER the work source rolls its chunk back, so
+     *     the reservation owns its own short transaction rather than
+     *     holding `FOR UPDATE` locks and the `stardust_schema_version`
+     *     singleton bump inside a chunk transaction (ADR 0008).
+     *
+     * Returns `null` when no indexed free slot of the family exists —
+     * the caller emits `capacity_wait` and retries on a later tick,
+     * once the Watcher's ADR 0035 unsatisfiable-demand trigger has
+     * provisioned a page carrying the starved family's index.
      */
-    public function reserveForBackfill(int $fieldId, bool $requireIndexed = false): ?SlotAssignment
+    public function reserveForExhaustionBackfill(int $fieldId): ?SlotAssignment
     {
-        return $this->reserveInOwnTransaction($fieldId, 'backfilling', $requireIndexed);
+        return $this->reserveInOwnTransaction($fieldId, 'assigned', true);
     }
 
     /**
@@ -181,14 +194,35 @@ final class SlotReserver
 
         // `AND status = 'free'` is a belt-and-braces guard on top of
         // FOR UPDATE. The partial unique `ux_slot_assignments_field_live`
-        // surfaces a PDOException here if `$fieldId` already has a live
-        // slot — the caller's catch rolls back and rethrows.
+        // rejects this write if `$fieldId` already has a live slot —
+        // under `ERRMODE_EXCEPTION` as a PDOException the caller's catch
+        // rolls back and rethrows.
         $update = $this->pdo->prepare(
             'UPDATE stardust_slot_assignments'
             . ' SET status = ?, field_id = ?, updated_at = ?'
             . ' WHERE id = ? AND status = \'free\''
         );
         $update->execute([$targetStatus, $fieldId, $now, $assignmentId]);
+
+        // The engine takes an *injected* PDO (ADR 0026), so a consumer
+        // on `ERRMODE_SILENT` gets no exception from that constraint —
+        // `execute()` merely returns false. Without this check the
+        // method would then bump the schema version and hand back a
+        // SlotAssignment for a slot it never claimed, and the ADR 0007
+        // caller would log `slot_reserved`, report progress, and re-try
+        // the identical no-op every tick — a silent loop with no
+        // `capacity_wait` to show an operator that anything is wrong.
+        // Verified against MySQL 8.0.13: the duplicate surfaces as errno
+        // 1062 when the rival reservation has committed, and as errno
+        // 1205 (lock wait timeout) while it is still open.
+        //
+        // `rowCount() === 0` is the same "my write did not land"
+        // detector `ImportJobWorkSource` uses for lease loss, and it is
+        // exact here: the UPDATE always changes `status`, so a matched
+        // row is always a changed row.
+        if ($update->rowCount() === 0) {
+            return null;
+        }
 
         $bumpVersion = $this->pdo->prepare(
             'UPDATE stardust_schema_version'

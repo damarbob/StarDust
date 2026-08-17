@@ -38,6 +38,7 @@ use StarDust\Reconciler\DlqWriter;
 use StarDust\Reconciler\ImportJobWorkSource;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\SyncQueueWorkSource;
+use StarDust\Reconciler\UnmappedFieldReserver;
 use StarDust\Retype\RetypeBackfillExecutor;
 use StarDust\Retype\RetypeBackfillWorkSource;
 use StarDust\Retype\RetypeCheckpointRepository;
@@ -370,6 +371,10 @@ final class StarDust
             logger: $this->config->logger,
             backfillExecutor: $this->backfillExecutor(),
             dlqWriter: $dlqWriter,
+            unmappedFieldReserver: new UnmappedFieldReserver(
+                pdo: $this->config->pdo,
+                slotReserver: $this->slotReserver(),
+            ),
             chunkSize: $this->config->reconcilerChunkSize,
         );
 

@@ -14,6 +14,8 @@ use StarDust\Reconciler\DlqWriter;
 use StarDust\Reconciler\ImportJobWorkSource;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\SyncQueueWorkSource;
+use StarDust\Reconciler\UnmappedFieldReserver;
+use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
 use StarDust\Watcher\PendingDemandReader;
@@ -193,6 +195,19 @@ abstract class Phase5TestCase extends ReadPathTestCase
         );
     }
 
+    protected function makeUnmappedFieldReserver(
+        ?\Psr\Log\LoggerInterface $logger = null,
+    ): UnmappedFieldReserver {
+        return new UnmappedFieldReserver(
+            pdo: $this->pdo,
+            slotReserver: new SlotReserver(
+                pdo: $this->pdo,
+                clock: new SystemClock(),
+                logger: $logger ?? new NullLogger(),
+            ),
+        );
+    }
+
     protected function makeSyncQueueWorkSource(
         ?\Psr\Log\LoggerInterface $logger = null,
         int $chunkSize = 500,
@@ -203,6 +218,7 @@ abstract class Phase5TestCase extends ReadPathTestCase
             logger: $log,
             backfillExecutor: $this->makeBackfillExecutor(),
             dlqWriter: $this->makeDlqWriter($log),
+            unmappedFieldReserver: $this->makeUnmappedFieldReserver($log),
             chunkSize: $chunkSize,
         );
     }

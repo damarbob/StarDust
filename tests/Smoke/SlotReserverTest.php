@@ -371,14 +371,108 @@ final class SlotReserverTest extends TestCase
         );
     }
 
-    /** The guard covers the backfill variant too (ADR 0034 §1). */
-    public function testReserveForBackfillRejectsNonFilterableField(): void
+    /** The guard covers the exhaustion-backfill variant too (ADR 0034 §1). */
+    public function testReserveForExhaustionBackfillRejectsNonFilterableField(): void
     {
         $this->newProvisioner()->provision();
         $fieldId = $this->registerField('string', isFilterable: false);
 
         $this->expectException(NonFilterableFieldSlotException::class);
-        $this->newReserver()->reserveForBackfill($fieldId, requireIndexed: true);
+        $this->newReserver()->reserveForExhaustionBackfill($fieldId);
+    }
+
+    /**
+     * ADR 0007: the exhaustion path reserves a slot that is live
+     * immediately — `assigned`, not `backfilling`. Reserving
+     * `backfilling` would leave the field unfilterable with nothing in
+     * this path to ever promote it.
+     */
+    public function testReserveForExhaustionBackfillReservesAnAssignedSlot(): void
+    {
+        $this->newProvisioner()->provision(['i_str_01']);
+        $fieldId = $this->registerField('string', isFilterable: true);
+
+        $assignment = $this->newReserver()->reserveForExhaustionBackfill($fieldId);
+
+        self::assertNotNull($assignment);
+        self::assertSame('i_str_01', $assignment->slotColumn);
+
+        $stmt = $this->pdo->prepare('SELECT status FROM stardust_slot_assignments WHERE id = ?');
+        $stmt->execute([$assignment->slotAssignmentId]);
+        self::assertSame('assigned', $stmt->fetchColumn());
+    }
+
+    /**
+     * ADR 0004: the exhaustion path hardcodes `requireIndexed: true`,
+     * so a page full of free-but-unindexed slots cannot satisfy it. The
+     * caller reads the null as "wait for the Watcher to provision".
+     */
+    public function testReserveForExhaustionBackfillRefusesAnUnindexedSlot(): void
+    {
+        $this->newProvisioner()->provision();
+        $fieldId = $this->registerField('string', isFilterable: true);
+
+        self::assertNull($this->newReserver()->reserveForExhaustionBackfill($fieldId));
+    }
+
+    /**
+     * A reservation that the database refuses must report `null`, never
+     * a `SlotAssignment` for a slot it did not claim.
+     *
+     * The engine takes an *injected* PDO (ADR 0026), so a consumer can
+     * hand it one on `ERRMODE_SILENT`, where a constraint violation
+     * makes `execute()` return false instead of raising. Without the
+     * `rowCount()` check in `reserveCore()` this returned a phantom
+     * `SlotAssignment`: the ADR 0007 caller would log `slot_reserved`,
+     * count progress, suppress `capacity_wait`, and re-run the identical
+     * no-op every tick — a silent loop an operator could not see.
+     *
+     * Uses a sibling connection on the same credentials rather than the
+     * class's own PDO, so the error mode is the only variable. Same
+     * precedent as `ChroniclerMultiWorkerClaimTest`.
+     */
+    public function testReserveReportsNullRatherThanAPhantomSlotUnderErrmodeSilent(): void
+    {
+        $this->newProvisioner()->provision(['i_str_01', 'i_str_02']);
+        $fieldId = $this->registerField('string', isFilterable: true);
+
+        // Consume the field's one permitted live slot (ADR 0017).
+        self::assertNotNull($this->newReserver()->reserveForExhaustionBackfill($fieldId));
+
+        $versionBefore = (int) $this->pdo
+            ->query('SELECT version FROM stardust_schema_version WHERE id = 1')
+            ->fetchColumn();
+
+        $silent = new PDO(
+            (string) getenv('STARDUST_TEST_DSN'),
+            (string) getenv('STARDUST_TEST_USER'),
+            (string) getenv('STARDUST_TEST_PASS'),
+            [
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_SILENT,
+                PDO::ATTR_EMULATE_PREPARES   => false,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            ],
+        );
+
+        $phantom = (new SlotReserver($silent, new SystemClock(), new NullLogger()))
+            ->reserveForExhaustionBackfill($fieldId);
+
+        self::assertNull($phantom, 'A refused reservation must not be reported as a SlotAssignment.');
+
+        $live = (int) $this->pdo->query(
+            "SELECT COUNT(*) FROM stardust_slot_assignments"
+            . " WHERE field_id = {$fieldId} AND status IN ('assigned','backfilling','ready')"
+        )->fetchColumn();
+        self::assertSame(1, $live, 'ADR 0017 still holds: at most one live slot per field.');
+
+        $versionAfter = (int) $this->pdo
+            ->query('SELECT version FROM stardust_schema_version WHERE id = 1')
+            ->fetchColumn();
+        self::assertSame(
+            $versionBefore,
+            $versionAfter,
+            'A reservation that never landed must not bump the schema version.',
+        );
     }
 
     /**
