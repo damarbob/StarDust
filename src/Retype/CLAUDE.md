@@ -26,6 +26,12 @@ The *trigger* decides what changes on `stardust_fields`. Whether the **target** 
 
 Under ADR 0034 a promotion normally has *no* old slot to tombstone; `tombstoneLiveSlot()` already returned `null` cleanly for that case, so no new code was needed.
 
+### Relocations are model-affine, with one shape that is not (ADR 0032)
+
+The replacement reservation goes through the same chokepoint as every other, so it prefers a page already hosting a **live** slot of the same model. That matters here more than anywhere else: ADR 0016 re-rolls page placement on *every* retype and promotion, which is the main mechanism by which a model scatters.
+
+**But a model's *only* field loses affinity on relocation.** Step 2 tombstones the current slot in the same transaction that step 3 reserves the replacement, so by then the model has no live slot anywhere, the affine set is empty, and the replacement lands on global-oldest — possibly a different page. Harmless in isolation (a one-field model occupies one page either way, so `excess_pages` stays 0), but it means **a relocation is not guaranteed to be page-stable**. ADR 0033 compaction pins its target page explicitly rather than trusting affinity, for exactly this reason. Pinned by `SlotAffinityTest::testSingleFieldModelLosesAffinityOnRelocation`.
+
 ### Exactly one schema-version bump on every branch
 
 `SlotReserver::reserveCore()` bumps on its success path only, and the initiator's `if ($newSlot === null)` compensating bump covers both the deferred reservation and the registry-only transition. Check this invariant if you add a fourth shape.

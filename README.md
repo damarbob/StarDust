@@ -148,7 +148,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 **What works today:**
 
 - **Schema bootstrap** — idempotent, non-destructive provisioning of every table the engine needs.
-- **Slot & page system** — auto-allocated `entry_slots_page_N` extension pages, indexed according to each field's `is_filterable` flag, with atomic free-slot reservation.
+- **Slot & page system** — auto-allocated `entry_slots_page_N` extension pages, indexed according to each field's `is_filterable` flag, with atomic free-slot reservation. Reservation keeps a model's filterable fields together on as few pages as it can, so filtered queries stay at fewer joins as a model grows.
 - **Writes** — single-entry, synchronous chunked bulk (≤ 1 000 per call), and async submission for larger batches. Writes stay available even when slot capacity is exhausted: the value still lands in the JSON payload and is queued for backfill.
 - **Reads** — cursor-paginated, two-query bounded read; tenant-isolated SQL on every `WHERE` and `JOIN`; an in-process schema-version cache.
 - **Search** — a unified `search()` surface; JSON wire format decoded into a closed filter AST (twelve operators, full AND/OR/NOT); three-stage pre-flight validation; a swappable driver (MySQL-native default keeps pure-AND filters on indexed joins and switches to `EXISTS` subqueries for OR/NOT — inject your own to delegate to an external search service).

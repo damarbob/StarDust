@@ -36,6 +36,32 @@ Two of the three have production callers:
 
 **The ADR 0007 path closed a gap this section used to warn about.** Before it, no production path reserved for a plain unmapped filterable field, so a field registered filterable through `schemaBuilder()` never acquired a slot and the Watcher's `pending_demand` gauge had nothing that drained it. `SyncQueueWorkSource` now reserves (see `src/Reconciler/CLAUDE.md`), so a perpetually non-zero `pending_demand` is once again a real signal worth investigating.
 
+## Model affinity (ADR 0032)
+
+`reserveCore()` biases candidate selection toward pages already hosting a **live** slot of the same model, falling back to global-oldest when no affine candidate of the family exists. The model id rides along from `resolveReservableField()`'s existing row read, so no `reserve*()` signature gained a parameter. The outcome lands on `SlotAssignment::$affinity` (`co_located | fallback`) and in the existing `slot_reserved` event — additive, so no ADR 0020 change.
+
+**It is a bias, never a constraint.** When the affine page has no free slot of the family, reservation spills to global-oldest. Affinity must never fail a reservation that would otherwise succeed, or ADR 0007 write availability breaks and a reservation can starve. `requireIndexed` narrows *eligibility* and therefore outranks affinity's *ordering*: an unindexed affine page loses to an indexed non-affine one, because ADR 0004 forbids a filterable field on an unindexed column.
+
+### Why it is two queries and not an `ORDER BY` key — measured, not guessed
+
+The obvious implementation of the ADR's conceptual ordering is one query with `ORDER BY (a.page_id IN (…)) DESC, a.page_id, a.id`. **That is a serious concurrency regression.** On MySQL 8.0.13:
+
+| shape | plan | free rows locked |
+| :-- | :-- | :-- |
+| global-oldest (pre-affinity) | `type=index`, no filesort | 1 of 15 |
+| `ORDER BY (page_id IN …) DESC` | `type=ref`, **filesort** | **all of them** |
+| affine-scoped `WHERE` + `FORCE INDEX` | `type=range`, no filesort | 1 of 15 |
+
+The ordering expression cannot come from an index, so the optimiser drops the index-ordered `LIMIT 1` walk and filesorts the family's whole free pool — and `FOR UPDATE` locks every row it examines. Concurrent reservers for unrelated models would fully serialise. So affinity is scoped into the `WHERE` of a first query, with the global-oldest query unchanged as the fallback.
+
+**`FORCE INDEX (ix_slot_assignments_page_status)` is load-bearing.** Without it the optimiser picks `index_merge … Using intersect(...)` for `page_id IN (…) AND status='free'` and the footprint expands again. Do not remove it without re-measuring.
+
+### The affine status set differs from the spread metric's, deliberately
+
+Affinity uses `LiveSlotMap::LIVE_STATUSES` — including `backfilling`. `SpreadSampler` (ADR 0031) uses only `('assigned','ready')`. Different questions: spread measures join cost and a `backfilling` slot serves no query, whereas affinity asks where the model is *going* to live. Do not unify them.
+
+The affine page-set read is a **plain `SELECT`, before the candidate query and never inside it**. ADR 0032 makes that normative: a correlated `EXISTS` in the `FOR UPDATE` statement can lock the model's live sibling slots, which the write path reads and relocations mutate. `SlotAffinityTest::testHeldReservationDoesNotLockTheModelsLiveSiblings` is the guard.
+
 ## `IndexedSlotPredicate`
 
 **The single definition of "this slot column is indexed."** The reserver filters candidates with it and the Watcher's `CapacityReporter` counts usable inventory with it, and they MUST stay identical: if they drift, the Watcher reports capacity the reserver refuses, so a page looks healthy while every reservation against it returns `null`. `tests/Smoke/Slot/IndexedSlotPredicateTest` is a source scan enforcing that neither file inlines the literal.

@@ -10,6 +10,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\NonFilterableFieldSlotException;
+use StarDust\Write\LiveSlotMap;
 use Throwable;
 
 /**
@@ -111,9 +112,9 @@ final class SlotReserver
         int $fieldId,
         bool $requireIndexed = false,
     ): ?SlotAssignment {
-        $slotType = $this->resolveReservableSlotType($fieldId);
+        $field = $this->resolveReservableField($fieldId);
 
-        return $this->reserveCore($fieldId, $slotType, 'backfilling', $requireIndexed);
+        return $this->reserveCore($fieldId, $field, 'backfilling', $requireIndexed);
     }
 
     private function reserveInOwnTransaction(
@@ -124,11 +125,11 @@ final class SlotReserver
         // Resolved (and guarded) before `beginTransaction()` so a
         // rejected field never opens a transaction or takes the
         // `FOR UPDATE` gap locks the candidate SELECT would acquire.
-        $slotType = $this->resolveReservableSlotType($fieldId);
+        $field = $this->resolveReservableField($fieldId);
 
         $this->pdo->beginTransaction();
         try {
-            $assignment = $this->reserveCore($fieldId, $slotType, $targetStatus, $requireIndexed);
+            $assignment = $this->reserveCore($fieldId, $field, $targetStatus, $requireIndexed);
             $this->pdo->commit();
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -145,44 +146,53 @@ final class SlotReserver
     }
 
     /**
-     * @param string $slotType the family resolved by
-     *                         {@see self::resolveReservableSlotType()} —
-     *                         taking it as a parameter is what keeps the
-     *                         ADR 0034 filterability guard unbypassable
+     * @param array{slotType: string, modelId: int} $field resolved by
+     *        {@see self::resolveReservableField()} — taking it as a
+     *        parameter is what keeps the ADR 0034 filterability guard
+     *        unbypassable, and it carries the model id that ADR 0032
+     *        affinity needs without adding a public parameter
      */
     private function reserveCore(
         int $fieldId,
-        string $slotType,
+        array $field,
         string $targetStatus,
         bool $requireIndexed,
     ): ?SlotAssignment {
+        $slotType = $field['slotType'];
+
         $now = $this->clock->now()
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
 
-        // ORDER BY page_id keeps reservations packed on the oldest
-        // pages; FOR UPDATE prevents two concurrent reservers from
-        // claiming the same row.
-        //
-        // When the caller demands an indexed slot, the shared
-        // {@see IndexedSlotPredicate} filters to columns that carry an
-        // index. It is shared because the Watcher counts usable
-        // capacity with the same predicate — if the two drift, the
-        // Watcher reports capacity this method refuses.
-        $sql = 'SELECT a.id, a.page_id, a.slot_column'
-            . ' FROM stardust_slot_assignments a';
-        if ($requireIndexed) {
-            $sql .= ' JOIN stardust_pages p ON p.id = a.page_id'
-                . ' WHERE a.status = \'free\' AND a.slot_type = ?'
-                . ' AND ' . IndexedSlotPredicate::existsSql('a', 'p');
-        } else {
-            $sql .= ' WHERE a.status = \'free\' AND a.slot_type = ?';
-        }
-        $sql .= ' ORDER BY a.page_id, a.id LIMIT 1 FOR UPDATE';
+        // ADR 0032: resolved in a PRIOR, NON-LOCKING read. This must not
+        // happen inline in the `FOR UPDATE` statement below — a
+        // correlated EXISTS there can, depending on plan and isolation
+        // level, lock the model's live sibling slots, which the write
+        // path reads and relocations mutate. That contention does not
+        // exist today and must not be introduced.
+        $affinePageIds = $this->affinePageIds($field['modelId']);
 
-        $select = $this->pdo->prepare($sql);
-        $select->execute([$slotType]);
-        $row = $select->fetch(PDO::FETCH_ASSOC);
+        // Affinity is expressed as TWO queries, not as an ORDER BY key.
+        // See {@see self::selectCandidate()} for why — the obvious
+        // single-query form is a serious concurrency regression.
+        $row      = false;
+        $affinity = SlotAssignment::AFFINITY_FALLBACK;
+
+        if ($affinePageIds !== []) {
+            $row = $this->selectCandidate($slotType, $requireIndexed, $affinePageIds);
+            if ($row !== false) {
+                $affinity = SlotAssignment::AFFINITY_CO_LOCATED;
+            }
+        }
+
+        // Spill to global-oldest whenever affinity found nothing. ADR
+        // 0032 is emphatic that this is a bias and never a constraint:
+        // affinity must not fail a reservation that would otherwise have
+        // succeeded, or write availability (ADR 0007) breaks and a
+        // reservation can starve indefinitely.
+        if ($row === false) {
+            $row = $this->selectCandidate($slotType, $requireIndexed, null);
+        }
 
         if ($row === false) {
             return null;
@@ -236,7 +246,139 @@ final class SlotReserver
             slotColumn: $slotColumn,
             slotAssignmentId: $assignmentId,
             slotType: $slotType,
+            affinity: $affinity,
         );
+    }
+
+    /**
+     * One candidate `SELECT … FOR UPDATE`, optionally scoped to a set of
+     * pages.
+     *
+     * ## Why affinity is two queries and not an `ORDER BY` key
+     *
+     * The natural expression of ADR 0032's conceptual ordering is a
+     * single query with `ORDER BY (a.page_id IN (…)) DESC, a.page_id,
+     * a.id`. **Measured on MySQL 8.0.13, that is a serious concurrency
+     * regression** and it was rejected on the evidence:
+     *
+     * | shape                     | plan                                    | free rows locked |
+     * | :------------------------ | :-------------------------------------- | :--------------- |
+     * | today's global-oldest     | `type=index`, no filesort               | 1 of 8           |
+     * | `ORDER BY (page_id IN …)` | `type=ref`, **filesort**                | **8 of 8**       |
+     * | affine-scoped + FORCE     | `type=range`, no filesort               | 1 of 8           |
+     *
+     * The ordering expression cannot be satisfied from an index, so the
+     * optimiser abandons the index-ordered `LIMIT 1` walk and filesorts
+     * the whole free pool of that family — and `FOR UPDATE` locks every
+     * row the scan examines. Two reservers for unrelated models of the
+     * same family would then serialise completely. Scoping affinity into
+     * its own `WHERE` clause keeps both queries index-ordered, so each
+     * locks ~1 row exactly as today.
+     *
+     * `FORCE INDEX` is deliberate, not cargo-cult. Without it the
+     * optimiser picks `index_merge … Using intersect(...)` for the
+     * `page_id IN (…) AND status='free'` combination, which re-examines
+     * (and re-locks) the whole family — measured at 8 of 8 and 5 of 12
+     * on two fixtures. Forcing `(page_id, status)` keeps the tight range
+     * scan the ordering already wants.
+     *
+     * @param  list<int>|null $affinePageIds null ⇒ the unscoped
+     *                                       global-oldest fallback query,
+     *                                       byte-identical to pre-ADR-0032
+     *                                       behaviour
+     * @return array{id: int|string, page_id: int|string, slot_column: string}|false
+     */
+    private function selectCandidate(
+        string $slotType,
+        bool $requireIndexed,
+        ?array $affinePageIds,
+    ): array|false {
+        $sql = 'SELECT a.id, a.page_id, a.slot_column'
+            . ' FROM stardust_slot_assignments a';
+
+        if ($affinePageIds !== null) {
+            $sql .= ' FORCE INDEX (ix_slot_assignments_page_status)';
+        }
+
+        // When the caller demands an indexed slot, the shared
+        // {@see IndexedSlotPredicate} filters to columns that carry an
+        // index. It is shared because the Watcher counts usable capacity
+        // with the same predicate — if the two drift, the Watcher
+        // reports capacity this method refuses. Note it narrows
+        // *eligibility*, so it outranks affinity's *ordering*: an
+        // unindexed affine page loses to an indexed non-affine one.
+        if ($requireIndexed) {
+            $sql .= ' JOIN stardust_pages p ON p.id = a.page_id'
+                . ' WHERE a.status = \'free\' AND a.slot_type = ?'
+                . ' AND ' . IndexedSlotPredicate::existsSql('a', 'p');
+        } else {
+            $sql .= ' WHERE a.status = \'free\' AND a.slot_type = ?';
+        }
+
+        $params = [$slotType];
+
+        if ($affinePageIds !== null) {
+            // `IN ()` is a MySQL syntax error; the caller only passes a
+            // non-empty list, but the guard belongs beside the SQL that
+            // depends on it — same placement as
+            // `SyncQueueWorkSource::deleteQueueRows()`.
+            if ($affinePageIds === []) {
+                return false;
+            }
+            $placeholders = implode(',', array_fill(0, count($affinePageIds), '?'));
+            $sql .= " AND a.page_id IN ({$placeholders})";
+            $params = array_merge($params, $affinePageIds);
+        }
+
+        // ORDER BY page_id keeps reservations packed on the oldest pages
+        // (density); FOR UPDATE prevents two concurrent reservers from
+        // claiming the same row.
+        $sql .= ' ORDER BY a.page_id, a.id LIMIT 1 FOR UPDATE';
+
+        $select = $this->pdo->prepare($sql);
+        $select->execute($params);
+
+        return $select->fetch(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Pages already hosting a live slot of this model — the ADR 0032
+     * affine set.
+     *
+     * **A plain read, deliberately.** No `FOR UPDATE`, and it runs
+     * before the candidate selection rather than inside it. The ADR
+     * makes this normative: the rows it reads are the model's in-use
+     * slots, and locking them would create write-path/relocation
+     * contention that does not exist today.
+     *
+     * Note the status set is {@see LiveSlotMap::LIVE_STATUSES}, which
+     * **includes `backfilling`** — and that is deliberately different
+     * from {@see \StarDust\Watcher\SpreadSampler}'s `('assigned','ready')`.
+     * The two answer different questions. Spread measures join cost, and
+     * a `backfilling` slot services no query so it adds none. Affinity
+     * asks where the model *will* live, and a `backfilling` slot is
+     * exactly that. Do not "unify" them.
+     *
+     * @return list<int>
+     */
+    private function affinePageIds(int $modelId): array
+    {
+        $placeholders = implode(',', array_fill(0, count(LiveSlotMap::LIVE_STATUSES), '?'));
+
+        $stmt = $this->pdo->prepare(
+            'SELECT DISTINCT a.page_id'
+            . ' FROM stardust_slot_assignments a'
+            . ' JOIN stardust_fields f ON f.id = a.field_id'
+            . " WHERE f.model_id = ? AND a.status IN ({$placeholders})"
+        );
+        $stmt->execute(array_merge([$modelId], LiveSlotMap::LIVE_STATUSES));
+
+        $pageIds = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $pageId) {
+            $pageIds[] = (int) $pageId;
+        }
+
+        return $pageIds;
     }
 
     /**
@@ -255,17 +397,29 @@ final class SlotReserver
             'slot_column'        => $assignment->slotColumn,
             'slot_type'          => $assignment->slotType,
             'status'             => $status,
+            // ADR 0032 observability. Additive field on the existing
+            // event, so no ADR 0020 amendment and no EventVocabularyTest
+            // change. Read off the assignment rather than passed in,
+            // because RetypeInitiator and RetypeBackfillWorkSource emit
+            // this post-commit and would otherwise have to guess.
+            'affinity'           => $assignment->affinity,
         ]);
     }
 
     /**
-     * Resolves the field's slot-type family, rejecting any field that
-     * may not hold a slot at all.
+     * Resolves everything `reserveCore()` needs about the field, and
+     * rejects any field that may not hold a slot at all.
      *
-     * Returns the `slot_type` rather than the raw `declared_type` so
-     * that `reserveCore()` cannot be reached without passing through
-     * this guard — a future fourth entry point gets the ADR 0034 check
-     * for free.
+     * Returns the mapped `slot_type` rather than the raw `declared_type`
+     * so that `reserveCore()` cannot be reached without passing through
+     * this guard — a future entry point gets the ADR 0034 check for free.
+     *
+     * `model_id` rides along from the *same* row read. ADR 0032 requires
+     * the model be derived here rather than passed in, which is what
+     * keeps affinity from adding a parameter to any of the three public
+     * `reserve*()` signatures.
+     *
+     * @return array{slotType: string, modelId: int}
      *
      * @throws NonFilterableFieldSlotException when the field is
      *                                         non-filterable (ADR 0034 —
@@ -274,10 +428,10 @@ final class SlotReserver
      *                                         exist or carries an
      *                                         unrecognised declared_type
      */
-    private function resolveReservableSlotType(int $fieldId): string
+    private function resolveReservableField(int $fieldId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT declared_type, is_filterable FROM stardust_fields WHERE id = ?'
+            'SELECT declared_type, is_filterable, model_id FROM stardust_fields WHERE id = ?'
         );
         $stmt->execute([$fieldId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -295,9 +449,11 @@ final class SlotReserver
 
         $declaredType = (string) $row['declared_type'];
 
-        return self::DECLARED_TYPE_TO_SLOT_TYPE[$declaredType]
+        $slotType = self::DECLARED_TYPE_TO_SLOT_TYPE[$declaredType]
             ?? throw new InvalidArgumentException(
                 "SlotReserver: field {$fieldId} has unrecognised declared_type '{$declaredType}'."
             );
+
+        return ['slotType' => $slotType, 'modelId' => (int) $row['model_id']];
     }
 }
