@@ -137,6 +137,13 @@ switch ($command) {
                            filterable slots occupy, and how many of those
                            are avoidable. Registry-only and read-only;
                            safe against production at any time.
+          compact:model --tenant=N --model=N [--dry-run]
+                           Relocate one model's filterable slots onto the
+                           fewest pages that can hold them. Long-running:
+                           moves one field at a time and needs a running
+                           reconciler to make progress. Filters on the
+                           in-flight field are rejected until it lands;
+                           reads keep working. Safe to re-run.
 
         Subsequent phases are tracked in the project's design notes.
         HELP;
@@ -275,6 +282,72 @@ switch ($command) {
             exit(1);
         } catch (\Throwable $e) {
             fwrite(STDERR, "stardust: reconciler:dlq:replay failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'compact:model':
+        try {
+            $flags = $parseFlags(array_slice($argv, 2));
+            $tenantId = isset($flags['tenant']) && is_string($flags['tenant']) ? (int) $flags['tenant'] : null;
+            $modelId  = isset($flags['model'])  && is_string($flags['model'])  ? (int) $flags['model']  : null;
+            $dryRun   = isset($flags['dry-run']);
+
+            if ($tenantId === null || $modelId === null) {
+                fwrite(STDERR, "stardust: compact:model requires --tenant=N and --model=N.\n");
+                exit(2);
+            }
+
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $plan = $stardust->compactModel($tenantId, $modelId, $dryRun);
+
+            printf(
+                "stardust: model %d (tenant %d) occupies %d page(s); floor is %d.\n",
+                $modelId,
+                $tenantId,
+                $plan->pagesBefore,
+                $plan->theoreticalMinPages,
+            );
+
+            if ($plan->isNoop()) {
+                echo "stardust: nothing to relocate — the model is already as compact as its"
+                    . " field families allow.\n";
+                exit(0);
+            }
+
+            printf(
+                "stardust: target page(s) [%s]; %d field(s) to relocate, %d already in place.\n",
+                implode(',', $plan->targetPageIds),
+                $plan->relocationCount(),
+                $plan->noopCount,
+            );
+            foreach ($plan->relocations as $relocation) {
+                printf(
+                    "  %-24s %-4s page %d -> page %d\n",
+                    $relocation->fieldName,
+                    $relocation->slotType,
+                    $relocation->fromPageId,
+                    $relocation->toPageId,
+                );
+            }
+
+            if ($dryRun) {
+                // Nothing was mutated and no event was emitted — an event
+                // describing an uncommitted plan would be a lie.
+                echo "stardust: dry run — nothing was mutated.\n";
+                exit(0);
+            }
+
+            printf(
+                "stardust: compaction complete; model now occupies %d page(s).\n",
+                $plan->pagesAfter(),
+            );
+            exit(0);
+        } catch (\StarDust\Exception\CompactionCapacityException $e) {
+            fwrite(STDERR, "stardust: " . $e->getMessage() . "\n");
+            exit(1);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: compact:model failed: " . $e->getMessage() . "\n");
             exit(1);
         }
 

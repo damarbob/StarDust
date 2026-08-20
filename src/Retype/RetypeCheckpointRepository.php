@@ -85,6 +85,28 @@ final class RetypeCheckpointRepository
     }
 
     /**
+     * The field's checkpoint status, or `null` when it has none.
+     *
+     * ADR 0033 compaction polls this between relocations: it initiates
+     * field *k*, waits for the Reconciler to drain it, then moves on. A
+     * bool is not enough there — {@see self::existsRunningForField()}
+     * reports `false` for both `completed` and `failed`, and an
+     * orchestrator that cannot tell them apart would march happily past
+     * a failed relocation and report success on a compaction that left a
+     * field behind.
+     */
+    public function statusForField(int $fieldId): ?string
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT status FROM backfill_checkpoints WHERE job_name = ? LIMIT 1'
+        );
+        $stmt->execute([self::jobNameFor($fieldId)]);
+        $status = $stmt->fetchColumn();
+
+        return $status === false ? null : (string) $status;
+    }
+
+    /**
      * Inserts a new `running` checkpoint. The UNIQUE
      * `ux_backfill_job_name` index enforces one row per
      * `retype_field_{N}`; concurrent initiators will hit a

@@ -825,6 +825,15 @@ vendor/bin/stardust chronicler
 # is safe to run against production at any time.
 vendor/bin/stardust spread:report
 vendor/bin/stardust spread:report --tenant=1 --model=7
+
+# Compact a model: relocate its filterable fields onto the fewest pages
+# that can hold them, removing the avoidable joins spread:report shows.
+# Long-running and deliberate — it moves one field at a time and needs a
+# running reconciler. While a field is in flight, filters on THAT field
+# are rejected; reads keep working, and every other field is unaffected.
+# Safe to re-run: fields already in place are skipped.
+vendor/bin/stardust compact:model --tenant=1 --model=7 --dry-run
+vendor/bin/stardust compact:model --tenant=1 --model=7
 ```
 
 Daemons honour both `SIGTERM`/`SIGINT` (when `ext-pcntl` is loaded) and

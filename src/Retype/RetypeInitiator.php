@@ -8,6 +8,7 @@ use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Exception\CompactionCapacityException;
 use StarDust\Exception\FieldNotFoundException;
 use StarDust\Exception\IncompatibleRetypeException;
 use StarDust\Exception\RetypeInProgressException;
@@ -80,11 +81,60 @@ final class RetypeInitiator
      * must be non-null — the StarDust facade enforces this by
      * exposing two separate public methods.
      */
+    /**
+     * ADR 0033 compaction: relocate a field's slot to one exact page,
+     * changing nothing about the field itself.
+     *
+     * Mechanically a same-type retype — the ADR 0024 coercion matrix
+     * short-circuits its identity diagonal, so the backfill copies values
+     * across unchanged and the only real effect is the new slot column.
+     * `RetypeBackfillWorkSource` drains the resulting checkpoint
+     * unmodified.
+     *
+     * Both type arguments are `null` on purpose. `initiate()` skips the
+     * `stardust_fields` UPDATE entirely when neither is supplied, so a
+     * relocation leaves the field row genuinely untouched — passing the
+     * current type explicitly would issue a no-op UPDATE that still moved
+     * `updated_at` on every compacted field.
+     *
+     * **Pin-or-fail.** Where `initiate()` treats an unavailable slot as a
+     * deferral for the work source to retry, this throws. A deferred
+     * compaction reservation would later land on whatever page the
+     * reserver picks rather than the planner's choice, producing a
+     * compaction that does not compact. Admissibility was already checked
+     * up front, so reaching this failure means the registry changed under
+     * the plan — re-running replans against the new state.
+     *
+     * @throws CompactionCapacityException when the pinned page has no indexed
+     *                                     free slot of the field's family
+     */
+    public function initiateRelocation(int $tenantId, int $fieldId, int $pinnedPageId): void
+    {
+        $this->runTuple($tenantId, $fieldId, null, null, $pinnedPageId);
+    }
+
     public function initiate(
         int $tenantId,
         int $fieldId,
         ?string $newDeclaredType,
         ?bool $newIsFilterable,
+    ): void {
+        $this->runTuple($tenantId, $fieldId, $newDeclaredType, $newIsFilterable, null);
+    }
+
+    /**
+     * The ADR 0016 initiation tuple, shared by both entry points.
+     *
+     * `$pinnedPageId` is the only behavioural fork: when set, the
+     * reservation is page-pinned and a miss is fatal rather than
+     * deferred.
+     */
+    private function runTuple(
+        int $tenantId,
+        int $fieldId,
+        ?string $newDeclaredType,
+        ?bool $newIsFilterable,
+        ?int $pinnedPageId,
     ): void {
         $field = $this->loadField($tenantId, $fieldId);
 
@@ -153,10 +203,31 @@ final class RetypeInitiator
             //    commitment 1. The work source retries the reservation
             //    on each tick if it returns null.
             if ($backfillRequired) {
-                $newSlot = $this->slotReserver->reserveForBackfillWithinTransaction(
-                    $fieldId,
-                    requireIndexed: true,
-                );
+                $newSlot = $pinnedPageId !== null
+                    ? $this->slotReserver->reserveForBackfillOnPageWithinTransaction(
+                        $fieldId,
+                        $pinnedPageId,
+                    )
+                    : $this->slotReserver->reserveForBackfillWithinTransaction(
+                        $fieldId,
+                        requireIndexed: true,
+                    );
+
+                // Pin-or-fail (ADR 0033). Throwing inside the transaction
+                // means the catch below rolls the whole tuple back — the
+                // old slot is un-tombstoned, no checkpoint is written, no
+                // version is bumped. A failed relocation leaves nothing
+                // for an operator to unpick.
+                if ($pinnedPageId !== null && $newSlot === null) {
+                    throw new CompactionCapacityException(sprintf(
+                        'Cannot relocate field %d (tenant %d) to page %d: no indexed free slot of'
+                        . ' its family remains there. The plan was admissible when built, so'
+                        . ' capacity was taken in between — re-run to replan. Nothing was mutated.',
+                        $fieldId,
+                        $tenantId,
+                        $pinnedPageId,
+                    ));
+                }
             }
 
             // 4. Bump schema_version once for the whole tuple.

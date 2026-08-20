@@ -40,6 +40,17 @@ The replacement reservation goes through the same chokepoint as every other, so 
 
 Emits `retype_started` post-commit carrying `backfill_required` — false means the lifecycle started and finished in that one transaction, so a missing later `promote_to_ready` is not a stall. `deferred_assignment` is guarded on `backfill_required`: a registry-only transition always leaves `$newSlot` null but is *complete*, not deferred, and reporting it as deferred would show operators permanent phantom backlog.
 
+### `initiateRelocation()` — the ADR 0033 sibling
+
+`initiateRelocation(tenantId, fieldId, pinnedPageId)` runs the same tuple as `initiate()` (both delegate to a shared private `runTuple()`), with two differences that are the entire reason it exists:
+
+- **The reservation is page-pinned**, via `SlotReserver::reserveForBackfillOnPageWithinTransaction()`.
+- **Pin-or-fail, not defer.** Where `initiate()` treats an unavailable slot as a deferral for the work source to retry, this throws `CompactionCapacityException` *inside* the transaction, so the catch rolls the whole tuple back.
+
+It passes **both type arguments as `null`** on purpose. Step 1 skips the `stardust_fields` UPDATE entirely when neither is supplied, so a relocation leaves the field row genuinely untouched — passing the current type explicitly would issue a no-op UPDATE that still moved `updated_at` on every compacted field.
+
+`statusForField()` on the checkpoint repository exists for the same operation: `existsRunningForField()` is a bool and reports `false` for both `completed` and `failed`, which an orchestrator must be able to tell apart.
+
 ## `RetypeCheckpointRepository`
 
 Encapsulates all SQL against `backfill_checkpoints` rows whose `job_name LIKE 'retype_field_%'`. `loadOneClaimable()` JOINs `stardust_fields ⨝ stardust_models` to hydrate the partition tuple `(tenant_id, model_id, fieldName, sourceDeclaredType, targetDeclaredType, targetIsFilterable)`.

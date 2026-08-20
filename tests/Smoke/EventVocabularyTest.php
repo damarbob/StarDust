@@ -53,6 +53,8 @@ final class EventVocabularyTest extends TestCase
         'low_cardinality_index',
         'spread_sampled',
         'high_spread_model',
+        'compaction_planned',
+        'compaction_complete',
         'retype_started',
         'promote_to_ready',
     ];
@@ -163,6 +165,28 @@ final class EventVocabularyTest extends TestCase
             );
         }
         self::assertNotEmpty($found);
+    }
+
+    /**
+     * ADR 0033 compaction emits on the registry source.
+     *
+     * This method exists because its absence would have been silent:
+     * the scan is per-directory, so a new `src/Compaction/` package is
+     * covered by none of the others and its events would have gone
+     * entirely unenforced while the suite stayed green. Any future
+     * package that emits events needs a scan added here too.
+     */
+    public function testCompactionSourceUsesOnlyAllowedEventNames(): void
+    {
+        $found = $this->scanDir(__DIR__ . '/../../src/Compaction');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                self::REGISTRY_EVENTS,
+                "Event '{$event}' is not in the registry allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found, 'Compaction namespace should emit at least one structured-log event');
     }
 
     public function testSearchSourceUsesOnlyAllowedEventNames(): void

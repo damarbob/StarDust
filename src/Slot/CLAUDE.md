@@ -8,6 +8,7 @@ Two more entry points:
 
 - `reserveForBackfillWithinTransaction(int $fieldId, bool $requireIndexed = false)` (Phase 6b) — the `free → backfilling` variant, caller owns the surrounding tx. Used by `RetypeInitiator` to compose the slot reservation into its atomic registry tuple and by `RetypeBackfillWorkSource` for a deferred reservation; the caller emits the `slot_reserved` event post-commit via `emitSlotReservedEvent()`. When `$requireIndexed=true`, restricts candidates via `IndexedSlotPredicate::existsSql()`.
 - `reserveForExhaustionBackfill(int $fieldId): ?SlotAssignment` — the ADR 0007 path, called by `SyncQueueWorkSource` when a backfill finds a registered filterable field still unmapped. `free → assigned` in its own transaction, with `requireIndexed` **hardcoded true**.
+- `reserveForBackfillOnPageWithinTransaction(int $fieldId, int $pageId): ?SlotAssignment` (ADR 0033) — the page-pinned variant compaction needs. **No affinity pass and no global-oldest spill**: exactly the given page or `null`, because a compaction reservation that lands elsewhere produces a compaction that does not compact. `requireIndexed` is hardcoded true. The caller turns `null` into a hard failure (pin-or-fail); see `src/Compaction/CLAUDE.md`.
 
 Phase 6b's `reserveForBackfill()` (the own-transaction `free → backfilling` variant) was deleted when the ADR 0007 path landed: it never acquired a production caller.
 

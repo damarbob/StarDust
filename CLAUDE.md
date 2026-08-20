@@ -115,6 +115,14 @@ bin/stardust chronicler
 bin/stardust spread:report
 bin/stardust spread:report --tenant=1 --model=7
 
+# CLI: ADR 0033 model compaction (long-running, operator-initiated).
+# Relocates one model's filterable slots onto the fewest pages that can
+# hold them, one field at a time. NEEDS a running reconciler to make
+# progress. Filters on the in-flight field are rejected until it lands.
+# Safe to re-run: already-relocated fields are no-ops.
+bin/stardust compact:model --tenant=1 --model=7 --dry-run
+bin/stardust compact:model --tenant=1 --model=7
+
 bin/stardust --version
 bin/stardust --help
 ```
@@ -154,6 +162,7 @@ The engine ships as a framework-neutral Composer library. Zero framework / ORM /
   - Two Phase 6b lifecycle initiators — `retypeField(int $tenantId, int $fieldId, string $newDeclaredType): void`, `promoteFieldToFilterable(int $tenantId, int $fieldId): void`.
   - Three Phase 7 entry points — `submitExport(ExportJobRequest): ExportJobId`, `getExportJob(int $tenantId, int $jobId): ?ExportJob`, `chronicler(): Chronicler`.
   - The Phase 8 search entry point — `search(SearchRequest): SearchResult`, which runs the active `EntrySearchInterface` driver through the pre-flight pipeline and defaults to `MysqlNativeDriver` when `Config::$searchDriver` is `null`.
+  - The ADR 0033 compaction entry point — `compactModel(int $tenantId, int $modelId, bool $dryRun = false): CompactionPlan`. **Long-running and operator-initiated**: it relocates one field at a time and blocks until the Reconciler drains each, so it needs a running `bin/stardust reconciler` and must never be called from a request path. `$dryRun` plans and returns without mutating or emitting.
 
   Phase 8 also re-routes `read()` and `get()` through the same `SearchService`, so `EntryReader` collapsed to a thin façade and `QueryValidator` was deleted — **the public signatures are unchanged for Phase 4 callers**. Each factory lazily constructs its collaborator from `$this->config`. The `reconciler()` factory wires THREE work sources — `SyncQueueWorkSource`, `ImportJobWorkSource`, `RetypeBackfillWorkSource` — in that round-robin order. Later phases append entry points here without breaking this surface. `VERSION` lives on this class.
 
@@ -177,6 +186,7 @@ The engine ships as a framework-neutral Composer library. Zero framework / ORM /
 | [src/Export/](src/Export/) | Synchronous export submission with the atomic per-tenant cap. | 7 |
 | [src/Chronicler/](src/Chronicler/) | Multi-worker export drain, artifact streaming, ADR 0025 failure semantics, GC. | 7 |
 | [src/Filter/](src/Filter/) | Filter AST, JSON wire decoder, the 13-code validation taxonomy. Registry-free. | 8 |
+| [src/Compaction/](src/Compaction/) | ADR 0033 operator-initiated model compaction: pure planner, registry projection, sequential orchestrator. | — |
 | [src/Search/](src/Search/) | Driver contract, pre-flight pipeline, `SearchService`, MySQL driver + adaptive SQL compiler. | 8 |
 | [src/Logging/](src/Logging/) | `StdoutNdjsonLogger` and the ADR 0020 closed event vocabulary. | all |
 | [src/Exception/](src/Exception/) | The typed-error taxonomy. | all |

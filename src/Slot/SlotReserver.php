@@ -117,6 +117,36 @@ final class SlotReserver
         return $this->reserveCore($fieldId, $field, 'backfilling', $requireIndexed);
     }
 
+    /**
+     * ADR 0033 compaction: reserve a `backfilling` slot on **one exact
+     * page**, or nothing.
+     *
+     * Affinity is a bias that may spill to any page; compaction cannot
+     * tolerate that. Its planner has already decided which page this
+     * field belongs on, and a reservation that lands anywhere else
+     * produces a compaction that does not compact. So this variant does
+     * not fall back: if the pinned page has no indexed free slot of the
+     * family, it returns `null` and the caller turns that into a hard
+     * failure (pin-or-fail, ADR 0033's one deliberate divergence from
+     * ADR 0016 commitment 4).
+     *
+     * `requireIndexed` is hardcoded `true` — a relocated field stays
+     * filterable throughout, so ADR 0016 commitment 1 and ADR 0004
+     * demand an indexed slot exactly as for any other live filterable
+     * field.
+     *
+     * The caller owns the transaction and emits `slot_reserved` after
+     * its own commit, matching {@see self::reserveForBackfillWithinTransaction()}.
+     */
+    public function reserveForBackfillOnPageWithinTransaction(
+        int $fieldId,
+        int $pageId,
+    ): ?SlotAssignment {
+        $field = $this->resolveReservableField($fieldId);
+
+        return $this->reserveCore($fieldId, $field, 'backfilling', true, $pageId);
+    }
+
     private function reserveInOwnTransaction(
         int $fieldId,
         string $targetStatus,
@@ -157,6 +187,7 @@ final class SlotReserver
         array $field,
         string $targetStatus,
         bool $requireIndexed,
+        ?int $pinnedPageId = null,
     ): ?SlotAssignment {
         $slotType = $field['slotType'];
 
@@ -178,20 +209,33 @@ final class SlotReserver
         $row      = false;
         $affinity = SlotAssignment::AFFINITY_FALLBACK;
 
-        if ($affinePageIds !== []) {
-            $row = $this->selectCandidate($slotType, $requireIndexed, $affinePageIds);
-            if ($row !== false) {
+        if ($pinnedPageId !== null) {
+            // ADR 0033: exactly this page or nothing. No affinity pass,
+            // no global-oldest spill — a compaction that silently landed
+            // elsewhere would not compact. The affinity label is still
+            // computed honestly, so the event reports whether the pinned
+            // page was one the model already occupied.
+            $row = $this->selectCandidate($slotType, $requireIndexed, [$pinnedPageId]);
+
+            if ($row !== false && in_array($pinnedPageId, $affinePageIds, true)) {
                 $affinity = SlotAssignment::AFFINITY_CO_LOCATED;
             }
-        }
+        } else {
+            if ($affinePageIds !== []) {
+                $row = $this->selectCandidate($slotType, $requireIndexed, $affinePageIds);
+                if ($row !== false) {
+                    $affinity = SlotAssignment::AFFINITY_CO_LOCATED;
+                }
+            }
 
-        // Spill to global-oldest whenever affinity found nothing. ADR
-        // 0032 is emphatic that this is a bias and never a constraint:
-        // affinity must not fail a reservation that would otherwise have
-        // succeeded, or write availability (ADR 0007) breaks and a
-        // reservation can starve indefinitely.
-        if ($row === false) {
-            $row = $this->selectCandidate($slotType, $requireIndexed, null);
+            // Spill to global-oldest whenever affinity found nothing. ADR
+            // 0032 is emphatic that this is a bias and never a constraint:
+            // affinity must not fail a reservation that would otherwise have
+            // succeeded, or write availability (ADR 0007) breaks and a
+            // reservation can starve indefinitely.
+            if ($row === false) {
+                $row = $this->selectCandidate($slotType, $requireIndexed, null);
+            }
         }
 
         if ($row === false) {

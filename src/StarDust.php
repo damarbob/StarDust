@@ -17,6 +17,10 @@ use StarDust\Chronicler\GcSweeper;
 use StarDust\Chronicler\HeaderResolver;
 use StarDust\Config\Config;
 use StarDust\Daemon\CompositeShutdownSignal;
+use StarDust\Compaction\CompactionPlan;
+use StarDust\Compaction\CompactionRepository;
+use StarDust\Compaction\CompactionService;
+use StarDust\Exception\CompactionCapacityException;
 use StarDust\Daemon\FlagFileShutdownSignal;
 use StarDust\Daemon\PollLoop;
 use StarDust\Daemon\ShutdownSignal;
@@ -96,6 +100,7 @@ final class StarDust
     private ?CardinalitySampler $cardinalitySampler = null;
     private ?SpreadSampler $spreadSampler = null;
     private ?RetypeInitiator $retypeInitiator = null;
+    private ?CompactionService $compactionService = null;
     private ?ExportJobSubmitter $exportSubmitter = null;
     private ?SchemaBuilder $schemaBuilder = null;
 
@@ -671,6 +676,44 @@ final class StarDust
             pdo: $this->config->pdo,
             logger: $this->config->logger,
             excessPageThreshold: $this->config->spreadExcessPageThreshold,
+        );
+    }
+
+    /**
+     * ADR 0033 operator-initiated model compaction.
+     *
+     * Relocates the model's live filterable slots onto a minimal page
+     * set and returns the plan that ran. `$dryRun` plans and returns
+     * without mutating anything or emitting any event.
+     *
+     * **Long-running and operator-initiated.** It relocates one field at
+     * a time and blocks until the Reconciler drains each, so it needs a
+     * running `bin/stardust reconciler` to make progress. Never call it
+     * from a request path.
+     *
+     * Re-running is always safe: already-relocated fields are no-ops, so
+     * an interrupted operation converges on a second run.
+     *
+     * @throws CompactionCapacityException when no smaller page set can absorb
+     *                                     the moves, before any mutation
+     */
+    public function compactModel(int $tenantId, int $modelId, bool $dryRun = false): CompactionPlan
+    {
+        TenantId::assertValid($tenantId);
+
+        return $dryRun
+            ? $this->compactionService()->plan($tenantId, $modelId)
+            : $this->compactionService()->compact($tenantId, $modelId);
+    }
+
+    private function compactionService(): CompactionService
+    {
+        return $this->compactionService ??= new CompactionService(
+            repository: new CompactionRepository($this->config->pdo),
+            retypeInitiator: $this->retypeInitiator(),
+            checkpointRepository: new RetypeCheckpointRepository($this->config->pdo),
+            logger: $this->config->logger,
+            clock: $this->config->clock,
         );
     }
 
