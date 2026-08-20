@@ -9,6 +9,7 @@ All typed errors extend `RuntimeException`.
 - `InvalidTenantIdException` — `tenant_id <= 0`.
 - `PayloadTooLargeException` — sync bulk above 1 000 entities.
 - `UncoercibleSlotValueException` — first-write payload can't be coerced to its slot's declared_type. Phase 3 policy is fail-fast; ADR 0024's NULL + `coercion_null` policy is reserved for the Reconciler's retype backfill.
+- `EntryNotFoundException` — `StarDust::updateEntry()` targeted an `entry_data.id` that does not resolve for the caller's tenant: never existed, belongs to another tenant, or already soft-deleted. The three are deliberately indistinguishable — separating them would leak the existence of another tenant's row (Architecture Blueprint §1.2). **`deleteEntry()` does not throw it**, returning `false` instead, because a repeated delete has already achieved what the caller wanted while a silently-dropped update loses data. Not to be confused with `EntryDataMissingException` below, which is the Reconciler's internal integrity signal for a queued `entry_id` whose row vanished mid-drain.
 - `MalformedEntryPayloadException` — the structural-envelope guard for the `EntryPayload::fromArray()` / `fromJson()` / `listFromArray()` / `listFromJson()` factories: missing or mistyped `tenantId` / `modelId` / `fields`, non-map `fields`, unparseable JSON, or a wrong root. Carries the offending `$key` (e.g. `tenantId` or `[3].modelId`). The `tenant_id >= 1` rule and per-field coercion deliberately stay on the write path, not in the factory.
 
 ## Phase 4 — read path

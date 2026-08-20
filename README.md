@@ -55,6 +55,7 @@ StarDust ships as a **framework-neutral Composer library** with zero runtime fra
 - [Complete example](#complete-example)
 - [Construction & schema bootstrap](#construction--schema-bootstrap)
 - [Writing entries](#writing-entries)
+- [Updating and deleting entries](#updating-and-deleting-entries)
 - [Reading entries](#reading-entries)
 - [Searching with the JSON wire format](#searching-with-the-json-wire-format)
 - [Custom search drivers](#custom-search-drivers)
@@ -150,6 +151,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 - **Schema bootstrap** — idempotent, non-destructive provisioning of every table the engine needs.
 - **Slot & page system** — auto-allocated `entry_slots_page_N` extension pages, indexed according to each field's `is_filterable` flag, with atomic free-slot reservation. Reservation keeps a model's filterable fields together on as few pages as it can, so filtered queries stay at fewer joins as a model grows.
 - **Writes** — single-entry, synchronous chunked bulk (≤ 1 000 per call), and async submission for larger batches. Writes stay available even when slot capacity is exhausted: the value still lands in the JSON payload and is queued for backfill.
+- **Updates and deletes** — `updateEntry()` replaces an entry's fields wholesale, rewriting both the JSON payload and the indexed slot columns, and clearing the slot of any field the new payload omits so a filter can never match a stale value. `deleteEntry()` soft-deletes: one timestamp, after which the entry is gone from reads, filters, point-reads, and exports alike.
 - **Reads** — cursor-paginated, two-query bounded read; tenant-isolated SQL on every `WHERE` and `JOIN`; an in-process schema-version cache.
 - **Search** — a unified `search()` surface; JSON wire format decoded into a closed filter AST (twelve operators, full AND/OR/NOT); three-stage pre-flight validation; a swappable driver (MySQL-native default keeps pure-AND filters on indexed joins and switches to `EXISTS` subqueries for OR/NOT — inject your own to delegate to an external search service).
 - **Background daemons** (all runnable via `bin/stardust`): the **Watcher** keeps slot capacity provisioned and indexes each new page for the fields currently waiting on one, the **Reconciler** drains the sync queue / async imports / retype backfills (claiming a slot for any filterable field still waiting on one, with a dead-letter queue and operator replay, and auto-recovery of import jobs abandoned by a crashed worker — resumed from the last committed checkpoint), the **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
@@ -157,7 +159,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 
 **Not yet available:**
 
-- **No first-class model/field definition API yet.** `StarDust::schemaBuilder()` is a convenience helper that registers models and fields for you (get-or-create, so it's safe to re-run) — no raw `INSERT`s required for the registry. It's a stopgap, not the full definition API, though with the daemons running it is now enough on its own: the Watcher sees the waiting field and provisions a page indexed for its type, and the Reconciler claims the slot for it. Until that completes you can still store and point-read entries (the JSON payload is always authoritative), but the field isn't on the indexed filter path yet. Without the daemons running you must provision and reserve by hand via `PageProvisioner` + `SlotReserver`. The first-class definition API that ties all of this together is on the roadmap.
+- **Model/field definition is create-only.** This is about the *schema*, not your data — updating and deleting **entries** is fully supported (above). What is create-only is the definition layer: the models and fields themselves. `StarDust::schemaBuilder()` registers models and fields (get-or-create, so setup scripts are safe to re-run), and with the daemons running that is all you need to get a field onto the indexed filter path — the Watcher provisions a page indexed for its type, the Reconciler claims its slot, and until that completes the field still stores and point-reads via the JSON payload. Without the daemons running you provision and reserve by hand via `PageProvisioner` + `SlotReserver`. What is not covered is everything *after* creation: there is no supported way to **list, rename, or delete** a model or field, and no way to demote a field from filterable. Reading `stardust_models` / `stardust_fields` directly is fine and is how you introspect today; writing them is not supported. Foreign keys refuse to delete a field that still holds a slot, so a mistake there fails loudly rather than corrupting your slot inventory. The first-class definition API is on the roadmap.
 - **Export predicate filtering** — a submitted export currently writes *every* non-deleted entry for the model. The supplied filter is stored verbatim but not yet applied by the Chronicler.
 - **Async import-job status reads** — `submitBulkWrite()` returns an `ImportJobId`, but there is no `getImportJob()` polling method yet (exports do have `getExportJob()`).
 
@@ -502,7 +504,29 @@ constructor — so a factory-built payload behaves exactly like `new EntryPayloa
 Pair this with [Searching with the JSON wire format](#searching-with-the-json-wire-format)
 for an end-to-end JSON loop: JSON in, JSON-filtered out.
 
-`tenant_id` is validated at every entry point (must be `>= 1`) before any SQL executes. All write-path operations emit structured NDJSON log events — `entry_written`, `exhaustion_fallback`, `bulk_chunk_committed`, `bulk_chunk_rolled_back`, `bulk_accepted`, `payload_too_large`.
+`tenant_id` is validated at every entry point (must be `>= 1`) before any SQL executes. All write-path operations emit structured NDJSON log events — `entry_written`, `entry_updated`, `entry_deleted`, `exhaustion_fallback`, `bulk_chunk_committed`, `bulk_chunk_rolled_back`, `bulk_accepted`, `payload_too_large`.
+
+## Updating and deleting entries
+
+```php
+// Update is a full replace, not a patch: $fields becomes the entry's
+// complete payload. A field you omit is removed from the JSON *and*
+// its indexed slot column is cleared, so a filter can never match a
+// value the entry no longer carries.
+$engine->updateEntry(tenantId: 42, entryId: $entryId, fields: [
+    'name'      => 'Acme Holdings',
+    'employees' => 141,
+]);
+
+// Soft delete. One timestamp, and the entry is gone from read(),
+// get(), search(), and exports alike.
+$deleted = $engine->deleteEntry(tenantId: 42, entryId: $entryId);
+// true on the transition; false if it was already deleted or not yours
+```
+
+`model_id` is immutable — an update never moves an entry between models. Coercion, tenant isolation, and the capacity fallback all behave exactly as they do on `write()`: an update that introduces a filterable field with no free slot still succeeds, storing the value in the JSON payload and queueing it for backfill.
+
+`updateEntry()` throws `EntryNotFoundException` when the entry does not exist, belongs to another tenant, or is already deleted — silently discarding an update would lose data the caller believed it had written. `deleteEntry()` takes the opposite stance and returns `false` in those same cases, because a repeated delete has already achieved what the caller asked for. There is no hard delete and no restore.
 
 ## Reading entries
 

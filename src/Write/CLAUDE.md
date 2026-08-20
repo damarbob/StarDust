@@ -12,6 +12,24 @@ Phase 3 surface. Phase 5 added two collaborators that the Reconciler reuses.
 
 `writeWithinTransaction()` is the no-own-transaction variant that the bulk path AND the Phase 5 `ImportJobWorkSource` call inside their own chunk transactions.
 
+### `update()` — full replace, and why it needs its own slot handling
+
+`update(int $tenantId, int $entryId, array $fields)` is PUT, not PATCH: `$fields` becomes the entry's complete payload. It locks the row with `SELECT … FOR UPDATE` scoped to `tenant_id` + `deleted_at IS NULL`, resolves `model_id` from that row (**an update can never move an entry between models** — the caller does not supply it), then reuses steps 2 and 3 above verbatim, including the ADR 0007 enqueue.
+
+The one thing it cannot reuse is the slot plan. `PayloadSplitter` only plans writes for fields *present* in the payload, so a field the caller omits would keep its old indexed value while vanishing from `entry_data.fields` — the JSON and the slot column would disagree, and a filter would still match on a value the entry no longer has. `withClearedSlots()` closes that: every live slot of the model whose field name is absent from the new payload is written as NULL in the same UPSERT. It uses `array_key_exists`, not `isset`, because an explicit `['x' => null]` is the caller *setting* the field and is already planned by the splitter; only genuinely absent keys are cleared.
+
+There is deliberately **no** `updateWithinTransaction()` — no bulk-update path exists yet, and this repo does not grow surface area ahead of a caller.
+
+## `EntryDeleter`
+
+`delete(int $tenantId, int $entryId): bool` stamps `entry_data.deleted_at` and nothing else. That single column is the whole mechanism: `BoundedFetch`, `MysqlNativeDriver`, and `EntryDataPager` each independently filter `deleted_at IS NULL`, so the row leaves reads, search, point-reads, and exports at once.
+
+- **Slot columns are intentionally retained.** Nothing can reach them without joining through a live `entry_data` row, so clearing them would be a write per occupied page for no observable difference. `EntryDeleteTest::testSlotValuesAreRetainedAfterDelete` pins this so a future change that starts nulling them is a decision rather than a drift.
+- **Idempotent by construction.** `deleted_at IS NULL` in the WHERE clause means a second delete matches zero rows instead of overwriting the original timestamp — no pre-SELECT needed. Returns `false`, and emits no event, when nothing transitioned.
+- **The asymmetry with `update()` is deliberate.** Delete returns `false` for a missing/foreign/already-deleted row; update throws `EntryNotFoundException`. Silently discarding an update loses data the caller believed it had written; a repeated delete has already achieved what the caller asked for.
+
+There is no hard delete and no restore — `deleted_at` is the only lifecycle transition the schema models, and purging would additionally have to reclaim slot columns.
+
 ### The two silently-dropped categories
 
 Two categories never reach the slot plan; their values are preserved in `entry_data.fields` per ADR 0013:

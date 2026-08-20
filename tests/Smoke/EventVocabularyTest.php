@@ -11,7 +11,8 @@ use PHPUnit\Framework\TestCase;
  *
  * Greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`,
  * `src/Retype/`, `src/Chronicler/`, `src/Export/`, `src/Search/`,
- * and `src/Filter/` for `'event' => '...'` literals and asserts the
+ * `src/Filter/`, `src/Compaction/`, and `src/Write/` for
+ * `'event' => '...'` literals and asserts the
  * union is a subset of the ADR 0020 allowlist for each source.
  * Adding a new event name without updating ADR 0020 must fail this
  * test.
@@ -75,6 +76,26 @@ final class EventVocabularyTest extends TestCase
 
     private const EXPORT_API_EVENTS = [
         'export_accepted',
+    ];
+    /**
+     * The `api`-source events emitted from `src/Write/`.
+     *
+     * Four of these — `entry_written`, `exhaustion_fallback`,
+     * `bulk_chunk_committed`, `bulk_chunk_rolled_back` — have been
+     * emitted since Phase 3 but were absent from ADR 0020 until the
+     * update/delete surface landed: `src/Write/` was scanned by no test
+     * method, so the omission stayed invisible while the suite was
+     * green. Adding the scan below is what surfaced them.
+     */
+    private const WRITE_API_EVENTS = [
+        'entry_written',
+        'entry_updated',
+        'entry_deleted',
+        'exhaustion_fallback',
+        'bulk_accepted',
+        'bulk_chunk_committed',
+        'bulk_chunk_rolled_back',
+        'payload_too_large',
     ];
 
     private const SEARCH_API_EVENTS = [
@@ -152,6 +173,19 @@ final class EventVocabularyTest extends TestCase
             );
         }
         self::assertNotEmpty($found);
+    }
+
+    public function testWriteSourceUsesOnlyAllowedEventNames(): void
+    {
+        $found = $this->scanDir(__DIR__ . '/../../src/Write');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                self::WRITE_API_EVENTS,
+                "Event '{$event}' is not in the write API allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found, 'Write namespace should emit at least one structured-log event');
     }
 
     public function testExportApiSourceUsesOnlyAllowedEventNames(): void

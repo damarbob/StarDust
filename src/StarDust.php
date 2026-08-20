@@ -68,6 +68,7 @@ use StarDust\Write\BulkIngestOptions;
 use StarDust\Write\BulkIngestResult;
 use StarDust\Write\BulkIngestSubmitter;
 use StarDust\Write\BulkIngestor;
+use StarDust\Write\EntryDeleter;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriteResult;
 use StarDust\Write\EntryWriter;
@@ -88,6 +89,7 @@ final class StarDust
     public const VERSION = '0.3.0-alpha.1';
 
     private ?EntryWriter $entryWriter = null;
+    private ?EntryDeleter $entryDeleter = null;
     private ?BulkIngestor $bulkIngestor = null;
     private ?BulkIngestSubmitter $bulkSubmitter = null;
     private ?SearchService $searchService = null;
@@ -704,6 +706,68 @@ final class StarDust
         return $dryRun
             ? $this->compactionService()->plan($tenantId, $modelId)
             : $this->compactionService()->compact($tenantId, $modelId);
+    }
+
+    /**
+     * Full-replace update of an existing entry.
+     *
+     * `$fields` becomes the entry's complete payload — this is PUT, not
+     * PATCH. A field present on the entry but absent from `$fields` is
+     * removed from the JSON payload *and* has its indexed slot column
+     * cleared, so a filter can never match a value the entry no longer
+     * carries.
+     *
+     * `model_id` is immutable: it is read from the existing row, and an
+     * update can never move an entry between models. Coercion, the
+     * ADR 0007 exhaustion fallback, and slot targeting all behave
+     * exactly as they do on {@see self::write()} — an update that
+     * introduces a filterable field with no live slot succeeds and
+     * queues for backfill rather than failing.
+     *
+     * @param array<string, mixed> $fields
+     *
+     * @throws \StarDust\Exception\EntryNotFoundException when the entry
+     *         does not exist, belongs to another tenant, or is already
+     *         soft-deleted
+     * @throws \StarDust\Exception\InvalidTenantIdException
+     * @throws \StarDust\Exception\UncoercibleSlotValueException
+     */
+    public function updateEntry(int $tenantId, int $entryId, array $fields): EntryWriteResult
+    {
+        TenantId::assertValid($tenantId);
+        return $this->entryWriter()->update($tenantId, $entryId, $fields);
+    }
+
+    /**
+     * Soft-delete an entry by stamping `entry_data.deleted_at`.
+     *
+     * Every read surface already excludes soft-deleted rows, so the
+     * entry disappears from {@see self::read()}, {@see self::get()},
+     * {@see self::search()}, and export pagination as soon as this
+     * commits. Slot columns are left in place — nothing can reach them
+     * without joining through a live `entry_data` row.
+     *
+     * Idempotent: returns `false` rather than throwing when the entry
+     * does not exist, belongs to another tenant, or was already
+     * deleted. There is no hard delete and no restore.
+     *
+     * @return bool `true` iff this call performed the transition
+     *
+     * @throws \StarDust\Exception\InvalidTenantIdException
+     */
+    public function deleteEntry(int $tenantId, int $entryId): bool
+    {
+        TenantId::assertValid($tenantId);
+        return $this->entryDeleter()->delete($tenantId, $entryId);
+    }
+
+    private function entryDeleter(): EntryDeleter
+    {
+        return $this->entryDeleter ??= new EntryDeleter(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+        );
     }
 
     private function compactionService(): CompactionService
