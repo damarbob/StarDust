@@ -151,15 +151,16 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 - **Schema bootstrap** — idempotent, non-destructive provisioning of every table the engine needs.
 - **Slot & page system** — auto-allocated `entry_slots_page_N` extension pages, indexed according to each field's `is_filterable` flag, with atomic free-slot reservation. Reservation keeps a model's filterable fields together on as few pages as it can, so filtered queries stay at fewer joins as a model grows.
 - **Writes** — single-entry, synchronous chunked bulk (≤ 1 000 per call), and async submission for larger batches. Writes stay available even when slot capacity is exhausted: the value still lands in the JSON payload and is queued for backfill.
-- **Updates and deletes** — `updateEntry()` replaces an entry's fields wholesale, rewriting both the JSON payload and the indexed slot columns, and clearing the slot of any field the new payload omits so a filter can never match a stale value. `deleteEntry()` soft-deletes: one timestamp, after which the entry is gone from reads, filters, point-reads, and exports alike.
+- **Entry updates and deletes** — `updateEntry()` replaces an entry's fields wholesale, rewriting both the JSON payload and the indexed slot columns, and clearing the slot of any field the new payload omits so a filter can never match a stale value. `deleteEntry()` soft-deletes: one timestamp, after which the entry is gone from reads, filters, point-reads, and exports alike.
 - **Reads** — cursor-paginated, two-query bounded read; tenant-isolated SQL on every `WHERE` and `JOIN`; an in-process schema-version cache.
 - **Search** — a unified `search()` surface; JSON wire format decoded into a closed filter AST (twelve operators, full AND/OR/NOT); three-stage pre-flight validation; a swappable driver (MySQL-native default keeps pure-AND filters on indexed joins and switches to `EXISTS` subqueries for OR/NOT — inject your own to delegate to an external search service).
 - **Background daemons** (all runnable via `bin/stardust`): the **Watcher** keeps slot capacity provisioned and indexes each new page for the fields currently waiting on one, the **Reconciler** drains the sync queue / async imports / retype backfills (claiming a slot for any filterable field still waiting on one, with a dead-letter queue and operator replay, and auto-recovery of import jobs abandoned by a crashed worker — resumed from the last committed checkpoint), the **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
-- **Field lifecycle** — online field retype and filterability promotion through a type-coercion matrix, with JSON-payload fallback throughout the backfill window.
+- **Field lifecycle** — online field retype, and filterability promotion and demotion, through a type-coercion matrix, with JSON-payload fallback throughout the backfill window. Demotion is registry-only and takes effect immediately: the slot is tombstoned for the Liberator to reclaim, and reads fall straight back to the payload.
+- **Schema introspection** — `listModels()` and `describeModel()` report a tenant's models and each field's declared type, so a UI can render the schema without hand-written registry SQL. Every field reports both whether it is *declared* filterable and whether it is *currently* indexed — the two differ during a backfill, and gating on the latter is what stops a UI from offering a filter the engine would reject.
 
 **Not yet available:**
 
-- **Model/field definition is create-only.** This is about the *schema*, not your data — updating and deleting **entries** is fully supported (above). What is create-only is the definition layer: the models and fields themselves. `StarDust::schemaBuilder()` registers models and fields (get-or-create, so setup scripts are safe to re-run), and with the daemons running that is all you need to get a field onto the indexed filter path — the Watcher provisions a page indexed for its type, the Reconciler claims its slot, and until that completes the field still stores and point-reads via the JSON payload. Without the daemons running you provision and reserve by hand via `PageProvisioner` + `SlotReserver`. What is not covered is everything *after* creation: there is no supported way to **list, rename, or delete** a model or field, and no way to demote a field from filterable. Reading `stardust_models` / `stardust_fields` directly is fine and is how you introspect today; writing them is not supported. Foreign keys refuse to delete a field that still holds a slot, so a mistake there fails loudly rather than corrupting your slot inventory. The first-class definition API is on the roadmap.
+- **No rename or delete for models and fields.** The rest of the definition layer is covered — `schemaBuilder()` registers, `listModels()` / `describeModel()` introspect, `retypeField()` changes a field's type online, and `promoteFieldToFilterable()` / `demoteFieldFromFilterable()` turn indexing on and off — but there is no entry point for renaming a model or field, or removing one. The practical workaround is to demote the old field (which releases its slot) and register the replacement; a JSON-only field occupies no slot, so leaving it behind costs you nothing but a key in the payload. Editing `stardust_models` / `stardust_fields` by hand is not supported, though foreign keys will at least refuse to drop a field that still holds a slot, so a mistake there fails loudly rather than corrupting your slot inventory. A first-class definition API covering the full lifecycle is on the roadmap.
 - **Export predicate filtering** — a submitted export currently writes *every* non-deleted entry for the model. The supplied filter is stored verbatim but not yet applied by the Chronicler.
 - **Async import-job status reads** — `submitBulkWrite()` returns an `ImportJobId`, but there is no `getImportJob()` polling method yet (exports do have `getExportJob()`).
 
@@ -400,6 +401,28 @@ Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\
 > ```
 >
 > This is a stopgap, not the first-class definition API. Registering a field isn't enough to filter on it — its value has to reach an indexed slot column. The Watcher daemon provisions that capacity in a running deployment; for one-off setup, call `PageProvisioner` + `SlotReserver` (see the [Complete example](#complete-example)). Until a field has a reserved indexed slot it's still stored and point-readable from the JSON payload — just not on the indexed filter path.
+
+To read the registry back — for a settings screen, a field picker, or anything else that has to render a tenant's schema — use the introspection pair rather than querying `stardust_fields` yourself:
+
+```php
+foreach ($engine->listModels(tenantId: 1) as $model) {
+    echo "{$model->modelId}: {$model->name}\n";
+}
+
+// null when the model doesn't exist, or isn't this tenant's — the two
+// are deliberately indistinguishable.
+$company = $engine->describeModel(tenantId: 1, modelId: $modelId);
+
+foreach ($company?->fields ?? [] as $field) {
+    echo "{$field->name} ({$field->declaredType})"
+       . ($field->isIndexed ? " — filterable now\n" : "\n");
+}
+
+// Only the fields a filter will actually accept today:
+$company?->indexedFields();
+```
+
+Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
 Phases 5, 6a, and 7 add twenty-nine optional `Config` parameters for daemon tuning:
 
@@ -686,6 +709,16 @@ $engine->retypeField(
 // is normally no old slot to tombstone — the field held none while
 // it was non-filterable.
 $engine->promoteFieldToFilterable(
+    tenantId: 42,
+    fieldId:  $fieldId,
+);
+
+// Turn indexing back off. Registry-only and effective on return:
+// the slot tombstones for the Liberator to reclaim, no backfill
+// window, and reads fall straight back to the JSON payload. From
+// here on, filters against the field raise
+// FieldNotFilterableException.
+$engine->demoteFieldFromFilterable(
     tenantId: 42,
     fieldId:  $fieldId,
 );

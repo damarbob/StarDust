@@ -47,7 +47,10 @@ use StarDust\Retype\RetypeBackfillExecutor;
 use StarDust\Retype\RetypeBackfillWorkSource;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Retype\RetypeInitiator;
+use StarDust\Schema\ModelDescription;
+use StarDust\Schema\ModelSummary;
 use StarDust\Schema\SchemaBuilder;
+use StarDust\Schema\SchemaReader;
 use StarDust\Search\EntrySearchInterface;
 use StarDust\Search\Mysql\MysqlNativeDriver;
 use StarDust\Search\PreFlight\CapabilityChecker;
@@ -105,6 +108,7 @@ final class StarDust
     private ?CompactionService $compactionService = null;
     private ?ExportJobSubmitter $exportSubmitter = null;
     private ?SchemaBuilder $schemaBuilder = null;
+    private ?SchemaReader $schemaReader = null;
 
     public function __construct(private readonly Config $config)
     {
@@ -326,6 +330,69 @@ final class StarDust
             newDeclaredType: null,
             newIsFilterable: true,
         );
+    }
+
+    /**
+     * The inverse of {@see self::promoteFieldToFilterable()}: flips
+     * `stardust_fields.is_filterable: true → false`.
+     *
+     * Cheaper than promotion, and asymmetric with it by design. A
+     * demoted field becomes JSON-only (ADR 0034), so there is no data
+     * to move and no backfill window — the lifecycle tombstones the
+     * field's slot and returns immediately, leaving the Liberator to
+     * reclaim the column on its own schedule. The value itself is never
+     * at risk: `entry_data.fields` has been the system of record all
+     * along, and the read path falls back to it the moment the slot
+     * stops being live.
+     *
+     * Filters against the field are rejected from this point on with
+     * {@see \StarDust\Exception\FieldNotFilterableException}.
+     */
+    public function demoteFieldFromFilterable(int $tenantId, int $fieldId): void
+    {
+        TenantId::assertValid($tenantId);
+        $this->retypeInitiator()->initiate(
+            tenantId: $tenantId,
+            fieldId: $fieldId,
+            newDeclaredType: null,
+            newIsFilterable: false,
+        );
+    }
+
+    /**
+     * Every model registered for this tenant.
+     *
+     * Read-only, lock-free, and safe to call per request.
+     *
+     * @return list<ModelSummary>
+     */
+    public function listModels(int $tenantId): array
+    {
+        TenantId::assertValid($tenantId);
+        return $this->schemaReader()->listModels($tenantId);
+    }
+
+    /**
+     * One model and its fields, or `null` when no such model exists
+     * for this tenant.
+     *
+     * Each returned field reports both `isFilterable` (the registry's
+     * declared intent) and `isIndexed` (whether a filter against it
+     * will work *right now*). They differ throughout a promotion or
+     * retype backfill, and while a new filterable field waits on
+     * capacity — so a UI offering "filter by this field" should gate on
+     * `isIndexed`. {@see ModelDescription::indexedFields()} is the
+     * shorthand.
+     */
+    public function describeModel(int $tenantId, int $modelId): ?ModelDescription
+    {
+        TenantId::assertValid($tenantId);
+        return $this->schemaReader()->describeModel($tenantId, $modelId);
+    }
+
+    private function schemaReader(): SchemaReader
+    {
+        return $this->schemaReader ??= new SchemaReader($this->config->pdo);
     }
 
     /**
