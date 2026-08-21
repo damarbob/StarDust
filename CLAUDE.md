@@ -25,7 +25,7 @@ The legacy 0.2.x line (CodeIgniter 4 + Virtual Columns) was removed in `02eccd4`
 
 ## Where the design lives
 
-**Design authority is the SDDPG design repo, vendored at [SDDPG/](SDDPG/).** Every `ADR NNNN` reference in this repo resolves to [SDDPG/adrs/](SDDPG/adrs/) as `NNNN-slug.md`. Blueprint and `§` citations resolve to:
+**Design authority is the SDDPG design repo at [SDDPG/](SDDPG/)** — a separate repository (`github.com/damarbob/SDDPG`) cloned into the project root, so it is never tracked by this one and the links below resolve only when it is present. `CONTRIBUTING.md` tells contributors to set it up the same way. Every `ADR NNNN` reference in this repo resolves to [SDDPG/adrs/](SDDPG/adrs/) as `NNNN-slug.md`. Blueprint and `§` citations resolve to:
 
 - [SDDPG/architecture_blueprint.md](SDDPG/architecture_blueprint.md) — "Architecture Blueprint §N" (e.g. the §1.2 tenant-isolation invariant).
 - [SDDPG/blueprints/](SDDPG/blueprints/) — per-subsystem acceptance criteria; "AC#N" citations live here (`watcher_reconciler_daemons.md`, `liberator_daemon.md`, `chronicler_daemon.md`, `async_exports.md`, `queryfilter_wire_format.md`, `search_driver_adapter.md`).

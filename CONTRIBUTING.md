@@ -20,6 +20,12 @@ run, and which conventions check themselves so you don't have to memorise them.
 ```bash
 composer install
 cp phpunit.xml.dist phpunit.xml    # gitignored — put your DB credentials here
+
+# Recommended: the design repo, cloned into the project root as ./SDDPG.
+# It is a separate repository with its own history, so it is never tracked
+# by this one — but every `ADR NNNN` reference in the codebase resolves
+# against it, and the links in CLAUDE.md and AGENTS.md assume this layout.
+git clone https://github.com/damarbob/SDDPG.git SDDPG
 ```
 
 Point the credentials at a **throwaway database**. The bootstrap tests drop every
@@ -86,5 +92,9 @@ Two things are still on you, both documented under [.agent/rules/](.agent/rules/
   conventions in depth. Most subsystems also carry their own `CLAUDE.md` next to
   the code.
 - **[CHANGELOG.md](CHANGELOG.md)** — release history.
-- **`SDDPG/`** — the design repo. It is the authority on every design decision;
-  where a doc and a design record disagree, the design record wins.
+- **[SDDPG](https://github.com/damarbob/SDDPG)** — the design repo: ADRs,
+  blueprints, and schema references. It is the authority on every design
+  decision; where a doc here and a design record disagree, the design record
+  wins. Clone it to `./SDDPG` as shown in [Setup](#setup) and the `ADR NNNN`
+  references throughout the codebase resolve locally. Search it before treating
+  a design question as open — most already have a ruling.

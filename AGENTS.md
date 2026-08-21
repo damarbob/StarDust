@@ -19,7 +19,9 @@ here.
 
 ## The short version
 
-- **Design authority is the `SDDPG/` design repo.** Every `ADR NNNN` reference in
+- **Design authority is the `SDDPG/` design repo** — a separate repository
+  (`github.com/damarbob/SDDPG`) cloned into the project root, never tracked by
+  this one. See `CONTRIBUTING.md` for setup. Every `ADR NNNN` reference in
   this codebase resolves to `SDDPG/adrs/`. Search there before treating a design
   question as open — most already have a ruling, and the record wins over any
   doc that disagrees with it.
