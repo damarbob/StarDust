@@ -49,10 +49,14 @@ final class CsvArtifactStream implements ArtifactStream
 
     /**
      * @param list<string> $headerFields Alphabetically-sorted field names.
+     * @param array<string,string> $renameAliases ADR 0036: current name →
+     *   pre-rename name, for fields whose backfill is still draining.
+     *   Empty in steady state.
      */
     public function __construct(
         private readonly string $path,
         private readonly array $headerFields,
+        private readonly array $renameAliases = [],
     ) {
     }
 
@@ -81,7 +85,17 @@ final class CsvArtifactStream implements ArtifactStream
 
         $cells = [];
         foreach ($this->headerFields as $name) {
-            $value = $row->fields[$name] ?? null;
+            // The header cell always says the current name; only the
+            // lookup key falls back. ADR 0036 — see the alias note on
+            // HeaderResolver::resolveAliases().
+            if (array_key_exists($name, $row->fields)) {
+                $value = $row->fields[$name];
+            } else {
+                $previous = $this->renameAliases[$name] ?? null;
+                $value = ($previous !== null && array_key_exists($previous, $row->fields))
+                    ? $row->fields[$previous]
+                    : null;
+            }
             $cells[] = $this->encodeField($this->stringify($value));
         }
         $line = implode(',', $cells) . self::NEWLINE;

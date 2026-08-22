@@ -11,7 +11,9 @@ use Psr\Log\LoggerInterface;
 use StarDust\Exception\CompactionCapacityException;
 use StarDust\Exception\FieldNotFoundException;
 use StarDust\Exception\IncompatibleRetypeException;
+use StarDust\Exception\RenameInProgressException;
 use StarDust\Exception\RetypeInProgressException;
+use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Slot\SlotReserver;
 use Throwable;
 
@@ -72,6 +74,7 @@ final class RetypeInitiator
         private readonly LoggerInterface $logger,
         private readonly SlotReserver $slotReserver,
         private readonly RetypeCheckpointRepository $checkpointRepository,
+        private readonly RenameCheckpointRepository $renameCheckpointRepository,
     ) {
     }
 
@@ -158,6 +161,28 @@ final class RetypeInitiator
                 "Retype rejected: '{$oldDeclaredType}' → '{$newDeclaredType}' is categorically"
                 . ' incompatible (ADR 0024). Bridge through a `string` intermediate field if'
                 . ' you require epoch-style migration.'
+            );
+        }
+
+        // ADR 0036: an in-flight rename blocks every retype shape, and
+        // the guard lives HERE rather than on the StarDust facade on
+        // purpose — initiateRelocation() shares runTuple(), so
+        // compactModel() inherits the protection. A facade-level check
+        // would leave compaction as an unguarded back door.
+        //
+        // This is a correctness guard, not hygiene: RetypeBackfillExecutor
+        // locates values by field name, so mid-rename every row behind
+        // the rename cursor reads as "value absent" and its slot is
+        // written NULL — silently, with no coercion event, because no
+        // coercion was attempted.
+        //
+        // Checked before the retype guard, in the same order the rename
+        // initiator uses, so two concurrent initiators cannot each see
+        // the other's row as absent.
+        if ($this->renameCheckpointRepository->existsRunningForField($fieldId)) {
+            throw new RenameInProgressException(
+                "Field {$fieldId} has a rename in progress; it cannot be retyped,"
+                . ' promoted, demoted, or relocated until the rename backfill completes.'
             );
         }
 

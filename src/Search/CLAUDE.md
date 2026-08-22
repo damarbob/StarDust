@@ -53,3 +53,11 @@ The Architecture Blueprint §1.2 tenant-isolation invariant holds on **both** st
 ## What Phase 8 did to `src/Read/`
 
 `PaginatedProbe` was reduced to a thin caller delegating to `SqlFilterCompiler`. `QueryValidator` was deleted, its logic moving into `PreFlightPipeline` + `SearchRequest`'s constructor. `EntryReader` became a thin façade building a `SearchService` from a `(PDO, LoggerInterface)` pair — the constructor signature is unchanged, so Phase 4 tests did not need rewiring.
+
+## `get()` and the ADR 0036 rename window
+
+The point read returns the payload verbatim, so during a rename backfill it would hand back the pre-rename key for rows behind the cursor and the post-rename key for rows ahead of it — inconsistent between two entries of the same model, and inconsistent with `read()` on the very same entry. It now loads the snapshot and calls `SnapshotEntry::canonicalisePayloadKeys()`.
+
+**This costs a schema-version probe `get()` did not previously pay**, and that was a deliberate trade rather than an oversight: `read()` pays it on every call, ADR 0015 designs the probe to be sub-millisecond, and the rewrite itself is gated behind a precomputed `hasRenamesInFlight()` bool so steady state is one boolean check. `get()`'s previous single-query shape was incidental, not a designed optimisation. If that ever needs revisiting, the alternative is to leave it verbatim and document the divergence — but it must stay a decision, not drift.
+
+**Filters are not aliased and must not become so.** `FieldRefResolver` resolves leaves by current name only, so a filter on a renamed field's old name raises `UnknownFieldException` from the instant the rename commits. That is correct: a rejected filter loses nothing, whereas a rejected write loses data, which is why the write path converges instead. The slot is never touched by a rename, so a filter on the *new* name is correct immediately.

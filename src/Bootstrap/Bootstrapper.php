@@ -45,6 +45,7 @@ final class Bootstrapper
         $this->ensureSlotAssignmentFieldLiveUniqueIndex();
         $this->ensureSlotAssignmentSweepGapColumn();
         $this->ensureBackfillCheckpointsSourceTypeColumn();
+        $this->ensureFieldsPreviousNameColumn();
         $this->seedSchemaVersionSingleton();
     }
 
@@ -415,6 +416,53 @@ final class Bootstrapper
             $this->pdo->exec(<<<'SQL'
                 ALTER TABLE backfill_checkpoints
                     ADD COLUMN source_declared_type VARCHAR(16) NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * ADR 0036: `entry_data.fields` is keyed by `stardust_fields.name`,
+     * so renaming a field is a payload rewrite over every entry in the
+     * model rather than a registry write. The rename flips `name`
+     * immediately and drains the payload asynchronously, which leaves a
+     * window in which some rows carry the old key and some the new.
+     *
+     * `previous_name` is what bridges that window. It is set by the
+     * {@see \StarDust\Rename\RenameInitiator} and cleared in the same
+     * transaction that completes the backfill, so a non-null value means
+     * exactly "a rename is in flight for this field".
+     *
+     * It lives here rather than on `backfill_checkpoints` (where
+     * `source_declared_type` lives) because the read and write paths
+     * both need it on the hot path: `SlotResolver` and `LiveSlotMap`
+     * already SELECT from `stardust_fields` with no join, so the alias
+     * rides along for free. A checkpoint column would force both to
+     * take a join they otherwise do not need.
+     *
+     * VARCHAR(128) matches `stardust_fields.name`. Nullable, and null
+     * in steady state.
+     */
+    private function ensureFieldsPreviousNameColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_fields'
+              AND column_name = 'previous_name'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_fields
+                    ADD COLUMN previous_name VARCHAR(128) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
             if (! $this->isDuplicateFieldName($e)) {

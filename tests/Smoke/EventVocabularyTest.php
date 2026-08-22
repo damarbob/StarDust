@@ -10,8 +10,8 @@ use PHPUnit\Framework\TestCase;
  * Closed-event-vocabulary guard for Phase 5 through Phase 8.
  *
  * Greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`,
- * `src/Retype/`, `src/Chronicler/`, `src/Export/`, `src/Search/`,
- * `src/Filter/`, `src/Compaction/`, and `src/Write/` for
+ * `src/Retype/`, `src/Rename/`, `src/Chronicler/`, `src/Export/`,
+ * `src/Search/`, `src/Filter/`, `src/Compaction/`, and `src/Write/` for
  * `'event' => '...'` literals and asserts the
  * union is a subset of the ADR 0020 allowlist for each source.
  * Adding a new event name without updating ADR 0020 must fail this
@@ -58,6 +58,8 @@ final class EventVocabularyTest extends TestCase
         'compaction_complete',
         'retype_started',
         'promote_to_ready',
+        'rename_started',
+        'rename_complete',
     ];
 
     private const CHRONICLER_EVENTS = [
@@ -160,6 +162,33 @@ final class EventVocabularyTest extends TestCase
             );
         }
         self::assertNotEmpty($found);
+    }
+
+    /**
+     * ADR 0036 rename emits a mix of reconciler-source events (the work
+     * source's chunk lifecycle) and registry-source events
+     * (rename_started, rename_complete).
+     *
+     * Same rationale as the compaction scan below: the scan is
+     * per-directory and `scanDir()` returns `[]` for a directory that
+     * does not exist, so without this method `src/Rename/` would be
+     * covered by none of the others and both new events would go
+     * entirely unenforced while the suite stayed green. The
+     * `assertNotEmpty()` is what makes this fail if the package is ever
+     * renamed or moved.
+     */
+    public function testRenameSourceUsesOnlyAllowedEventNames(): void
+    {
+        $allowed = array_merge(self::RECONCILER_EVENTS, self::REGISTRY_EVENTS);
+        $found = $this->scanDir(__DIR__ . '/../../src/Rename');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                $allowed,
+                "Event '{$event}' is not in the Rename/Reconciler/Registry allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found, 'Rename namespace should emit at least one structured-log event');
     }
 
     public function testChroniclerSourceUsesOnlyAllowedEventNames(): void

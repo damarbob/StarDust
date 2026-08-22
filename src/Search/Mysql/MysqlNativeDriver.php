@@ -20,6 +20,7 @@ use StarDust\Search\ConsistencyModel;
 use StarDust\Search\EntrySearchInterface;
 use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchResult;
+use StarDust\Support\UuidV4;
 
 /**
  * Phase 8 default driver — wraps the Phase 4 read path behind the
@@ -124,11 +125,34 @@ final class MysqlNativeDriver implements EntrySearchInterface
         }
 
         $payload = json_decode((string) $row['fields'], true);
+        $fields  = is_array($payload) ? $payload : [];
+        $modelId = (int) $row['model_id'];
+
+        // ADR 0036: the point read returns the payload verbatim, so
+        // without this it would hand back the pre-rename key for rows
+        // behind the backfill cursor and the post-rename key for rows
+        // ahead of it — inconsistent between two entries of the same
+        // model, and inconsistent with read() on the very same entry.
+        //
+        // This costs a schema-version probe that get() did not
+        // previously pay, which is a deliberate trade: read() pays it on
+        // every call, ADR 0015 designs it to be sub-millisecond, and the
+        // rewrite itself is gated behind one precomputed boolean so the
+        // steady state is a no-op.
+        $snapshot = $this->cache->snapshotForModel(
+            $modelId,
+            $tenantId,
+            UuidV4::generate(),
+        );
+        if ($snapshot->hasRenamesInFlight()) {
+            $fields = $snapshot->canonicalisePayloadKeys($fields);
+        }
+
         return new Entry(
             id:        (int) $row['id'],
             tenantId:  (int) $row['tenant_id'],
-            modelId:   (int) $row['model_id'],
-            fields:    is_array($payload) ? $payload : [],
+            modelId:   $modelId,
+            fields:    $fields,
             createdAt: new DateTimeImmutable((string) $row['created_at'], new DateTimeZone('UTC')),
             deletedAt: $row['deleted_at'] === null
                 ? null

@@ -21,6 +21,8 @@ namespace StarDust\Read;
  */
 final class SnapshotEntry
 {
+    private readonly bool $renamesInFlight;
+
     /**
      * @param array<string, FieldDescriptor> $fieldsByName  fieldName → descriptor
      * @param array<int, string>             $pageTableNames pageId → `entry_slots_page_N`
@@ -32,10 +34,68 @@ final class SnapshotEntry
         public readonly array $fieldsByName,
         public readonly array $pageTableNames,
     ) {
+        // Computed once here rather than memoised lazily: the snapshot
+        // is immutable and cached per schema version, so the answer
+        // cannot change, and an eager bool keeps the DTO free of
+        // mutable state.
+        $found = false;
+        foreach ($fieldsByName as $descriptor) {
+            if ($descriptor->isRenameInFlight()) {
+                $found = true;
+                break;
+            }
+        }
+        $this->renamesInFlight = $found;
     }
 
     public function field(string $fieldName): ?FieldDescriptor
     {
         return $this->fieldsByName[$fieldName] ?? null;
+    }
+
+    /**
+     * True when any field in this model has an ADR 0036 rename in
+     * flight (`stardust_fields.previous_name` non-null).
+     *
+     * Computed once at construction. Callers use it to keep the
+     * steady-state cost of the rename fallback at one boolean check.
+     */
+    public function hasRenamesInFlight(): bool
+    {
+        return $this->renamesInFlight;
+    }
+
+    /**
+     * Returns `$payload` with any in-flight rename's old key rewritten
+     * to the field's current name. Keys the registry does not know are
+     * passed through untouched (ADR 0013 preserves unknown keys).
+     *
+     * Used by the point read, which returns the payload verbatim and so
+     * would otherwise expose the old key for rows behind the backfill
+     * cursor.
+     *
+     * @param  array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    public function canonicalisePayloadKeys(array $payload): array
+    {
+        if (! $this->hasRenamesInFlight()) {
+            return $payload;
+        }
+
+        foreach ($this->fieldsByName as $name => $descriptor) {
+            $previous = $descriptor->previousName;
+            if ($previous === null || ! array_key_exists($previous, $payload)) {
+                continue;
+            }
+            // A row already migrated carries the new key; the old key
+            // should not survive alongside it.
+            if (! array_key_exists($name, $payload)) {
+                $payload[$name] = $payload[$previous];
+            }
+            unset($payload[$previous]);
+        }
+
+        return $payload;
     }
 }

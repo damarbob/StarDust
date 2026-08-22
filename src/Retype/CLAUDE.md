@@ -83,3 +83,17 @@ Post-commit it emits per-row `coercion_null`, `chunk_complete`, and on promotion
 The spread one-shot fires **at promotion, not at initiation**. A retype vacates one slot and claims another, so it can land the model on a page it did not previously occupy — but the relocation is only real once the new slot reaches `ready`, and publishing a spread delta while the field is still `backfilling` would report a move that no query can yet see. `RetypeInitiator`'s registry-only path (a non-filterable target, or a demotion) deliberately does **not** sample: it tombstones without replacing, and the next periodic sample covers it. ADR 0031 accepts that latency explicitly.
 
 **There is no DLQ path here.** Coercion failures are silent-NULL with audit events; the JSON payload remains authoritative per ADR 0013.
+
+## ADR 0036: the rename cross-guard lives in `runTuple()`
+
+`runTuple()` now rejects any shape — retype, promotion, demotion, or relocation — against a field with a running `rename_field_{id}` checkpoint, throwing `RenameInProgressException`.
+
+**Placing it here rather than on the `StarDust` facade is the whole point.** `initiateRelocation()` shares `runTuple()`, so `compactModel()` inherits the guard; a facade-level check on `retypeField()` would have left compaction as an unguarded back door.
+
+It is a correctness guard, not hygiene. `RetypeBackfillExecutor` locates values with `array_key_exists($fieldName, $fields)` against the *current* name, so mid-rename every row behind the rename cursor reads as "value absent" → `NotAttempted` → the slot is written NULL. Silently: the `isNullCoerced()` guard means no `coercion_null` event fires, because no coercion was attempted. That is permanent data loss into the index with nothing in the log to show for it.
+
+Both initiators check both repositories in the same order — **rename first, then retype** — so two concurrent initiators cannot each see the other's row as absent. `ux_backfill_job_name` remains the real backstop.
+
+`RetypeInitiator`'s constructor gained a `RenameCheckpointRepository` parameter, which ripples to `StarDust::retypeInitiator()` and `Phase6bTestCase::makeRetypeInitiator()`.
+
+**Known defect, not introduced here:** `RetypeCheckpointRepository::insert()` is a plain INSERT and nothing in `src/` ever deletes from `backfill_checkpoints`, so a second retype or relocation of a field whose checkpoint is already `completed` throws a raw `PDOException` — `existsRunningForField()` returns false for a terminal row. This is why `compactModel()`'s documented "safe to re-run" does not actually hold for an already-relocated field. `RenameCheckpointRepository::insertOrReset()` shows the fix (`INSERT … ON DUPLICATE KEY UPDATE`); porting it here is tracked separately.

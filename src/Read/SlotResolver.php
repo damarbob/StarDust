@@ -38,6 +38,7 @@ final class SlotResolver
             . '       f.name          AS field_name,'
             . '       f.declared_type AS declared_type,'
             . '       f.is_filterable AS is_filterable,'
+            . '       f.previous_name AS previous_name,'
             . '       a.slot_column   AS slot_column,'
             . '       a.status        AS slot_status,'
             . '       a.page_id       AS page_id'
@@ -67,6 +68,7 @@ final class SlotResolver
                 slotColumn: $row['slot_column'] === null ? null : (string) $row['slot_column'],
                 slotStatus: $row['slot_status'] === null ? null : (string) $row['slot_status'],
                 pageId: $pageId,
+                previousName: $row['previous_name'] === null ? null : (string) $row['previous_name'],
             );
         }
 

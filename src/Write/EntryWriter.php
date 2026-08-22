@@ -108,16 +108,22 @@ final class EntryWriter
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
 
+        // The map load precedes the json_encode because ADR 0036
+        // canonicalisation must apply to the payload we persist, not
+        // just to the slot plan: a client still sending a pre-rename
+        // field name would otherwise store the stale key verbatim.
+        $map = LiveSlotMap::loadFor($this->pdo, $payload->modelId);
+        $fields = $map->canonicalise($payload->fields);
+
         $jsonFields = json_encode(
-            $payload->fields,
+            $fields,
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
         );
 
         // PayloadSplitter is pure; resolving the live-slot map and
         // building the plan first means an UncoercibleSlotValueException
         // surfaces before we INSERT the entry row.
-        $map = LiveSlotMap::loadFor($this->pdo, $payload->modelId);
-        $plan = PayloadSplitter::split($map, $payload->fields);
+        $plan = PayloadSplitter::split($map, $fields);
 
         // Page-id → physical table name. Resolved once before INSERTs;
         // the registry never renames a provisioned page (ADR 0012).
@@ -242,15 +248,23 @@ final class EntryWriter
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
 
+        // Same pure planning as the write path, and for the same
+        // reason: an UncoercibleSlotValueException must surface before
+        // entry_data is touched. The map also has to load before the
+        // encode so ADR 0036 canonicalisation reaches the persisted
+        // payload — and, on this path specifically, so that
+        // withClearedSlots() compares the map's (current) names against
+        // an already-canonical payload. Comparing against a stale key
+        // would make the renamed field look absent and NULL its slot on
+        // every update during the rename window.
+        $map = LiveSlotMap::loadFor($this->pdo, $modelId);
+        $fields = $map->canonicalise($fields);
+
         $jsonFields = json_encode(
             $fields,
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
         );
 
-        // Same pure planning as the write path, and for the same
-        // reason: an UncoercibleSlotValueException must surface before
-        // entry_data is touched.
-        $map = LiveSlotMap::loadFor($this->pdo, $modelId);
         $plan = PayloadSplitter::split($map, $fields);
         $slotWrites = $this->withClearedSlots($map, $fields, $plan->slotWrites);
 

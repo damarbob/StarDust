@@ -30,8 +30,14 @@ final class ArtifactStreamFactory
      * @param list<string> $headerFields Header column list resolved by
      *   {@see HeaderResolver}. Only consumed by the CSV stream; JSON
      *   ignores it and emits the full row payload per ADR 0013.
+     * @param array<string,string> $renameAliases ADR 0036 current →
+     *   pre-rename names. Also CSV-only, and for the same reason: CSV
+     *   projects the payload against a fixed header, so a stale key
+     *   becomes a blank cell under a correct column. JSON emits the
+     *   payload verbatim, so a consumer sees the old key and can cope —
+     *   that asymmetry is deliberate.
      */
-    public function from(ClaimedJob $job, array $headerFields): ArtifactStream
+    public function from(ClaimedJob $job, array $headerFields, array $renameAliases = []): ArtifactStream
     {
         $this->ensureArtifactDir();
 
@@ -48,7 +54,7 @@ final class ArtifactStreamFactory
             . "export_{$job->id}_" . UuidV4::generate() . '.' . $ext;
 
         return match ($job->format) {
-            'csv'  => new CsvArtifactStream($path, $headerFields),
+            'csv'  => new CsvArtifactStream($path, $headerFields, $renameAliases),
             'json' => new JsonArtifactStream($path),
         };
     }

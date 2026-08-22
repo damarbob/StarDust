@@ -81,8 +81,9 @@ final class ExportJobProcessor
     public function process(ClaimedJob $job, string $correlationId): JobOutcome
     {
         $startTime = microtime(true);
-        $header = $this->headerResolver->resolve($job->tenantId, $job->modelId);
-        $stream = $this->streamFactory->from($job, $header);
+        $header  = $this->headerResolver->resolve($job->tenantId, $job->modelId);
+        $aliases = $this->headerResolver->resolveAliases($job->tenantId, $job->modelId);
+        $stream  = $this->streamFactory->from($job, $header, $aliases);
         // open() may write the format prelude (CSV header / JSON `[`),
         // which can trip ENOSPC. Treat header-write disk-full
         // identically to per-row disk-full per ADR 0025.

@@ -8,6 +8,10 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use StarDust\Clock\SystemClock;
 use StarDust\Reconciler\Reconciler;
+use StarDust\Rename\RenameBackfillExecutor;
+use StarDust\Rename\RenameBackfillWorkSource;
+use StarDust\Rename\RenameCheckpointRepository;
+use StarDust\Rename\RenameInitiator;
 use StarDust\Retype\RetypeBackfillExecutor;
 use StarDust\Retype\RetypeBackfillWorkSource;
 use StarDust\Retype\RetypeCheckpointRepository;
@@ -40,7 +44,73 @@ abstract class Phase6bTestCase extends Phase6aTestCase
                 logger: $log,
             ),
             checkpointRepository: new RetypeCheckpointRepository($this->pdo),
+            renameCheckpointRepository: new RenameCheckpointRepository($this->pdo),
         );
+    }
+
+    protected function makeRenameInitiator(?LoggerInterface $logger = null): RenameInitiator
+    {
+        return new RenameInitiator(
+            pdo: $this->pdo,
+            clock: new SystemClock(),
+            logger: $logger ?? new NullLogger(),
+            renameCheckpoints: new RenameCheckpointRepository($this->pdo),
+            retypeCheckpoints: new RetypeCheckpointRepository($this->pdo),
+        );
+    }
+
+    protected function makeRenameBackfillWorkSource(
+        ?LoggerInterface $logger = null,
+        int $chunkSize = 500,
+    ): RenameBackfillWorkSource {
+        return new RenameBackfillWorkSource(
+            pdo: $this->pdo,
+            clock: new SystemClock(),
+            logger: $logger ?? new NullLogger(),
+            repository: new RenameCheckpointRepository($this->pdo),
+            executor: new RenameBackfillExecutor(pdo: $this->pdo),
+            chunkSize: $chunkSize,
+        );
+    }
+
+    /**
+     * Drives exactly one rename-backfill tick. Deliberately not routed
+     * through the full Reconciler so a test can stop the drain
+     * half-migrated and inspect the window.
+     */
+    protected function runRenameTick(
+        ?LoggerInterface $logger = null,
+        int $chunkSize = 500,
+    ): \StarDust\Reconciler\TickOutcome {
+        return $this->makeRenameBackfillWorkSource($logger, $chunkSize)
+            ->tickOne('test-rename-' . bin2hex(random_bytes(4)));
+    }
+
+    /** @return array{id: int, status: string, last_processed_id: int}|null */
+    protected function fetchRenameCheckpointForField(int $fieldId): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, status, last_processed_id FROM backfill_checkpoints WHERE job_name = ?'
+        );
+        $stmt->execute([RenameCheckpointRepository::jobNameFor($fieldId)]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return null;
+        }
+        return [
+            'id'                => (int) $row['id'],
+            'status'            => (string) $row['status'],
+            'last_processed_id' => (int) $row['last_processed_id'],
+        ];
+    }
+
+    /** Raw payload for an entry, as stored — no assembler, no fallback. */
+    protected function rawPayload(int $entryId): mixed
+    {
+        $json = (string) $this->pdo
+            ->query('SELECT fields FROM entry_data WHERE id = ' . $entryId)
+            ->fetchColumn();
+        return json_decode($json, true);
     }
 
     protected function makeRetypeBackfillWorkSource(

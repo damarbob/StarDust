@@ -21,13 +21,22 @@ use DateTimeZone;
  *     `tombstoned`, or unmapped fields. The value is read from the
  *     decoded `entry_data.fields` payload, satisfying Phase 4 exit
  *     criterion #6 ("the slot column is not consulted"). Sourcing
- *     from the decoded payload column is functionally identical to a
+ *     from the decoded payload column is equivalent to a
  *     `JSON_EXTRACT(fields, '$.<name>')` projection — same byte
  *     source, no slot reference — and skips the per-row JSON parse
  *     cost MySQL would incur per JSON_EXTRACT call.
  *
  * Fields absent from `entry_data.fields` materialise as `null` (per
  * ADR 0013 the JSON payload may legitimately omit a field).
+ *
+ * **The JSON_EXTRACT equivalence above holds except during an ADR 0036
+ * rename window.** While `stardust_fields.previous_name` is non-null,
+ * rows behind the backfill cursor are still keyed by the old name, so
+ * the assembler falls back to that key when the current one is absent.
+ * A single-path `JSON_EXTRACT` on the new name would return null for
+ * every un-migrated row. The fallback costs one `array_key_exists` on
+ * the miss path only, and disappears when the backfill clears
+ * `previous_name`.
  */
 final class ResultAssembler
 {
@@ -57,7 +66,18 @@ final class ResultAssembler
                 }
                 // JSON-payload fallback. Missing keys legitimately
                 // materialise as null per ADR 0013.
-                $fields[$name] = $payload[$name] ?? null;
+                if (array_key_exists($name, $payload)) {
+                    $fields[$name] = $payload[$name];
+                    continue;
+                }
+                // ADR 0036 rename window: the registry already carries
+                // the new name, but rows behind the backfill cursor are
+                // still keyed by the old one. Without this the field
+                // would silently read null for the whole drain.
+                $previous = $snapshot->field($name)?->previousName;
+                $fields[$name] = ($previous !== null && array_key_exists($previous, $payload))
+                    ? $payload[$previous]
+                    : null;
             }
 
             $out[] = new Entry(

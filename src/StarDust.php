@@ -44,6 +44,10 @@ use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\SyncQueueWorkSource;
 use StarDust\Reconciler\UnmappedFieldReserver;
 use StarDust\Retype\RetypeBackfillExecutor;
+use StarDust\Rename\RenameBackfillExecutor;
+use StarDust\Rename\RenameBackfillWorkSource;
+use StarDust\Rename\RenameCheckpointRepository;
+use StarDust\Rename\RenameInitiator;
 use StarDust\Retype\RetypeBackfillWorkSource;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Retype\RetypeInitiator;
@@ -105,6 +109,7 @@ final class StarDust
     private ?CardinalitySampler $cardinalitySampler = null;
     private ?SpreadSampler $spreadSampler = null;
     private ?RetypeInitiator $retypeInitiator = null;
+    private ?RenameInitiator $renameInitiator = null;
     private ?CompactionService $compactionService = null;
     private ?ExportJobSubmitter $exportSubmitter = null;
     private ?SchemaBuilder $schemaBuilder = null;
@@ -360,6 +365,47 @@ final class StarDust
     }
 
     /**
+     * Rename a field. Returns as soon as the registry is updated; the
+     * payload catch-up is asynchronous and **needs a running
+     * `bin/stardust reconciler`** to finish.
+     *
+     * `entry_data.fields` is keyed by field name, so a rename is a
+     * rewrite of every entry in the model rather than a registry write
+     * (ADR 0036). This call flips the name, records the old one, and
+     * queues the rewrite; the Reconciler drains it in chunks.
+     *
+     * **What is true during the drain:**
+     *
+     * - Reads return the value under the **new** name for every row,
+     *   migrated or not — the read path falls back to the old key.
+     * - Writes may use either name; a payload still carrying the old one
+     *   is rewritten to the new before it is persisted, so a client that
+     *   has not yet redeployed loses nothing.
+     * - Filters on the **new** name work immediately (a rename never
+     *   touches the slot). Filters on the old name are rejected with
+     *   {@see \StarDust\Exception\UnknownFieldException} — deliberately,
+     *   since a rejected query loses nothing while a rejected write
+     *   would lose data.
+     * - The field cannot be retyped, promoted, demoted, or relocated by
+     *   {@see self::compactModel()} until the rename completes.
+     *
+     * Renaming a field to its current name is a no-op. Idempotent to
+     * re-issue after a previous rename has completed.
+     *
+     * @throws \StarDust\Exception\FieldNotFoundException      unknown field, or another tenant's
+     * @throws \StarDust\Exception\FieldNameConflictException  the name is taken by a sibling field,
+     *                                                        including one whose own rename is
+     *                                                        still draining
+     * @throws \StarDust\Exception\RenameInProgressException   this field is already being renamed
+     * @throws \StarDust\Exception\RetypeInProgressException   this field has a retype in flight
+     */
+    public function renameField(int $tenantId, int $fieldId, string $newName): void
+    {
+        TenantId::assertValid($tenantId);
+        $this->renameInitiator()->initiate($tenantId, $fieldId, $newName);
+    }
+
+    /**
      * Every model registered for this tenant.
      *
      * Read-only, lock-free, and safe to call per request.
@@ -476,8 +522,21 @@ final class StarDust
             chunkSize: $this->config->reconcilerChunkSize,
         );
 
+        // Appended as the fourth source rather than inserted: the
+        // existing round-robin order is observable in event streams, and
+        // ordering between the two backfill sources is immaterial since
+        // the cross-guards make them mutually exclusive per field.
+        $renameBackfill = new RenameBackfillWorkSource(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            repository: new RenameCheckpointRepository($this->config->pdo),
+            executor: new RenameBackfillExecutor(pdo: $this->config->pdo),
+            chunkSize: $this->config->reconcilerChunkSize,
+        );
+
         return new Reconciler(
-            workSources: [$syncQueue, $importJobs, $retypeBackfill],
+            workSources: [$syncQueue, $importJobs, $retypeBackfill, $renameBackfill],
             capacityWaitMillis: $this->config->reconcilerCapacityWaitMillis,
             interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
         );
@@ -856,6 +915,18 @@ final class StarDust
             logger: $this->config->logger,
             slotReserver: $this->slotReserver(),
             checkpointRepository: new RetypeCheckpointRepository($this->config->pdo),
+            renameCheckpointRepository: new RenameCheckpointRepository($this->config->pdo),
+        );
+    }
+
+    private function renameInitiator(): RenameInitiator
+    {
+        return $this->renameInitiator ??= new RenameInitiator(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            renameCheckpoints: new RenameCheckpointRepository($this->config->pdo),
+            retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
         );
     }
 

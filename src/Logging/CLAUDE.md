@@ -24,6 +24,7 @@ Injecting a custom PSR-3 logger transfers ADR 0020 conformance to the caller.
 | 7 | `job_claimed`, `chunk_written`, `deadlock_retry`, `chunk_skipped`, `row_skipped`, `lease_lost`, `low_disk`, `artifact_oversized`, `job_complete`, `job_failed`, `gc_swept` | `chronicler` |
 | 7 | `export_accepted` | `export_api` |
 | 8 | `search_request`, `capability_unsupported` | `api` |
+| — | `rename_started`, `rename_complete` (ADR 0036) | `registry` |
 
 ### Names deliberately shared across sources
 
@@ -42,3 +43,7 @@ The `source` field is the disambiguator in every case below — do not rename to
 `capability_unsupported` is deliberately distinct from the generic `pre_flight_rejected` so operators can metric "consumer asked for a feature this driver doesn't service" separately.
 
 `FieldRefResolver` / `CapabilityChecker` / `ValueTypeValidator` otherwise reuse `pre_flight_rejected` with a widened `reason` discriminator covering the new pre-flight codes: `field_unknown`, `field_not_filterable`, `value_type_mismatch`, `value_out_of_bounds`.
+
+### `rename_complete` is not `promote_to_ready`
+
+The ADR 0036 rename backfill reuses the `reconciler` chunk vocabulary (`chunk_claimed` / `chunk_complete`, with `queue: 'rename_backfill'`) and adds exactly two registry names. `rename_complete` is deliberately distinct from `promote_to_ready`: a rename touches no slot, so there is nothing to promote, and sharing the name would make the two indistinguishable on a dashboard. Per-row skips ride as a `rows_rewritten` / `rows_scanned` field on `chunk_complete` rather than earning a new event — only the `'event' => '...'` literal is constrained, payload keys are free.

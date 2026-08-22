@@ -38,6 +38,11 @@ All typed errors extend `RuntimeException`.
 - `RetypeInProgressException` — a `running` `retype_field_{id}` checkpoint already exists for this field.
 - `FieldNotFoundException` — the public retype/promote API received a field id that doesn't exist or belongs to a different tenant. Existing internal callers like `SlotReserver` still throw `InvalidArgumentException` for the same situation.
 
+## ADR 0036 — field rename
+
+- `RenameInProgressException` — a `running` `rename_field_{id}` checkpoint already exists for this field. Thrown by **both** initiators: by the rename initiator for a second rename, and by `RetypeInitiator::runTuple()` for a retype, promotion, demotion, or ADR 0033 relocation landing on a field mid-rename. The retype direction is a correctness guard, not hygiene — the retype backfill locates values by field name, so during a rename window every un-migrated row reads as "value absent" and its slot is written NULL with no `coercion_null` event.
+- `FieldNameConflictException` — the requested name is taken within the model, by another field's current `name` **or** by another field's `previous_name` while its rename is still draining. The second half is not redundant with `ux_fields_model_name`: renaming `a → b` frees `a` as far as that index is concerned, so a subsequent `y → a` would satisfy it while making field `b`'s read-path fallback resolve to field `y`'s value on every un-migrated row. The message names which case fired, because the two need different fixes.
+
 ## ADR 0034
 
 - `NonFilterableFieldSlotException` — slot reservation attempted for a field whose `is_filterable` is false. Raised by all three `SlotReserver` entry points before any row is touched.

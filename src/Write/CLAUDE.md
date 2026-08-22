@@ -30,6 +30,16 @@ There is deliberately **no** `updateWithinTransaction()` — no bulk-update path
 
 There is no hard delete and no restore — `deleted_at` is the only lifecycle transition the schema models, and purging would additionally have to reclaim slot columns.
 
+### ADR 0036: inbound keys are canonicalised before anything else
+
+Both `writeWithinTransaction()` and `update()` load `LiveSlotMap` **before** `json_encode`, then run `$map->canonicalise($fields)`. That ordering is load-bearing, not stylistic — the canonicalised payload is what gets persisted, not just what gets planned.
+
+A rename flips `stardust_fields.name` immediately, so a client that has not redeployed keeps sending the old name. Without canonicalisation that key is unknown to the map, `PayloadSplitter` drops it from the slot plan (see below), and the value lands in `entry_data.fields` under the stale key with **no slot write and no exhaustion enqueue** — so a filter on the new name matches a slot value the entry no longer has. Worse, for a row the rename backfill cursor has already passed, that key is never migrated and the value disappears entirely when `previous_name` is cleared. The read-side rename window is transient and self-healing; this one is permanent.
+
+On `update()` there is a second reason: `withClearedSlots()` compares the map's (current) names against the payload's keys, so an un-canonicalised payload would make the renamed field look *absent* and NULL its slot on every update during the window.
+
+`hasAliases()` gates the whole thing, so steady state is one `false` check.
+
 ### The two silently-dropped categories
 
 Two categories never reach the slot plan; their values are preserved in `entry_data.fields` per ADR 0013:

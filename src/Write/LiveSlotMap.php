@@ -60,10 +60,12 @@ final class LiveSlotMap
     /**
      * @param array<string, LiveSlotEntry> $byFieldName
      * @param array<string, bool> $registeredFieldFilterability field name → is_filterable
+     * @param array<string, string> $canonicalByPreviousName ADR 0036: old field name → current name
      */
     public function __construct(
         private readonly array $byFieldName,
         private readonly array $registeredFieldFilterability,
+        private readonly array $canonicalByPreviousName = [],
     ) {
     }
 
@@ -76,7 +78,7 @@ final class LiveSlotMap
         // from "unknown payload key" (silent drop, per ADR 0007 + 0013).
         $stmt = $pdo->prepare(
             'SELECT f.id AS field_id, f.name AS field_name, f.declared_type,'
-            . ' f.is_filterable,'
+            . ' f.is_filterable, f.previous_name,'
             . ' a.slot_column, a.page_id, a.status'
             . ' FROM stardust_fields f'
             . ' LEFT JOIN stardust_slot_assignments a'
@@ -87,9 +89,14 @@ final class LiveSlotMap
 
         $entries = [];
         $registeredFieldFilterability = [];
+        $canonicalByPreviousName = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $name = (string) $row['field_name'];
             $registeredFieldFilterability[$name] = (bool) $row['is_filterable'];
+
+            if ($row['previous_name'] !== null) {
+                $canonicalByPreviousName[(string) $row['previous_name']] = $name;
+            }
 
             if ($row['slot_column'] === null) {
                 continue;
@@ -105,7 +112,62 @@ final class LiveSlotMap
             );
         }
 
-        return new self($entries, $registeredFieldFilterability);
+        return new self($entries, $registeredFieldFilterability, $canonicalByPreviousName);
+    }
+
+    /**
+     * True while any field in this model has an ADR 0036 rename in
+     * flight. Lets the write path skip {@see self::canonicalise()}
+     * entirely in the steady state.
+     */
+    public function hasAliases(): bool
+    {
+        return $this->canonicalByPreviousName !== [];
+    }
+
+    /**
+     * Rewrites any payload key naming a field by its pre-rename name to
+     * the field's current name.
+     *
+     * **This is a data-loss guard, not a convenience.** A rename flips
+     * `stardust_fields.name` immediately, so a client that has not yet
+     * redeployed keeps sending the old name. Without this, that key is
+     * unknown to the map, {@see PayloadSplitter} drops it from the slot
+     * plan, and the value lands in `entry_data.fields` under the stale
+     * key with no slot write and no exhaustion enqueue — so a filter on
+     * the new name matches a slot value the entry no longer has. Worse,
+     * for a row the rename backfill has already passed, that key is
+     * never migrated and the value disappears entirely when
+     * `previous_name` is cleared.
+     *
+     * Canonicalising here makes the write path converge instead: the
+     * value lands under the new key and hits the slot, so the backfill's
+     * single forward pass really is sufficient.
+     *
+     * If a payload somehow carries both names, the current name wins and
+     * the stale one is dropped — unreachable through a sane client, but
+     * it must be deterministic.
+     *
+     * @param  array<string, mixed> $fields
+     * @return array<string, mixed>
+     */
+    public function canonicalise(array $fields): array
+    {
+        if (! $this->hasAliases()) {
+            return $fields;
+        }
+
+        foreach ($this->canonicalByPreviousName as $previous => $current) {
+            if (! array_key_exists($previous, $fields)) {
+                continue;
+            }
+            if (! array_key_exists($current, $fields)) {
+                $fields[$current] = $fields[$previous];
+            }
+            unset($fields[$previous]);
+        }
+
+        return $fields;
     }
 
     /** True if the field name exists in stardust_fields for this model, regardless of slot status. */

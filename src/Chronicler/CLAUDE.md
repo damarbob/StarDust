@@ -71,3 +71,11 @@ Scans two buckets:
 - `status='failed' AND completed_at < UTC_TIMESTAMP() - INTERVAL orphanedPartialTtlSeconds SECOND` (1 h default)
 
 Per row: `@unlink` + `UPDATE … SET artifact_path = NULL`. `gc_swept` is emitted ONLY when `artifactsDeleted > 0`, so idle cycles produce no event spam.
+
+## ADR 0036 rename aliases — CSV only, deliberately
+
+`HeaderResolver::resolveAliases()` returns current-name → pre-rename-name for fields whose rename backfill is still draining (empty in steady state). `ExportJobProcessor` threads it into `ArtifactStreamFactory::from()` and on into `CsvArtifactStream`.
+
+It is needed because CSV uses **one `list<string>` for two roles**: the header text and the payload projection key. During a rename window those diverge — the header must say the new name (an operator reads it) while rows behind the backfill cursor are still keyed by the old one. Without the alias, `$row->fields[$name] ?? null` yields `''` for every un-migrated row, so the artifact is a correct header over blank cells: no exception, no `row_skipped`, no `skip_count`, and unlike a read it is never retried. The header cell always shows the current name; only the lookup falls back.
+
+**`JsonArtifactStream` is deliberately not aliased.** Its documented contract is the verbatim payload per ADR 0013, so a JSON consumer sees the old key and can cope; a CSV consumer sees a header that lies. Do not "fix" the asymmetry — and note `resolve()`'s return shape was left alone for the same reason, since both stream types depend on it.

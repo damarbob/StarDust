@@ -401,6 +401,51 @@ final class BootstrapTest extends TestCase
         self::assertSame(1, $exists, 'Re-running bootstrap must not duplicate the column.');
     }
 
+    /**
+     * ADR 0036 deliverable: `stardust_fields.previous_name` is
+     * provisioned by the bootstrap runner and re-runs are
+     * non-destructive. Nullable with no default, so existing rows stay
+     * valid — a non-null value means "a rename is in flight".
+     */
+    public function testBootstrapAddsFieldsPreviousNameColumn(): void
+    {
+        (new Bootstrapper($this->pdo))->run();
+
+        $column = $this->pdo
+            ->query(
+                'SELECT IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH'
+                . ' FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_fields'"
+                . " AND column_name = 'previous_name'"
+            )
+            ->fetch(\PDO::FETCH_ASSOC);
+
+        self::assertIsArray($column, 'previous_name column must be present after bootstrap.');
+        self::assertSame('YES', $column['IS_NULLABLE'], 'previous_name must be nullable.');
+        self::assertSame('varchar', $column['DATA_TYPE']);
+        self::assertSame(
+            128,
+            (int) $column['CHARACTER_MAXIMUM_LENGTH'],
+            'previous_name must match stardust_fields.name width.',
+        );
+
+        // Idempotent: re-running must not error and must not duplicate
+        // the column.
+        (new Bootstrapper($this->pdo))->run();
+        (new Bootstrapper($this->pdo))->run();
+
+        $exists = (int) $this->pdo
+            ->query(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_fields'"
+                . " AND column_name = 'previous_name'"
+            )
+            ->fetchColumn();
+        self::assertSame(1, $exists, 'Re-running bootstrap must not duplicate the column.');
+    }
+
     /** Engine convenience method delegates to the Bootstrapper. */
     public function testEngineBootstrapMethodInvokesBootstrapper(): void
     {

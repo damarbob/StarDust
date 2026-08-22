@@ -12,6 +12,8 @@ Phase 4 surface. **Phase 8 hollowed this package out**: `EntryReader` is now a t
 4. `BoundedFetch` materialises only the probed ids plus indexed slot columns via LEFT JOIN.
 5. `ResultAssembler` sources each field from the slot column only when the field is filterable AND status is `assigned`/`ready` (`FieldDescriptor::isIndexedNow()` — **both** conditions, not status alone), otherwise from the decoded `entry_data.fields` payload.
 
+**ADR 0036 adds a second fallback on top of that one.** When the field's `previous_name` is non-null a rename backfill is still draining, so `ResultAssembler` tries the current name and then the old one. Without it every un-migrated row would read `null` for the renamed field for the whole drain — silently, because the payload miss path is `?? null`. `SlotResolver` picks `previous_name` up from the `stardust_fields` SELECT it already runs, so this costs no extra query, and `SnapshotEntry::hasRenamesInFlight()` keeps the steady state at one boolean. The class docblock's "equivalent to a `JSON_EXTRACT` projection" claim is explicitly scoped to exclude this window — a single-path extract on the new name would be wrong there.
+
 That last point is the JSON-payload fallback: the slot column is never consulted for non-filterable, `backfilling`, `tombstoned`, or unmapped fields, which is what satisfies the Phase 4 exit criterion. Per ADR 0034, non-filterable fields are JSON-only and should never be assigned slots at all.
 
 Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Blueprint §1.2.

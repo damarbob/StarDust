@@ -30,7 +30,21 @@ final class FieldDescriptor
         public readonly ?string $slotColumn,
         public readonly ?string $slotStatus,
         public readonly ?int $pageId,
+        public readonly ?string $previousName = null,
     ) {
+    }
+
+    /**
+     * True while an ADR 0036 field rename is draining: the registry
+     * already carries the new `fieldName`, but `entry_data.fields` rows
+     * behind the backfill cursor are still keyed by `previousName`.
+     *
+     * {@see ResultAssembler} uses this to fall back to the old key.
+     * Filters deliberately do NOT — see the note there.
+     */
+    public function isRenameInFlight(): bool
+    {
+        return $this->previousName !== null;
     }
 
     /**

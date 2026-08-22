@@ -56,3 +56,17 @@ GitHub Actions runs the same suite on every push, plus a second job that asserts
 - Tests build on a small hierarchy of base cases: `WritePathTestCase` (connection + registry-seed helpers) → `ReadPathTestCase` → `Phase5TestCase` → `Phase6aTestCase` → `Phase6bTestCase` → `Phase7TestCase`. Extend the closest fit rather than duplicating the env-gated `setUp`.
 - `phpunit.xml.dist` sets `failOnWarning`, `failOnRisky`, `beStrictAboutOutputDuringTests`, and `beStrictAboutTestsThatDoNotTestAnything` — keep tests strict-clean.
 - The static table-drop allowlist in each base class MUST include every Bootstrapper-managed table. A new table in a future phase means extending every list.
+
+## Field rename (ADR 0036)
+
+`tests/Smoke/Rename/` — 28 tests over the rename lifecycle, extending `Phase6bTestCase`.
+
+**What it proves.** `RenameInitiatorTest` pins the synchronous registry tuple: name flip, `previous_name` stashed, schema-version bump and a `running` checkpoint all commit together, with `rename_started` emitted once post-commit. It also pins the guards — foreign tenant, empty name, collision with a sibling's current name, and the case a naive implementation passes by accident: **collision with a sibling's `previous_name`**, which `UNIQUE (model_id, name)` cannot see, and which would otherwise make one field read another's values mid-drain.
+
+`RenameBackfillTest` covers the asynchronous half: multi-chunk drain, cursor advance, idempotence over an already-migrated range, rows that never held the field left untouched, and the final chunk completing the checkpoint, clearing `previous_name` and bumping the version atomically. Its highest-value case is payload fidelity — an entry keyed `{"0":…,"1":…}` alongside nested objects, nulls, floats and non-ASCII text must survive byte-for-byte, because a decode-and-re-encode implementation would silently turn that payload into a JSON array.
+
+`RenameWindowTest` is the one that matters most in review. It deliberately half-migrates a model and asserts that reads return the value under the *new* name for **every** row; that the point read agrees with the paginated read on the same entry; that a write or a full-replace update still using the *old* name lands under the new key and survives the rest of the drain; and that a filter on the new name works immediately while the old name is rejected outright.
+
+`RenameConcurrencyTest` pins lifecycle exclusivity in both directions, including through `compactModel()` — which needs a deliberately fragmented model, since a model with nothing to compact would pass the test vacuously.
+
+**Not covered.** A rename racing a concurrent Chronicler export is exercised only through the CSV alias resolution, not end to end under a live drain.
