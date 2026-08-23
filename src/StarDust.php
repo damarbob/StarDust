@@ -46,6 +46,7 @@ use StarDust\Reconciler\UnmappedFieldReserver;
 use StarDust\Retype\RetypeBackfillExecutor;
 use StarDust\Rename\RenameBackfillExecutor;
 use StarDust\Rename\RenameBackfillWorkSource;
+use StarDust\Rename\ModelRenamer;
 use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Rename\RenameInitiator;
 use StarDust\Retype\RetypeBackfillWorkSource;
@@ -110,6 +111,7 @@ final class StarDust
     private ?SpreadSampler $spreadSampler = null;
     private ?RetypeInitiator $retypeInitiator = null;
     private ?RenameInitiator $renameInitiator = null;
+    private ?ModelRenamer $modelRenamer = null;
     private ?CompactionService $compactionService = null;
     private ?ExportJobSubmitter $exportSubmitter = null;
     private ?SchemaBuilder $schemaBuilder = null;
@@ -403,6 +405,32 @@ final class StarDust
     {
         TenantId::assertValid($tenantId);
         $this->renameInitiator()->initiate($tenantId, $fieldId, $newName);
+    }
+
+    /**
+     * Rename a model. Synchronous and complete on return — unlike
+     * {@see self::renameField()}, this needs no running Reconciler.
+     *
+     * A model's name is a label, not an identity: entries, slots,
+     * exports and filters all reference `model_id`, and no cache holds
+     * the name. So the rename is one UPDATE with no backfill, no window
+     * during which reads and writes disagree, and nothing to wait for.
+     * Renaming a model to its current name is a no-op.
+     *
+     * **One caveat worth knowing.** `schemaBuilder()`'s `createModel()`
+     * and `defineModel()` are get-or-create keyed on `(tenant_id, name)`,
+     * so a setup or seed script still naming the *old* model will not
+     * find it and will create a **second** model instead. Update such
+     * scripts in step with the rename.
+     *
+     * @throws \StarDust\Exception\ModelNotFoundException      unknown model, or another tenant's
+     * @throws \StarDust\Exception\ModelNameConflictException  the name is already used by another
+     *                                                        model in this tenant
+     */
+    public function renameModel(int $tenantId, int $modelId, string $newName): void
+    {
+        TenantId::assertValid($tenantId);
+        $this->modelRenamer()->rename($tenantId, $modelId, $newName);
     }
 
     /**
@@ -927,6 +955,14 @@ final class StarDust
             logger: $this->config->logger,
             renameCheckpoints: new RenameCheckpointRepository($this->config->pdo),
             retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
+        );
+    }
+
+    private function modelRenamer(): ModelRenamer
+    {
+        return $this->modelRenamer ??= new ModelRenamer(
+            pdo: $this->config->pdo,
+            logger: $this->config->logger,
         );
     }
 

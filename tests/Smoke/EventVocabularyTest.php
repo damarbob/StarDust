@@ -60,6 +60,7 @@ final class EventVocabularyTest extends TestCase
         'promote_to_ready',
         'rename_started',
         'rename_complete',
+        'model_renamed',
     ];
 
     private const CHRONICLER_EVENTS = [

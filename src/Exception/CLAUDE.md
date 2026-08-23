@@ -43,6 +43,11 @@ All typed errors extend `RuntimeException`.
 - `RenameInProgressException` — a `running` `rename_field_{id}` checkpoint already exists for this field. Thrown by **both** initiators: by the rename initiator for a second rename, and by `RetypeInitiator::runTuple()` for a retype, promotion, demotion, or ADR 0033 relocation landing on a field mid-rename. The retype direction is a correctness guard, not hygiene — the retype backfill locates values by field name, so during a rename window every un-migrated row reads as "value absent" and its slot is written NULL with no `coercion_null` event.
 - `FieldNameConflictException` — the requested name is taken within the model, by another field's current `name` **or** by another field's `previous_name` while its rename is still draining. The second half is not redundant with `ux_fields_model_name`: renaming `a → b` frees `a` as far as that index is concerned, so a subsequent `y → a` would satisfy it while making field `b`'s read-path fallback resolve to field `y`'s value on every un-migrated row. The message names which case fired, because the two need different fixes.
 
+## Model rename
+
+- `ModelNotFoundException` — a public model-level entry point got a `model_id` that does not resolve for the caller's tenant. Missing and cross-tenant are **deliberately indistinguishable**, same reasoning as `EntryNotFoundException` and `FieldNotFoundException`: separating them would let a caller probe another tenant's model ids. Note `SchemaReader::describeModel()` deliberately returns `null` instead — introspection asking "does this exist?" is a question, whereas a mutation naming a model that isn't there is a mistake.
+- `ModelNameConflictException` — a model rename would collide with another model's name in the same tenant. `ux_models_tenant_name` is the backstop; the explicit pre-check exists to turn errno 1062 into a typed error. **Deliberately simpler than `FieldNameConflictException`**, which additionally guards `previous_name` because a field rename keeps its old name live during the payload backfill. A model rename has no such window, so only the current-name collision can arise.
+
 ## ADR 0034
 
 - `NonFilterableFieldSlotException` — slot reservation attempted for a field whose `is_filterable` is false. Raised by all three `SlotReserver` entry points before any row is touched.

@@ -72,3 +72,13 @@ GitHub Actions runs the same suite on every push, plus a second job that asserts
 **Exports during a rename** are covered by `tests/Smoke/Chronicler/RenameExportWindowTest`, which extends `Phase7TestCase` and so inherits both the rename helpers and the Chronicler fixtures. It half-migrates a model, runs a real export to completion, and asserts that every CSV cell is populated for rows still on the pre-rename key — the failure it guards against is a correct header over blank cells, with no exception, no `row_skipped` and `skip_count` at zero. It also pins the deliberate asymmetry that the JSON artifact keeps emitting the old key verbatim, and that a settled rename leaves an export byte-identical to a never-renamed model's. The CSV case was validated by temporarily neutering `HeaderResolver::resolveAliases()` and confirming it fails, so it is not a fixture that could not have failed.
 
 **Export filters** are covered by `ExportJobSubmitterTest::testNonEmptyFilterIsRejected` and `testRejectedFilterInsertsNoRowAndConsumesNoCapSlot`. The second is the one that matters: it proves the guard runs before the transaction, the INSERT and the per-tenant cap probe, so a refused submission leaves no row and costs the tenant nothing.
+
+## Model rename
+
+`tests/Smoke/Rename/ModelRenameTest` — 14 tests, extending `Phase6bTestCase`.
+
+**What it proves.** The happy path is one UPDATE, so most of the value is in the negative assertions. `testRenameDoesNotBumpSchemaVersion` is the important one: `SchemaBuilder::createModel()` bumps when it inserts a model, so the omission here looks like an oversight unless it is pinned — nothing a cached snapshot holds changes on a model rename, and the version row is a singleton, so a bump would invalidate every model in every process for nothing. `testNothingElseMoves` covers the rest of that ground: entries read back identically by `model_id`, the slot assignment is untouched, and field names are unaffected.
+
+`testTheSameNameInADifferentTenantIsAllowed` is the one that catches a collision check which lost its tenant predicate — the unique key is `(tenant_id, name)`, so two tenants may each own a model called `bill`. Missing-model and foreign-tenant are asserted to raise the *same* exception, so a caller cannot probe another tenant's model ids.
+
+`testSeedingWithTheOldNameCreatesASecondModel` deliberately pins a footgun rather than a guarantee: `SchemaBuilder::findModelId()` looks up by `(tenant_id, name)`, so a seed script still naming the old model creates a second one. It is inherent to get-or-create and not fixable without changing those semantics, so the test exists to make it documented behaviour.

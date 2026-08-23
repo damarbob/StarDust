@@ -63,3 +63,19 @@ Nothing in the engine ever deletes from `backfill_checkpoints`, and `ux_backfill
 ## No `CAPACITY_WAIT`
 
 A rename touches no slot, so it can never be blocked on inventory. The work source returns only `WORK_DONE` or `IDLE`. If that ever stops being true, the failure mode is a stuck checkpoint rather than a visible wait event — worth revisiting the outcome enum at that point rather than before.
+
+## `ModelRenamer` — why it shares almost nothing with the above
+
+A model rename lives in this package for cohesion, but it needs none of the machinery on this page: no checkpoint, no work source, no `previous_name`, no read/write fallback, no window.
+
+**Because a model's name is load-bearing nowhere.** Identity is `stardust_models.id`. `entry_data` carries `model_id`; `SchemaVersionCache` keys snapshots by `modelId` and `SlotResolver` builds them from `stardust_fields` alone, so no snapshot holds a model name; every other join to `stardust_models` in the engine (`CompactionRepository`, `HeaderResolver`, `RetypeInitiator`, `SpreadSampler`, both checkpoint repositories) selects only `id` / `tenant_id`. The QueryFilter wire format accepts `{"model": …}`, but `FieldRefResolver` resolves leaves by field name against the snapshot using the request's `modelId` and never reads it.
+
+So it is one UPDATE, synchronous, complete on return.
+
+**No schema-version bump, deliberately.** `SchemaBuilder::createModel()` bumps when it inserts a model row and this does not, which looks like an oversight unless you know why: nothing a cached snapshot holds changes, and `stardust_schema_version` is a singleton, so a bump would invalidate every model's snapshot in every process for no correctness benefit. It also matches schema_reference §5.1, which scopes the version to *field metadata*. `ModelRenameTest::testRenameDoesNotBumpSchemaVersion` pins it so a future contributor cannot "fix" it silently.
+
+**No clock either.** `stardust_models` has no `updated_at` column, so there is no timestamp to write, and the structured logger already emits `ts`. This is the one registry collaborator that takes only `(PDO, LoggerInterface)`.
+
+**The one caller that misbehaves afterwards** is `SchemaBuilder::findModelId()`, the engine's only look-up-by-name. After a rename, `createModel()` / `defineModel()` with the old name finds nothing and creates a *second* model — `docker/seed.php` is a live instance. Inherent to get-or-create rather than a defect here, and pinned by `ModelRenameTest::testSeedingWithTheOldNameCreatesASecondModel` so it reads as known behaviour.
+
+**It checks `rowCount()` on its UPDATE**, for the reason `src/Slot/CLAUDE.md` sets out for `reserveCore()`: the engine takes an injected PDO (ADR 0026), so under `ERRMODE_SILENT` `execute()` returns `false` rather than raising, and without the guard the method would commit and emit `model_renamed` for a rename that never happened. `rowCount()` is exact here because the same-name case returns before the transaction, so a matched row is always a changed row. Unlike `SlotReserverTest`'s equivalent there is **no regression test yet** — the public API cannot currently produce the zero-row state, since nothing deletes a model. When `deleteModel()` lands, that test becomes both possible and worth writing.
