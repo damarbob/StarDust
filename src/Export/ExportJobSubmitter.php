@@ -9,6 +9,7 @@ use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Exception\ExportFilterNotSupportedException;
 use StarDust\Exception\ExportJobActiveCapExceededException;
 use StarDust\Write\TenantId;
 use Throwable;
@@ -52,6 +53,28 @@ final class ExportJobSubmitter
     public function submit(ExportJobRequest $request): ExportJobId
     {
         TenantId::assertValid($request->tenantId);
+
+        // Refuse a filter rather than accept and ignore one. The
+        // Chronicler's pager selects on tenant/model/deleted_at only and
+        // never reads the stored filter back, so accepting one meant a
+        // request for a subset silently produced a full extract of the
+        // model — the single place in the engine where a wrong answer
+        // was quiet instead of loud.
+        //
+        // Positioned here on purpose: after the tenant check, before the
+        // envelope build, and so before any SQL, the transaction, and
+        // the per-tenant active-job cap probe. A rejected request
+        // therefore touches no row and burns none of the tenant's cap
+        // slots. Keeping it outside the try block also means it does not
+        // need adding to the ExportJobActiveCapExceededException
+        // pass-through clause below.
+        if ($request->filter !== []) {
+            throw new ExportFilterNotSupportedException(
+                tenantId:   $request->tenantId,
+                modelId:    $request->modelId,
+                filterKeys: array_map('strval', array_keys($request->filter)),
+            );
+        }
 
         // Wrap the consumer's QueryFilter so the stored `filter`
         // column shape is `{model_id, filter}` instead of merging

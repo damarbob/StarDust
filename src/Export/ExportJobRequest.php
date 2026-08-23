@@ -14,12 +14,20 @@ use RuntimeException;
  * would otherwise truncate to an empty string under
  * `STRICT_TRANS_TABLES`).
  *
- * `filter` is stored verbatim in the `filter` JSON column for
- * forward compatibility. Phase 7 MVP only consults `tenant_id` and
- * `modelId` from the request; predicate semantics are deferred to
- * the Phase 8 search-driver work. The submitter injects `model_id`
- * into the stored `filter` JSON so the Chronicler can hydrate it on
- * claim without a separate column.
+ * **`filter` must be empty.** Export predicate filtering is not
+ * implemented — the Chronicler's pager selects on
+ * `tenant_id / model_id / deleted_at` only and never reads the stored
+ * filter back — so a non-empty filter is rejected by
+ * {@see ExportJobSubmitter::submit()} with
+ * {@see \StarDust\Exception\ExportFilterNotSupportedException}. It used
+ * to be accepted and silently ignored, which turned a request for a
+ * subset into a full extract of the model.
+ *
+ * The parameter itself is retained rather than removed: the stored
+ * column shape stays `{model_id, filter}` (with `filter` always `[]`),
+ * which `ExportJobClaimer::extractModelId()` depends on, and keeping
+ * the argument means filtering can later be implemented without a
+ * breaking signature change.
  */
 final class ExportJobRequest
 {
@@ -27,8 +35,9 @@ final class ExportJobRequest
     public const FORMAT_JSON = 'json';
 
     /**
-     * @param array<string,mixed> $filter Verbatim predicates / shape
-     *   accepted by the engine; merged with `model_id` at storage time.
+     * @param array<string,mixed> $filter Must be empty; a non-empty
+     *   value is rejected at submission. Reserved for a future
+     *   filtering implementation.
      */
     public function __construct(
         public readonly int $tenantId,

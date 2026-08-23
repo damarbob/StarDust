@@ -16,11 +16,23 @@ The `(tenant_id, status)` composite plus InnoDB gap locks close the TOCTOU windo
 
 `tests/Smoke/Chronicler/ExportJobSubmitterCapConcurrencyTest` proves the lock actually holds, by pinning the gap-lock range from a sibling session.
 
+## A non-empty filter is refused, not stored
+
+`submit()` throws `ExportFilterNotSupportedException` when `$request->filter !== []`. Export predicate filtering is not implemented — `EntryDataPager` selects on `tenant_id / model_id / deleted_at` only and nothing reads the stored filter back — so accepting one turned a request for a subset into a **full extract of the model**, silently, into an artifact the consumer keeps and which is never retried.
+
+**The guard's position is load-bearing.** It sits after `TenantId::assertValid()` and before the envelope build, which puts it before any SQL, before `beginTransaction()`, and before the `FOR UPDATE` cap probe. So a refused request inserts nothing and burns none of the tenant's active-job slots (`ExportJobSubmitterTest::testRejectedFilterInsertsNoRowAndConsumesNoCapSlot` pins both). Keeping it outside the `try` block also means it never needs adding to the `ExportJobActiveCapExceededException` pass-through clause in the catch chain.
+
+It lives here rather than in `ExportJobRequest`'s constructor because that validates `format` with a bare `RuntimeException`, whereas this is a typed domain failure belonging beside the cap exception. `StarDust::submitExport()` delegates, so the facade inherits it with no second check.
+
+**No ADR governs this.** ADR 0010 and `blueprints/async_exports.md` were both relocated to StarGate in May 2026 and neither mentions filters, predicates or QueryFilter. Implementing filtering later is undesigned work, not a resumption.
+
 ## The `{model_id, filter}` envelope
 
 The submitter wraps the consumer's QueryFilter inside a `{model_id, filter}` envelope before storing. This preserves the schema_reference §5.2 intent ("`filter` holds the consumer QueryFilter") while letting the Chronicler hydrate `model_id` on claim without an extra column.
 
-`ExportJob` exposes `modelId` as a typed first-class field; `.filter` returns the original consumer payload unmodified, so a QueryFilter validator never has to peel out the engine's stamping.
+`ExportJob` exposes `modelId` as a typed first-class field; `.filter` returns the stored consumer payload unmodified, so a future QueryFilter validator never has to peel out the engine's stamping.
+
+The envelope shape is retained **even though `filter` is now always `[]`** — `ExportJobClaimer::extractModelId()` reads `model_id` out of it, and `Phase7TestCase::seedExportJob()` builds the same shape. Do not flatten it to a bare `model_id`.
 
 ## Reads and DTOs
 

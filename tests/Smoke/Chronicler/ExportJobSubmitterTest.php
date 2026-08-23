@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace StarDust\Tests\Smoke\Chronicler;
 
+use StarDust\Exception\ExportFilterNotSupportedException;
 use StarDust\Exception\ExportJobActiveCapExceededException;
 use StarDust\Exception\InvalidTenantIdException;
 use StarDust\Export\ExportJobRequest;
@@ -19,6 +20,76 @@ use StarDust\Tests\Smoke\Phase7TestCase;
  */
 final class ExportJobSubmitterTest extends Phase7TestCase
 {
+    /**
+     * A non-empty filter is refused rather than accepted and ignored.
+     *
+     * The Chronicler's pager selects on `tenant_id / model_id /
+     * deleted_at` only and never reads the stored filter back, so
+     * accepting one turned a request for a subset into a full extract of
+     * the model — silently, into an artifact the consumer keeps.
+     */
+    public function testNonEmptyFilterIsRejected(): void
+    {
+        $modelId = $this->createModel(1, 'filter_reject');
+        $this->createFieldNamed($modelId, 'k');
+
+        $this->expectException(ExportFilterNotSupportedException::class);
+        $this->makeExportSubmitter()->submit(new ExportJobRequest(
+            tenantId: 1,
+            modelId: $modelId,
+            format: 'csv',
+            filter: ['name' => ['eq' => 'Acme']],
+        ));
+    }
+
+    /**
+     * The guard sits before the transaction, the INSERT and the
+     * per-tenant cap probe, so a rejected request leaves no trace and
+     * costs the tenant nothing.
+     */
+    public function testRejectedFilterInsertsNoRowAndConsumesNoCapSlot(): void
+    {
+        $modelId = $this->createModel(1, 'filter_reject_atomic');
+        $this->createFieldNamed($modelId, 'k');
+
+        $logger = $this->makeRecordingLogger();
+        $submitter = $this->makeExportSubmitter($logger, perTenantActiveCap: 1);
+
+        try {
+            $submitter->submit(new ExportJobRequest(
+                tenantId: 1,
+                modelId: $modelId,
+                format: 'csv',
+                filter: ['anything' => 1],
+            ));
+            self::fail('Expected ExportFilterNotSupportedException.');
+        } catch (ExportFilterNotSupportedException $e) {
+            self::assertSame(1, $e->tenantId);
+            self::assertSame($modelId, $e->modelId);
+            self::assertSame(['anything'], $e->filterKeys);
+        }
+
+        $count = (int) $this->pdo
+            ->query('SELECT COUNT(*) FROM stardust_export_jobs')
+            ->fetchColumn();
+        self::assertSame(0, $count, 'A refused submission must insert nothing.');
+
+        self::assertSame(
+            [],
+            $this->recordsWithEvent($logger->records(), 'export_accepted'),
+            'A refused submission must not emit export_accepted.',
+        );
+
+        // The cap is 1; if the refusal had consumed a slot this would
+        // now throw ExportJobActiveCapExceededException instead.
+        $id = $submitter->submit(new ExportJobRequest(
+            tenantId: 1,
+            modelId: $modelId,
+            format: 'csv',
+        ));
+        self::assertGreaterThan(0, $id->jobId);
+    }
+
     public function testSubmitInsertsPendingRow(): void
     {
         $modelId = $this->createModel(1, 'submit');
@@ -31,7 +102,6 @@ final class ExportJobSubmitterTest extends Phase7TestCase
             tenantId: 1,
             modelId: $modelId,
             format: 'csv',
-            filter: ['extra' => 'value'],
         ));
 
         self::assertGreaterThan(0, $id->jobId);
@@ -43,11 +113,12 @@ final class ExportJobSubmitterTest extends Phase7TestCase
         self::assertNull($row['claimed_at']);
         self::assertNull($row['last_cursor']);
 
-        // Envelope shape: {model_id, filter} with the consumer's
-        // QueryFilter preserved verbatim under .filter.
+        // Envelope shape stays {model_id, filter} — ExportJobClaimer
+        // ::extractModelId() depends on it — with `filter` now always
+        // empty, since a non-empty one is refused at submission.
         $envelope = json_decode((string) $row['filter'], true);
         self::assertSame($modelId, $envelope['model_id']);
-        self::assertSame(['extra' => 'value'], $envelope['filter']);
+        self::assertSame([], $envelope['filter']);
 
         $accepted = $this->recordsWithEvent($logger->records(), 'export_accepted');
         self::assertCount(1, $accepted);

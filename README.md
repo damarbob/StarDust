@@ -163,7 +163,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 **Not yet available:**
 
 - **No delete for models or fields, and no model rename.** The rest of the definition layer is covered — `schemaBuilder()` registers, `listModels()` / `describeModel()` introspect, `renameField()` renames online, `retypeField()` changes a field's type online, and `promoteFieldToFilterable()` / `demoteFieldFromFilterable()` turn indexing on and off — but there is no entry point for renaming a *model*, or for removing a model or field. The practical workaround for an unwanted field is to demote it (which releases its slot); a JSON-only field occupies no slot, so leaving it behind costs you nothing but a key in the payload. Editing `stardust_models` / `stardust_fields` by hand is not supported, though foreign keys will at least refuse to drop a field that still holds a live slot, so a mistake there fails loudly rather than corrupting your slot inventory. A first-class definition API covering the full lifecycle is on the roadmap.
-- **Export predicate filtering is not applied.** `submitExport()` accepts a `filter` array, validates only the `format`, stores the filter verbatim, and the Chronicler then writes *every* non-deleted entry for the model. A filtered export request is not rejected — it silently produces a full extract, so treat the filter argument as reserved until this lands.
+- **Exports cannot be filtered.** An export always covers every non-deleted entry in the model. A `submitExport()` call carrying a non-empty `filter` is **rejected** with `ExportFilterNotSupportedException` rather than accepted and quietly ignored, so you find out at submission instead of discovering a full extract in the artifact. The argument is kept on the request DTO so filtering can be added later without a breaking signature change.
 - **No async import-job status reads.** `submitBulkWrite()` returns an `ImportJobId`, but there is no `getImportJob()` to resolve it (exports do have `getExportJob()`). The job itself does reach a terminal state — `completed` with a manifest, or `failed` with a `failed_reason` and a dead-letter row — so the information exists; there is simply no supported way to read it back. Query `stardust_import_jobs` directly if you need it before this lands.
 
 The remaining build sequence toward the v0.3.0 GA contract is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
@@ -738,11 +738,11 @@ use StarDust\Export\ExportJobRequest;
 // Submit an async export. The call enforces a per-tenant active-job
 // cap (default ≤ 3 pending+processing) inside one transaction; a 4th
 // concurrent submission throws ExportJobActiveCapExceededException.
-// Format is 'csv' or 'json'. The filter array is stored verbatim
-// for forward compatibility: the export pipeline currently consults
-// only model_id and exports every (non-deleted) entry for the model.
-// Predicate filtering of exports is not yet wired in — the search
-// driver's AST is not consulted by the Chronicler.
+// Format is 'csv' or 'json'. An export always covers every
+// (non-deleted) entry in the model: predicate filtering is not
+// implemented, so a non-empty filter is rejected outright with
+// ExportFilterNotSupportedException rather than silently ignored.
+// The argument stays on the DTO for a future implementation.
 $jobId = $engine->submitExport(new ExportJobRequest(
     tenantId: 42,
     modelId:  $modelId,
@@ -794,6 +794,7 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `FieldNotFoundException` | `retypeField()` / `promoteFieldToFilterable()` receive a field id that doesn't exist for the tenant. |
 | `NonFilterableFieldSlotException` | A slot reservation was attempted for a non-filterable field. Such fields live in the JSON payload only and never occupy a slot, so this signals a caller bug rather than a capacity problem — distinct from `FieldNotFilterableException`, which rejects a *query* that filters on one. |
 | `ExportJobActiveCapExceededException` | A tenant is already at its active-export cap (carries `$tenantId`, `$activeCount`, `$cap`). |
+| `ExportFilterNotSupportedException` | `submitExport()` was given a non-empty `filter`; exports cover the whole model (carries `$tenantId`, `$modelId`, `$filterKeys`). |
 
 ### Handling wire-format rejections
 

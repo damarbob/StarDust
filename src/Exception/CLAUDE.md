@@ -52,6 +52,7 @@ All typed errors extend `RuntimeException`.
 ## Phase 7 — exports
 
 - `ExportJobActiveCapExceededException` — submission API; the tenant already has `chroniclerPerTenantActiveCap` active jobs in pending/processing. Carries `tenantId` + `activeCount` + `cap`.
+- `ExportFilterNotSupportedException` — submission API; the request carried a non-empty `filter`. Export predicate filtering is not implemented, and the previous behaviour was to accept the filter, store it and ignore it, so a request for a subset silently produced a full extract. Carries `tenantId` + `modelId` + `filterKeys` (top-level keys only, so an HTTP layer can name what it rejected without echoing back a payload of unknown size). Thrown before any SQL, so a refused submission inserts nothing and consumes no cap slot.
 - `ChroniclerRowEncodingException` — internal. `ArtifactStream` raises it on per-row encoding failure; the processor catches it, charges `skip_count++`, and emits `row_skipped` with the closed-taxonomy `reason: format_invalid | unrepresentable_codepoint`.
 - `ChroniclerArtifactDiskFullException` — internal. Raised on `ENOSPC` / short-write; the processor catches it, marks `failed:disk_full`, and emits `job_failed{reason:disk_full}`.
 
