@@ -128,7 +128,7 @@ nb-configuration.xml
 /results/
 /phpunit*.xml
 
-# PHPStan: commit phpstan.neon.dist + phpstan-baseline.neon; ignore local override
+# PHPStan: commit phpstan.neon.dist; ignore local override. There is deliberately no baseline file.
 /phpstan.neon
 
 #-------------------------
