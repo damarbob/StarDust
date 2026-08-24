@@ -80,14 +80,19 @@ final class RenameInitiator
             );
         }
 
-        $this->assertNameAvailable($field['model_id'], $fieldId, $newName);
-
         $now = $this->clock->now()
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
 
         $this->pdo->beginTransaction();
         try {
+            // Inside the transaction, not before it: the check
+            // takes a FOR UPDATE lock, and in autocommit that lock
+            // would be released the instant the SELECT finished,
+            // leaving nothing to stop a concurrent initiator
+            // claiming the same name between check and UPDATE.
+            $this->assertNameAvailable($field['model_id'], $fieldId, $newName);
+
             $update = $this->pdo->prepare(
                 'UPDATE stardust_fields'
                 . ' SET name = ?, previous_name = ?, updated_at = ?'
@@ -134,7 +139,9 @@ final class RenameInitiator
      * `y`'s value on every row the first backfill has not yet reached.
      *
      * `FOR UPDATE` because the check and the write must not interleave
-     * with a concurrent initiator; the unique index remains the
+     * with a concurrent initiator — which only holds because the caller
+     * runs this INSIDE its transaction; in autocommit the lock would be
+     * dropped at the end of the SELECT; the unique index remains the
      * backstop for the current-name half.
      */
     private function assertNameAvailable(int $modelId, int $fieldId, string $newName): void
