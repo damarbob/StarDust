@@ -7,8 +7,10 @@ namespace StarDust\Schema;
 use DateTimeZone;
 use InvalidArgumentException;
 use PDO;
+use PDOException;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Exception\FieldDeletionInProgressException;
 use Throwable;
 
 /**
@@ -182,10 +184,23 @@ final class SchemaBuilder
         return (int) $this->pdo->lastInsertId();
     }
 
+    /**
+     * `deleted_at IS NULL` is load-bearing, not hygiene.
+     *
+     * This method is the get-or-create half of `defineField()`. Without
+     * the predicate it would hand back the id of a field whose ADR 0037
+     * deletion is in flight — so a caller re-registering the name would
+     * silently adopt a field whose values are actively being erased from
+     * every payload, and whose registry row is about to be dropped
+     * outright by the purge's final chunk. Missing here is what routes
+     * the caller to `insertField()`, where the unique index turns it
+     * into a typed error.
+     */
     private function findFieldId(int $modelId, string $name): ?int
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM stardust_fields WHERE model_id = ? AND name = ?'
+            'SELECT id FROM stardust_fields'
+            . ' WHERE model_id = ? AND name = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$modelId, $name]);
         $id = $stmt->fetchColumn();
@@ -193,6 +208,10 @@ final class SchemaBuilder
         return $id === false ? null : (int) $id;
     }
 
+    /**
+     * @throws FieldDeletionInProgressException when the name is still held by a field
+     *                                          whose ADR 0037 purge has not finished
+     */
     private function insertField(int $modelId, FieldDefinition $field, string $now): int
     {
         $stmt = $this->pdo->prepare(
@@ -200,16 +219,56 @@ final class SchemaBuilder
             . ' (model_id, name, declared_type, is_filterable, created_at, updated_at)'
             . ' VALUES (?, ?, ?, ?, ?, ?)'
         );
-        $stmt->execute([
-            $modelId,
-            $field->name,
-            $field->declaredType,
-            $field->isFilterable ? 1 : 0,
-            $now,
-            $now,
-        ]);
+
+        try {
+            $stmt->execute([
+                $modelId,
+                $field->name,
+                $field->declaredType,
+                $field->isFilterable ? 1 : 0,
+                $now,
+                $now,
+            ]);
+        } catch (PDOException $e) {
+            // `ux_fields_model_name` is unconditional, so a field being
+            // deleted still holds its name until the purge lands.
+            // `findFieldId()` above deliberately did not see it, so the
+            // only way to reach errno 1062 on this model+name is a
+            // deletion in flight (or a concurrent insert of the same
+            // name, which wants to fail here too).
+            if ($this->isDuplicateEntry($e) && $this->nameHeldByDeletedField($modelId, $field->name)) {
+                throw new FieldDeletionInProgressException(sprintf(
+                    "Field '%s' on model %d is being deleted; its name cannot be reused"
+                    . ' until the payload purge completes. Run a reconciler to finish it.',
+                    $field->name,
+                    $modelId,
+                ));
+            }
+            throw $e;
+        }
 
         return (int) $this->pdo->lastInsertId();
+    }
+
+    private function nameHeldByDeletedField(int $modelId, string $name): bool
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT 1 FROM stardust_fields'
+            . ' WHERE model_id = ? AND name = ? AND deleted_at IS NOT NULL'
+            . ' LIMIT 1'
+        );
+        $stmt->execute([$modelId, $name]);
+
+        return $stmt->fetchColumn() !== false;
+    }
+
+    private function isDuplicateEntry(PDOException $e): bool
+    {
+        $info = $e->errorInfo;
+        if (is_array($info) && isset($info[1]) && (int) $info[1] === 1062) {
+            return true;
+        }
+        return str_contains($e->getMessage(), '1062');
     }
 
     private function bumpSchemaVersion(string $now): void

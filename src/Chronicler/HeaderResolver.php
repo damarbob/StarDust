@@ -31,7 +31,10 @@ final class HeaderResolver
         $stmt = $this->pdo->prepare(
             'SELECT f.name FROM stardust_fields f'
             . ' INNER JOIN stardust_models m ON m.id = f.model_id'
-            . ' WHERE f.model_id = ? AND m.tenant_id = ?'
+            // ADR 0037: a field being deleted drops out of the header
+            // immediately, so a CSV artifact never carries a column for
+            // a field the registry has already severed.
+            . ' WHERE f.model_id = ? AND m.tenant_id = ? AND f.deleted_at IS NULL'
             . ' ORDER BY f.name ASC'
         );
         $stmt->execute([$modelId, $tenantId]);
@@ -66,6 +69,9 @@ final class HeaderResolver
             . ' INNER JOIN stardust_models m ON m.id = f.model_id'
             . ' WHERE f.model_id = ? AND m.tenant_id = ?'
             . '   AND f.previous_name IS NOT NULL'
+            // Consistency with resolve() above: a field excluded from
+            // the header needs no alias.
+            . '   AND f.deleted_at IS NULL'
         );
         $stmt->execute([$modelId, $tenantId]);
 

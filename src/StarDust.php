@@ -37,6 +37,10 @@ use StarDust\Read\Entry;
 use StarDust\Read\EntryPage;
 use StarDust\Read\EntryQuery;
 use StarDust\Read\SchemaVersionCache;
+use StarDust\Delete\DeleteCheckpointRepository;
+use StarDust\Delete\DeleteFieldInitiator;
+use StarDust\Delete\DeletePurgeExecutor;
+use StarDust\Delete\DeletePurgeWorkSource;
 use StarDust\Reconciler\DlqReplayer;
 use StarDust\Reconciler\DlqWriter;
 use StarDust\Reconciler\ImportJobWorkSource;
@@ -65,6 +69,7 @@ use StarDust\Search\PreFlight\ValueTypeValidator;
 use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchResult;
 use StarDust\Search\SearchService;
+use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
@@ -107,11 +112,13 @@ final class StarDust
     private ?BackfillExecutor $backfillExecutor = null;
     private ?PollLoop $pollLoop = null;
     private ?SlotReserver $slotReserver = null;
+    private ?LiveSlotTombstoner $liveSlotTombstoner = null;
     private ?CardinalitySampler $cardinalitySampler = null;
     private ?SpreadSampler $spreadSampler = null;
     private ?RetypeInitiator $retypeInitiator = null;
     private ?RenameInitiator $renameInitiator = null;
     private ?ModelRenamer $modelRenamer = null;
+    private ?DeleteFieldInitiator $deleteFieldInitiator = null;
     private ?CompactionService $compactionService = null;
     private ?ExportJobSubmitter $exportSubmitter = null;
     private ?SchemaBuilder $schemaBuilder = null;
@@ -434,6 +441,57 @@ final class StarDust
     }
 
     /**
+     * Delete a field. Returns as soon as the registry is updated; the
+     * removal of the field's values from stored entries is asynchronous
+     * and **needs a running Reconciler** (`bin/stardust reconciler`).
+     *
+     * The field is gone from every first-class surface the moment this
+     * returns: `read()`, `search()`, `get()` and `describeModel()` stop
+     * reporting it, filters against it raise `UnknownFieldException`,
+     * new CSV exports omit its column, and writes still sending its name
+     * silently drop the value. Any index slot it held is released for
+     * reuse on the Liberator's own schedule.
+     *
+     * What lags is the stored data. Each entry's JSON payload is keyed
+     * by field name, so removing a field is a rewrite of every entry in
+     * the model rather than a registry update. Until the Reconciler
+     * finishes that pass the values are still physically present in
+     * `entry_data` — invisible through the API, but visible in a raw
+     * table dump and in the JSON artifact of an export that runs during
+     * the window. The field's registry row is deleted last, as the final
+     * step of the rewrite, which is the signal that the deletion is
+     * complete.
+     *
+     * **The field's name is not reusable until then.** Registering a new
+     * field with the same name on the same model raises
+     * {@see \StarDust\Exception\FieldDeletionInProgressException} rather
+     * than silently adopting the old one.
+     *
+     * A field cannot be deleted while it is being renamed or retyped —
+     * finish or fail that first. Conversely, once deletion starts, the
+     * field cannot be renamed, retyped, promoted, demoted, or compacted.
+     *
+     * There is no undelete.
+     *
+     * @return bool `true` iff this call initiated a deletion; `false`
+     *              when there was nothing to do — the field does not
+     *              exist, belongs to another tenant, or is already being
+     *              deleted. Deliberately indistinguishable, and
+     *              deliberately not an exception: a repeated delete has
+     *              already achieved what the caller wanted. Matches
+     *              {@see self::deleteEntry()}.
+     *
+     * @throws \StarDust\Exception\InvalidTenantIdException
+     * @throws \StarDust\Exception\RenameInProgressException a rename backfill is running
+     * @throws \StarDust\Exception\RetypeInProgressException a retype backfill is running
+     */
+    public function deleteField(int $tenantId, int $fieldId): bool
+    {
+        TenantId::assertValid($tenantId);
+        return $this->deleteFieldInitiator()->initiate($tenantId, $fieldId);
+    }
+
+    /**
      * Every model registered for this tenant.
      *
      * Read-only, lock-free, and safe to call per request.
@@ -499,9 +557,15 @@ final class StarDust
 
     /**
      * Phase 5 reconciliation daemon (multi-worker safe). Drains
-     * `stardust_sync_queue` and `stardust_import_jobs` via two
+     * `stardust_sync_queue`, `stardust_import_jobs`, retype backfills,
+     * ADR 0036 rename rewrites and ADR 0037 deletion purges via five
      * {@see \StarDust\Reconciler\ReconcilerWorkSource} implementations
      * ticked round-robin under one chunk correlation id per tick.
+     *
+     * The order is observable in event streams, so **new sources append
+     * rather than insert**. Ordering between the three backfill sources
+     * is immaterial: each field lifecycle refuses to start while another
+     * is running, so no two can ever contend for the same field.
      */
     public function reconciler(): Reconciler
     {
@@ -563,8 +627,27 @@ final class StarDust
             chunkSize: $this->config->reconcilerChunkSize,
         );
 
+        // Fifth, appended for the same reason the fourth was: the
+        // round-robin order is observable in event streams, and the
+        // backfill sources are mutually exclusive per field anyway
+        // because each lifecycle refuses to start while another runs.
+        $deletePurge = new DeletePurgeWorkSource(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            repository: new DeleteCheckpointRepository($this->config->pdo),
+            executor: new DeletePurgeExecutor(pdo: $this->config->pdo),
+            chunkSize: $this->config->reconcilerChunkSize,
+        );
+
         return new Reconciler(
-            workSources: [$syncQueue, $importJobs, $retypeBackfill, $renameBackfill],
+            workSources: [
+                $syncQueue,
+                $importJobs,
+                $retypeBackfill,
+                $renameBackfill,
+                $deletePurge,
+            ],
             capacityWaitMillis: $this->config->reconcilerCapacityWaitMillis,
             interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
         );
@@ -942,6 +1025,7 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             slotReserver: $this->slotReserver(),
+            tombstoner: $this->liveSlotTombstoner(),
             checkpointRepository: new RetypeCheckpointRepository($this->config->pdo),
             renameCheckpointRepository: new RenameCheckpointRepository($this->config->pdo),
         );
@@ -956,6 +1040,24 @@ final class StarDust
             renameCheckpoints: new RenameCheckpointRepository($this->config->pdo),
             retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
         );
+    }
+
+    private function deleteFieldInitiator(): DeleteFieldInitiator
+    {
+        return $this->deleteFieldInitiator ??= new DeleteFieldInitiator(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            tombstoner: $this->liveSlotTombstoner(),
+            deleteCheckpoints: new DeleteCheckpointRepository($this->config->pdo),
+            renameCheckpoints: new RenameCheckpointRepository($this->config->pdo),
+            retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
+        );
+    }
+
+    private function liveSlotTombstoner(): LiveSlotTombstoner
+    {
+        return $this->liveSlotTombstoner ??= new LiveSlotTombstoner($this->config->pdo);
     }
 
     private function modelRenamer(): ModelRenamer

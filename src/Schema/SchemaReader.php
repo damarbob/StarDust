@@ -118,7 +118,10 @@ final class SchemaReader
             . ' FROM stardust_fields f'
             . ' LEFT JOIN stardust_slot_assignments a'
             . "   ON a.field_id = f.id AND a.status IN ({$placeholders})"
-            . ' WHERE f.model_id = ?'
+            // ADR 0037: a field being deleted is gone as far as
+            // introspection is concerned. Its registry row only survives
+            // so the Reconciler can find its name to purge.
+            . ' WHERE f.model_id = ? AND f.deleted_at IS NULL'
             . ' ORDER BY f.id'
         );
         $stmt->execute(array_merge(self::QUERYABLE_STATUSES, [$modelId]));

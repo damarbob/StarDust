@@ -51,7 +51,12 @@ final class PendingDemandReader
         $stmt = $this->pdo->prepare(
             'SELECT f.declared_type AS declared_type, COUNT(*) AS waiters'
             . ' FROM stardust_fields f'
-            . ' WHERE f.is_filterable = 1'
+            // ADR 0037 clears `is_filterable` when a deletion starts, so
+            // the predicate below already excludes a deleting field. The
+            // explicit `deleted_at` check is here because the
+            // consequence of missing one is the Watcher provisioning a
+            // whole page of capacity for a field that is being erased.
+            . ' WHERE f.is_filterable = 1 AND f.deleted_at IS NULL'
             . '   AND NOT EXISTS ('
             . '     SELECT 1 FROM stardust_slot_assignments a'
             . "      WHERE a.field_id = f.id AND a.status IN ({$placeholders})"

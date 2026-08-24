@@ -8,7 +8,7 @@ Injecting a custom PSR-3 logger transfers ADR 0020 conformance to the caller.
 
 ## The closed event vocabulary
 
-**Adding a new event name requires updating ADR 0020**, or `tests/Smoke/EventVocabularyTest` fails. That test greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`, `src/Retype/`, `src/Chronicler/`, `src/Export/`, `src/Search/`, and `src/Filter/` for `'event' => '...'` literals and asserts the union is a subset of the allowlist. Each source's allowlist is enforced independently, which is why the same name can legitimately appear under two sources.
+**Adding a new event name requires updating ADR 0020**, or `tests/Smoke/EventVocabularyTest` fails. That test greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`, `src/Retype/`, `src/Rename/`, `src/Delete/`, `src/Compaction/`, `src/Write/`, `src/Chronicler/`, `src/Export/`, `src/Search/`, and `src/Filter/` for `'event' => '...'` literals and asserts the union is a subset of the allowlist. Each source's allowlist is enforced independently, which is why the same name can legitimately appear under two sources.
 
 | Phase | Events | Source |
 | :-- | :-- | :-- |
@@ -24,7 +24,8 @@ Injecting a custom PSR-3 logger transfers ADR 0020 conformance to the caller.
 | 7 | `job_claimed`, `chunk_written`, `deadlock_retry`, `chunk_skipped`, `row_skipped`, `lease_lost`, `low_disk`, `artifact_oversized`, `job_complete`, `job_failed`, `gc_swept` | `chronicler` |
 | 7 | `export_accepted` | `export_api` |
 | 8 | `search_request`, `capability_unsupported` | `api` |
-| — | `rename_started`, `rename_complete` (ADR 0036) | `registry` |
+| — | `rename_started`, `rename_complete` (ADR 0036), `model_renamed` | `registry` |
+| — | `delete_started`, `delete_complete` (ADR 0037) | `registry` |
 
 ### Names deliberately shared across sources
 
@@ -43,6 +44,10 @@ The `source` field is the disambiguator in every case below — do not rename to
 `capability_unsupported` is deliberately distinct from the generic `pre_flight_rejected` so operators can metric "consumer asked for a feature this driver doesn't service" separately.
 
 `FieldRefResolver` / `CapabilityChecker` / `ValueTypeValidator` otherwise reuse `pre_flight_rejected` with a widened `reason` discriminator covering the new pre-flight codes: `field_unknown`, `field_not_filterable`, `value_type_mismatch`, `value_out_of_bounds`.
+
+### `delete_complete` is the only event that reports a registry row removal
+
+The ADR 0037 purge reuses the `reconciler` chunk vocabulary with `queue: 'delete_purge'` and adds exactly two registry names, following the `rename_*` pair because a delete has the same synchronous/asynchronous split — an operator needs to tell "severed, still draining" from "gone". It is not folded into a shared `backfill_complete` precisely because of what it reports: `rename_complete` and `promote_to_ready` describe a field that still exists, and this one describes a `stardust_fields` row that no longer does. Per-chunk counts ride as `rows_scanned` / `rows_purged` fields on `chunk_complete`.
 
 ### `rename_complete` is not `promote_to_ready`
 

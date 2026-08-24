@@ -134,17 +134,23 @@ final class MysqlNativeDriver implements EntrySearchInterface
         // ahead of it — inconsistent between two entries of the same
         // model, and inconsistent with read() on the very same entry.
         //
+        // ADR 0037 adds the mirror case: a field whose deletion has
+        // committed is excluded from the snapshot outright, so read()
+        // has already stopped returning it while the values are still
+        // physically present for the length of the purge. Without the
+        // strip, get() would keep serving a field read() denies exists.
+        //
         // This costs a schema-version probe that get() did not
         // previously pay, which is a deliberate trade: read() pays it on
         // every call, ADR 0015 designs it to be sub-millisecond, and the
-        // rewrite itself is gated behind one precomputed boolean so the
+        // rewrite itself is gated behind precomputed booleans so the
         // steady state is a no-op.
         $snapshot = $this->cache->snapshotForModel(
             $modelId,
             $tenantId,
             UuidV4::generate(),
         );
-        if ($snapshot->hasRenamesInFlight()) {
+        if ($snapshot->hasRenamesInFlight() || $snapshot->hasPendingDeletions()) {
             $fields = $snapshot->canonicalisePayloadKeys($fields);
         }
 
@@ -172,7 +178,11 @@ final class MysqlNativeDriver implements EntrySearchInterface
             . ' FROM stardust_fields f'
             . ' LEFT JOIN stardust_slot_assignments a'
             . "   ON a.field_id = f.id AND a.status IN ('assigned','backfilling','ready','tombstoned')"
-            . ' WHERE f.id = ?'
+            // ADR 0037: redundant today, since the deletion clears
+            // `is_filterable` and the check below already returns false.
+            // Kept explicit so this cannot silently start answering
+            // `true` if that clearing is ever moved.
+            . ' WHERE f.id = ? AND f.deleted_at IS NULL'
         );
         $stmt->execute([$fieldId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);

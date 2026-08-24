@@ -121,7 +121,14 @@ final class UnmappedFieldReserver
         $stmt = $this->pdo->prepare(
             'SELECT f.id FROM stardust_fields f'
             . ' JOIN entry_data e ON e.model_id = f.model_id'
-            . " WHERE e.id = ? AND f.is_filterable = 1 AND f.name IN ({$placeholders})"
+            // ADR 0037: `deleted_at IS NULL` matters more here than the
+            // `is_filterable` clause it sits beside. Reserving a slot for
+            // a field being deleted would re-take the RESTRICT foreign
+            // key its initiator just released, and the purge's final
+            // DELETE would then fail with errno 1451 — permanently,
+            // since nothing retries it.
+            . ' WHERE e.id = ? AND f.is_filterable = 1 AND f.deleted_at IS NULL'
+            . "   AND f.name IN ({$placeholders})"
         );
         $stmt->execute(array_merge([$entryId], $fieldNames));
 

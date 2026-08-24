@@ -7,6 +7,10 @@ namespace StarDust\Tests\Smoke;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use StarDust\Clock\SystemClock;
+use StarDust\Delete\DeleteCheckpointRepository;
+use StarDust\Delete\DeleteFieldInitiator;
+use StarDust\Delete\DeletePurgeExecutor;
+use StarDust\Delete\DeletePurgeWorkSource;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Rename\RenameBackfillExecutor;
 use StarDust\Rename\RenameBackfillWorkSource;
@@ -16,6 +20,7 @@ use StarDust\Retype\RetypeBackfillExecutor;
 use StarDust\Retype\RetypeBackfillWorkSource;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Retype\RetypeInitiator;
+use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CardinalitySampler;
 use StarDust\Write\SlotRowUpserter;
@@ -43,9 +48,83 @@ abstract class Phase6bTestCase extends Phase6aTestCase
                 clock: new SystemClock(),
                 logger: $log,
             ),
+            tombstoner: new LiveSlotTombstoner($this->pdo),
             checkpointRepository: new RetypeCheckpointRepository($this->pdo),
             renameCheckpointRepository: new RenameCheckpointRepository($this->pdo),
         );
+    }
+
+    protected function makeDeleteFieldInitiator(?LoggerInterface $logger = null): DeleteFieldInitiator
+    {
+        return new DeleteFieldInitiator(
+            pdo: $this->pdo,
+            clock: new SystemClock(),
+            logger: $logger ?? new NullLogger(),
+            tombstoner: new LiveSlotTombstoner($this->pdo),
+            deleteCheckpoints: new DeleteCheckpointRepository($this->pdo),
+            renameCheckpoints: new RenameCheckpointRepository($this->pdo),
+            retypeCheckpoints: new RetypeCheckpointRepository($this->pdo),
+        );
+    }
+
+    protected function makeDeletePurgeWorkSource(
+        ?LoggerInterface $logger = null,
+        int $chunkSize = 500,
+    ): DeletePurgeWorkSource {
+        return new DeletePurgeWorkSource(
+            pdo: $this->pdo,
+            clock: new SystemClock(),
+            logger: $logger ?? new NullLogger(),
+            repository: new DeleteCheckpointRepository($this->pdo),
+            executor: new DeletePurgeExecutor(pdo: $this->pdo),
+            chunkSize: $chunkSize,
+        );
+    }
+
+    /**
+     * Drives exactly one delete-purge tick. Deliberately not routed
+     * through the full Reconciler so a test can stop the drain
+     * half-purged and inspect the window.
+     */
+    protected function runDeleteTick(
+        ?LoggerInterface $logger = null,
+        int $chunkSize = 500,
+    ): \StarDust\Reconciler\TickOutcome {
+        return $this->makeDeletePurgeWorkSource($logger, $chunkSize)
+            ->tickOne('test-delete-' . bin2hex(random_bytes(4)));
+    }
+
+    /** @return array{id: int, status: string, last_processed_id: int}|null */
+    protected function fetchDeleteCheckpointForField(int $fieldId): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, status, last_processed_id FROM backfill_checkpoints WHERE job_name = ?'
+        );
+        $stmt->execute([DeleteCheckpointRepository::jobNameFor($fieldId)]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return null;
+        }
+        return [
+            'id'                => (int) $row['id'],
+            'status'            => (string) $row['status'],
+            'last_processed_id' => (int) $row['last_processed_id'],
+        ];
+    }
+
+    /**
+     * The nullable counterpart to {@see self::fetchFieldRow()}, which
+     * asserts the row exists and so cannot express "gone". A delete test
+     * needs to assert exactly that.
+     *
+     * @return array<string, mixed>|null
+     */
+    protected function fetchFieldRowOrNull(int $fieldId): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM stardust_fields WHERE id = ?');
+        $stmt->execute([$fieldId]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        return $row === false ? null : $row;
     }
 
     protected function makeRenameInitiator(?LoggerInterface $logger = null): RenameInitiator

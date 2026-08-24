@@ -474,8 +474,15 @@ final class SlotReserver
      */
     private function resolveReservableField(int $fieldId): array
     {
+        // `deleted_at IS NULL` is defence in depth, not the primary
+        // guard: ADR 0037's initiator clears `is_filterable` in the same
+        // UPDATE that sets `deleted_at`, so the check below would reject
+        // a deleting field anyway. Reserving it would re-take the
+        // RESTRICT foreign key and block the purge's final DELETE, which
+        // is a bad enough outcome to be worth defending twice.
         $stmt = $this->pdo->prepare(
-            'SELECT declared_type, is_filterable, model_id FROM stardust_fields WHERE id = ?'
+            'SELECT declared_type, is_filterable, model_id FROM stardust_fields'
+            . ' WHERE id = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$fieldId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);

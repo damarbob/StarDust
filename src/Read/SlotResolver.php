@@ -39,6 +39,7 @@ final class SlotResolver
             . '       f.declared_type AS declared_type,'
             . '       f.is_filterable AS is_filterable,'
             . '       f.previous_name AS previous_name,'
+            . '       f.deleted_at    AS deleted_at,'
             . '       a.slot_column   AS slot_column,'
             . '       a.status        AS slot_status,'
             . '       a.page_id       AS page_id'
@@ -53,8 +54,23 @@ final class SlotResolver
         $byName = [];
         /** @var array<int, true> $pageIdsSeen */
         $pageIdsSeen = [];
+        /** @var list<string> $pendingDeletionNames */
+        $pendingDeletionNames = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $name = (string) $row['field_name'];
+
+            // ADR 0037: the row outlives the registry mapping so the
+            // purge can find the field's name, but the mapping itself
+            // is severed at initiation. Excluding the descriptor is
+            // what makes `read()` stop returning the field and filters
+            // raise `UnknownFieldException` from the moment the delete
+            // commits. The name is still carried so the point read can
+            // strip the key from payloads the purge has not reached.
+            if ($row['deleted_at'] !== null) {
+                $pendingDeletionNames[] = $name;
+                continue;
+            }
+
             $pageId = $row['page_id'] === null ? null : (int) $row['page_id'];
             if ($pageId !== null) {
                 $pageIdsSeen[$pageId] = true;
@@ -80,6 +96,7 @@ final class SlotResolver
             capturedAtUnixTs: time(),
             fieldsByName: $byName,
             pageTableNames: $pageTableNames,
+            pendingDeletionNames: $pendingDeletionNames,
         );
     }
 

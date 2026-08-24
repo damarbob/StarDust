@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Exception\FieldDeletionInProgressException;
 use StarDust\Exception\FieldNameConflictException;
 use StarDust\Exception\FieldNotFoundException;
 use StarDust\Exception\RenameInProgressException;
@@ -147,7 +148,7 @@ final class RenameInitiator
     private function assertNameAvailable(int $modelId, int $fieldId, string $newName): void
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, name, previous_name FROM stardust_fields'
+            'SELECT id, name, previous_name, deleted_at FROM stardust_fields'
             . ' WHERE model_id = ? AND id <> ? AND (name = ? OR previous_name = ?)'
             . ' LIMIT 1 FOR UPDATE'
         );
@@ -156,6 +157,20 @@ final class RenameInitiator
 
         if ($clash === false) {
             return;
+        }
+
+        // ADR 0037: `ux_fields_model_name` is unconditional, so a field
+        // being deleted still holds its name until the purge lands.
+        // Reported as a deletion rather than a plain conflict because
+        // the two need different responses: a conflict means pick
+        // another name, this means wait for the Reconciler.
+        if ($clash['deleted_at'] !== null) {
+            throw new FieldDeletionInProgressException(sprintf(
+                "Field name '%s' is held by field %d, which is being deleted;"
+                . ' the name cannot be reused until its payload purge completes.',
+                $newName,
+                (int) $clash['id'],
+            ));
         }
 
         $reason = ((string) $clash['name'] === $newName)
@@ -172,7 +187,7 @@ final class RenameInitiator
     private function loadField(int $tenantId, int $fieldId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT f.name, f.model_id, m.tenant_id'
+            'SELECT f.name, f.model_id, f.deleted_at, m.tenant_id'
             . ' FROM stardust_fields f'
             . ' JOIN stardust_models m ON m.id = f.model_id'
             . ' WHERE f.id = ?'
@@ -186,6 +201,17 @@ final class RenameInitiator
         if ((int) $row['tenant_id'] !== $tenantId) {
             throw new FieldNotFoundException(
                 "Field {$fieldId} does not belong to tenant {$tenantId}."
+            );
+        }
+        // ADR 0037, the third lifecycle. Keyed on the registry column
+        // rather than the checkpoint, so it still fires for a field
+        // whose purge checkpoint was manually failed or deleted. It also
+        // precedes the same-name no-op below on purpose: re-issuing a
+        // rename against a field that is being deleted is a mistake
+        // worth reporting, not a no-op worth swallowing.
+        if ($row['deleted_at'] !== null) {
+            throw new FieldDeletionInProgressException(
+                "Field {$fieldId} is being deleted; it cannot be renamed."
             );
         }
 

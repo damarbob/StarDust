@@ -48,6 +48,14 @@ All typed errors extend `RuntimeException`.
 - `ModelNotFoundException` — a public model-level entry point got a `model_id` that does not resolve for the caller's tenant. Missing and cross-tenant are **deliberately indistinguishable**, same reasoning as `EntryNotFoundException` and `FieldNotFoundException`: separating them would let a caller probe another tenant's model ids. Note `SchemaReader::describeModel()` deliberately returns `null` instead — introspection asking "does this exist?" is a question, whereas a mutation naming a model that isn't there is a mistake.
 - `ModelNameConflictException` — a model rename would collide with another model's name in the same tenant. `ux_models_tenant_name` is the backstop; the explicit pre-check exists to turn errno 1062 into a typed error. **Deliberately simpler than `FieldNameConflictException`**, which additionally guards `previous_name` because a field rename keeps its old name live during the payload backfill. A model rename has no such window, so only the current-name collision can arise.
 
+## ADR 0037 — field deletion
+
+- `FieldDeletionInProgressException` — something targeted a field whose `stardust_fields.deleted_at` is non-null: the deletion is committed but the payload purge has not finished. Two callers, two reasons. The **lifecycle guards** (`RenameInitiator`, and `RetypeInitiator::loadField()` so `compactModel()` inherits it) raise it because a field may have at most one lifecycle in flight. **`SchemaBuilder::defineField()`** raises it because `ux_fields_model_name` is unconditional, so a deleting field still holds its name — and the get-or-create lookup must not silently hand back the id of a field whose values are being erased and whose row is about to be dropped.
+
+  **Keyed on the registry column, not a checkpoint row**, unlike `RenameInProgressException` / `RetypeInProgressException`. That is deliberate: it still fires for a field whose purge checkpoint was manually failed or deleted, where a checkpoint-keyed guard would silently pass.
+
+  Note `deleteField()` itself throws *nothing* for the symmetric case — a delete against an already-deleting field returns `false`, matching `deleteEntry()`'s idempotence. The exception is for the other operations.
+
 ## ADR 0034
 
 - `NonFilterableFieldSlotException` — slot reservation attempted for a field whose `is_filterable` is false. Raised by all three `SlotReserver` entry points before any row is touched.

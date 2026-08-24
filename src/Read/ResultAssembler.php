@@ -54,6 +54,21 @@ final class ResultAssembler
     ): array {
         $fieldNames = $selectFields ?? array_keys($snapshot->fieldsByName);
 
+        // ADR 0037: `$selectFields` is caller-supplied and is not
+        // validated against the snapshot, so it is the one way a
+        // deleted field's name can re-enter this loop after
+        // `SlotResolver` excluded it. Without this filter an explicit
+        // `selectFields: ['colour']` would fall through to the payload
+        // branch below and hand back the residual value for every row
+        // the purge has not yet reached — the field would read as gone
+        // through a default read and present through an explicit one.
+        //
+        // Dropped rather than nulled, so the key set matches a default
+        // read and `get()`.
+        if ($selectFields !== null && $snapshot->hasPendingDeletions()) {
+            $fieldNames = array_values(array_diff($fieldNames, $snapshot->pendingDeletionNames));
+        }
+
         $out = [];
         foreach ($rows as $row) {
             $payload = $this->decodePayload($row['fields_json'] ?? 'null');

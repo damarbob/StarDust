@@ -46,6 +46,7 @@ final class Bootstrapper
         $this->ensureSlotAssignmentSweepGapColumn();
         $this->ensureBackfillCheckpointsSourceTypeColumn();
         $this->ensureFieldsPreviousNameColumn();
+        $this->ensureFieldsDeletedAtColumn();
         $this->seedSchemaVersionSingleton();
     }
 
@@ -463,6 +464,52 @@ final class Bootstrapper
             $this->pdo->exec(<<<'SQL'
                 ALTER TABLE stardust_fields
                     ADD COLUMN previous_name VARCHAR(128) NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * ADR 0037: a field's values live in `entry_data.fields` under its
+     * name (ADR 0036), so deleting a field is a payload rewrite over
+     * every entry in the model — not a registry DELETE. The registry row
+     * has to outlive the purge, because the purge work source needs the
+     * field's name, model and tenant to build its JSON path and
+     * `backfill_checkpoints` has nowhere to put them.
+     *
+     * `deleted_at` is what keeps that row alive without letting anything
+     * see it: **a non-null value means exactly "a deletion is in flight
+     * for this field"**, and every registry reader excludes it from that
+     * moment on. The row is hard-deleted by the final purge chunk, so
+     * this is a marker for the drain window, not a soft-delete tier —
+     * there is no undelete and nothing retains it afterwards.
+     *
+     * Deliberately the same shape as `previous_name` above, for the same
+     * reason: `SlotResolver` and `LiveSlotMap` already SELECT this table
+     * with no join, so the predicate costs them nothing.
+     *
+     * Nullable, and null in steady state.
+     */
+    private function ensureFieldsDeletedAtColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_fields'
+              AND column_name = 'deleted_at'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_fields
+                    ADD COLUMN deleted_at DATETIME NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
             if (! $this->isDuplicateFieldName($e)) {

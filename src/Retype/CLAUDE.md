@@ -24,7 +24,9 @@ The *trigger* decides what changes on `stardust_fields`. Whether the **target** 
 
 **Non-filterable target** (retype of a JSON-only field, or a `true → false` demotion) — **registry-only**: update, tombstone a grandfathered legacy slot if one exists, bump, stop. No reservation, no checkpoint, nothing for the Reconciler to claim. The JSON payload is authoritative per ADR 0013, and on demotion reads fall straight back to `JSON_EXTRACT`.
 
-Under ADR 0034 a promotion normally has *no* old slot to tombstone; `tombstoneLiveSlot()` already returned `null` cleanly for that case, so no new code was needed.
+Under ADR 0034 a promotion normally has *no* old slot to tombstone; the tombstoner already returned `null` cleanly for that case, so no new code was needed.
+
+**Step 2 now delegates to `Slot\LiveSlotTombstoner`** rather than a private method. ADR 0037's `DeleteFieldInitiator` needs the identical two-step sequence, and duplicating twenty lines of index- and FK-defending SQL is exactly the thing that drifts. Behaviour is unchanged; the ordering rationale moved into that class's docblock, where it also records the consequence this package never needed — nulling `field_id` first releases the `RESTRICT` foreign key inside the transaction, which is what lets a field deletion drop the registry row without waiting on a Liberator sweep.
 
 ### Relocations are model-affine, with one shape that is not (ADR 0032)
 
@@ -92,8 +94,10 @@ The spread one-shot fires **at promotion, not at initiation**. A retype vacates 
 
 It is a correctness guard, not hygiene. `RetypeBackfillExecutor` locates values with `array_key_exists($fieldName, $fields)` against the *current* name, so mid-rename every row behind the rename cursor reads as "value absent" → `NotAttempted` → the slot is written NULL. Silently: the `isNullCoerced()` guard means no `coercion_null` event fires, because no coercion was attempted. That is permanent data loss into the index with nothing in the log to show for it.
 
-Both initiators check both repositories in the same order — **rename first, then retype** — so two concurrent initiators cannot each see the other's row as absent. `ux_backfill_job_name` remains the real backstop.
+Every initiator checks the same repositories in the same order — since ADR 0037, **rename → retype → delete** — so two concurrent initiators cannot each see the other's row as absent. `ux_backfill_job_name` remains the real backstop.
 
 `RetypeInitiator`'s constructor gained a `RenameCheckpointRepository` parameter, which ripples to `StarDust::retypeInitiator()` and `Phase6bTestCase::makeRetypeInitiator()`.
+
+**The ADR 0037 delete guard is in `loadField()`, not `runTuple()`'s guard block.** It keys on `stardust_fields.deleted_at` rather than a checkpoint row, so it rides a SELECT this class already runs and still fires for a field whose purge checkpoint was manually failed. It reaches every shape — retype, promotion, demotion, relocation — because `loadField()` is `runTuple()`'s first call, so `compactModel()` inherits it for free.
 
 **Known defect, not introduced here:** `RetypeCheckpointRepository::insert()` is a plain INSERT and nothing in `src/` ever deletes from `backfill_checkpoints`, so a second retype or relocation of a field whose checkpoint is already `completed` throws a raw `PDOException` — `existsRunningForField()` returns false for a terminal row. This is why `compactModel()`'s documented "safe to re-run" does not actually hold for an already-relocated field. `RenameCheckpointRepository::insertOrReset()` shows the fix (`INSERT … ON DUPLICATE KEY UPDATE`); porting it here is tracked separately.

@@ -18,9 +18,13 @@ That last point is the JSON-payload fallback: the slot column is never consulted
 
 Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Blueprint §1.2.
 
+**ADR 0037 adds the mirror-image case: a field the snapshot must stop reporting.** `SlotResolver` excludes any row with a non-null `deleted_at` from `fieldsByName`, which is what makes `read()` drop the field and the pre-flight reject a filter on it the instant the deletion commits — while the values are still physically in `entry_data` for the length of the purge. The names are still carried, on `SnapshotEntry::$pendingDeletionNames`, for the point read alone.
+
 ## Point read
 
 `EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013.
+
+Because it returns the payload verbatim, it is the one read surface that would otherwise leak a key the registry has already severed. `SnapshotEntry::canonicalisePayloadKeys()` therefore does two jobs: it rewrites an in-flight rename's old key forward, and it strips an in-flight deletion's key outright. **Without the second, `get()` and `read()` would disagree about the same entry for the whole purge window** — the paginated read is driven by `fieldsByName`, which excludes the field, and the point read is not. `DeleteWindowTest::testPointReadAgreesWithPaginatedReadDuringTheWindow` pins it. Both halves are guarded by an eagerly-computed boolean so the steady-state cost stays at one check.
 
 ## Cursors
 

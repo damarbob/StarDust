@@ -40,6 +40,14 @@ On `update()` there is a second reason: `withClearedSlots()` compares the map's 
 
 `hasAliases()` gates the whole thing, so steady state is one `false` check.
 
+### ADR 0037: a deleted field's key is stripped, not merely unmapped
+
+`canonicalise()` does a second job: it removes any key naming a field whose deletion is in flight (`stardust_fields.deleted_at` non-null).
+
+**Leaving the field out of the map is not sufficient, and assuming otherwise is the natural mistake.** An unregistered key is an *unknown* key, and per the two silently-dropped categories below, an unknown key's value **is preserved in `entry_data.fields`**. So a client still sending the deleted name would keep writing it back into every new entry, and into existing ones on update — including rows the deletion purge's cursor has already passed, which its single forward pass will never revisit. The field's values would outlive the field indefinitely.
+
+`hasPendingDeletions()` gates it alongside `hasAliases()`, so the steady state is still two `false` checks. Pinned by `DeleteWindowTest::testWritingWithTheDeletedKeyDropsItSilently` and its `updateEntry()` twin.
+
 ### The two silently-dropped categories
 
 Two categories never reach the slot plan; their values are preserved in `entry_data.fields` per ADR 0013:

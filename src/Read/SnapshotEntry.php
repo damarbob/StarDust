@@ -26,6 +26,12 @@ final class SnapshotEntry
     /**
      * @param array<string, FieldDescriptor> $fieldsByName  fieldName → descriptor
      * @param array<int, string>             $pageTableNames pageId → `entry_slots_page_N`
+     * @param list<string>                   $pendingDeletionNames names of fields whose
+     *                                       ADR 0037 deletion is initiated but not yet
+     *                                       purged. Deliberately NOT in `$fieldsByName`:
+     *                                       the mapping is severed, so nothing may resolve
+     *                                       or filter them. Carried only so the point read
+     *                                       can strip their keys from un-purged payloads.
      */
     public function __construct(
         public readonly int $modelId,
@@ -33,6 +39,7 @@ final class SnapshotEntry
         public readonly int $capturedAtUnixTs,
         public readonly array $fieldsByName,
         public readonly array $pageTableNames,
+        public readonly array $pendingDeletionNames = [],
     ) {
         // Computed once here rather than memoised lazily: the snapshot
         // is immutable and cached per schema version, so the answer
@@ -66,34 +73,60 @@ final class SnapshotEntry
     }
 
     /**
+     * True when any field in this model has an ADR 0037 deletion
+     * initiated whose payload purge has not finished.
+     *
+     * Same eager-boolean discipline as {@see self::hasRenamesInFlight()}:
+     * the steady-state cost of the delete stripping is one check.
+     */
+    public function hasPendingDeletions(): bool
+    {
+        return $this->pendingDeletionNames !== [];
+    }
+
+    /**
      * Returns `$payload` with any in-flight rename's old key rewritten
-     * to the field's current name. Keys the registry does not know are
-     * passed through untouched (ADR 0013 preserves unknown keys).
+     * to the field's current name, and any in-flight deletion's key
+     * removed. Keys the registry does not know are passed through
+     * untouched (ADR 0013 preserves unknown keys).
      *
      * Used by the point read, which returns the payload verbatim and so
      * would otherwise expose the old key for rows behind the backfill
+     * cursor, or a deleted field's values for rows behind the purge
      * cursor.
+     *
+     * **The delete half is what stops `get()` disagreeing with
+     * `read()`.** The paginated read is driven by `$fieldsByName`, which
+     * excludes a deleting field outright, so it stops returning the
+     * field the instant the delete commits. Without the strip here, the
+     * same entry would come back with the field through `get()` and
+     * without it through `read()` for the whole purge window.
+     *
+     * The JSON export artifact remains deliberately unbridged, matching
+     * the documented rename carve-out: it streams the payload as stored.
      *
      * @param  array<string,mixed> $payload
      * @return array<string,mixed>
      */
     public function canonicalisePayloadKeys(array $payload): array
     {
-        if (! $this->hasRenamesInFlight()) {
-            return $payload;
+        if ($this->hasRenamesInFlight()) {
+            foreach ($this->fieldsByName as $name => $descriptor) {
+                $previous = $descriptor->previousName;
+                if ($previous === null || ! array_key_exists($previous, $payload)) {
+                    continue;
+                }
+                // A row already migrated carries the new key; the old key
+                // should not survive alongside it.
+                if (! array_key_exists($name, $payload)) {
+                    $payload[$name] = $payload[$previous];
+                }
+                unset($payload[$previous]);
+            }
         }
 
-        foreach ($this->fieldsByName as $name => $descriptor) {
-            $previous = $descriptor->previousName;
-            if ($previous === null || ! array_key_exists($previous, $payload)) {
-                continue;
-            }
-            // A row already migrated carries the new key; the old key
-            // should not survive alongside it.
-            if (! array_key_exists($name, $payload)) {
-                $payload[$name] = $payload[$previous];
-            }
-            unset($payload[$previous]);
+        foreach ($this->pendingDeletionNames as $name) {
+            unset($payload[$name]);
         }
 
         return $payload;

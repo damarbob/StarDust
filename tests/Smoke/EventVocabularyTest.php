@@ -61,6 +61,8 @@ final class EventVocabularyTest extends TestCase
         'rename_started',
         'rename_complete',
         'model_renamed',
+        'delete_started',
+        'delete_complete',
     ];
 
     private const CHRONICLER_EVENTS = [
@@ -190,6 +192,27 @@ final class EventVocabularyTest extends TestCase
             );
         }
         self::assertNotEmpty($found, 'Rename namespace should emit at least one structured-log event');
+    }
+
+    /**
+     * ADR 0037 field deletion, same shape and same rationale as the
+     * rename scan above: `src/Delete/` is covered by no other method,
+     * and `scanDir()` returns `[]` for a directory that does not exist,
+     * so without this `delete_started` / `delete_complete` would go
+     * entirely unenforced while the suite stayed green.
+     */
+    public function testDeleteSourceUsesOnlyAllowedEventNames(): void
+    {
+        $allowed = array_merge(self::RECONCILER_EVENTS, self::REGISTRY_EVENTS);
+        $found = $this->scanDir(__DIR__ . '/../../src/Delete');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                $allowed,
+                "Event '{$event}' is not in the Delete/Reconciler/Registry allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found, 'Delete namespace should emit at least one structured-log event');
     }
 
     public function testChroniclerSourceUsesOnlyAllowedEventNames(): void

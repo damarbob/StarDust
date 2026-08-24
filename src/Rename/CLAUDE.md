@@ -48,13 +48,17 @@ MySQL normalises JSON object key order on any store, so the rewrite does not int
 
 ## Lifecycle exclusivity
 
-A field may have one lifecycle in flight. Both initiators check both checkpoint repositories, **rename first then retype**, so two concurrent initiators cannot each see the other's row as absent; `ux_backfill_job_name` is the real backstop.
+A field may have one lifecycle in flight. Since ADR 0037 there are **three** of them, checked in one fixed order everywhere — **rename → retype → delete** — so two concurrent initiators cannot each see the other's row as absent; `ux_backfill_job_name` is the real backstop.
+
+The delete leg is checked differently from the other two: it keys on `stardust_fields.deleted_at` (in `loadField()`, riding a SELECT this initiator already runs) rather than on a checkpoint row, so it still fires for a field whose purge checkpoint was manually failed. See `src/Delete/CLAUDE.md`.
 
 The retype-side guard sits inside `RetypeInitiator::runTuple()`, **not** on the `StarDust` facade, because `initiateRelocation()` shares `runTuple()` — so `compactModel()` inherits it. A facade-level check would leave compaction as an unguarded back door into a real bug: `RetypeBackfillExecutor` locates values by name, so mid-rename every un-migrated row reads as "value absent" and its slot is written NULL, silently, with no `coercion_null` event because no coercion was attempted.
 
 ## `insertOrReset()`, not `insert()`
 
-Nothing in the engine ever deletes from `backfill_checkpoints`, and `ux_backfill_job_name` is UNIQUE, so a plain INSERT makes the *second* lifecycle for a field throw a raw `PDOException` once the first completes — `existsRunningForField()` returns false for a `completed` row and offers no protection. `RetypeCheckpointRepository::insert()` has that defect today, which is why `compactModel()`'s "safe to re-run" claim does not hold for an already-relocated field. This repository uses `INSERT … ON DUPLICATE KEY UPDATE` and does not inherit it. Fixing the retype side is tracked separately.
+Nothing deletes a *rename* checkpoint, and `ux_backfill_job_name` is UNIQUE, so a plain INSERT makes the *second* lifecycle for a field throw a raw `PDOException` once the first completes — `existsRunningForField()` returns false for a `completed` row and offers no protection. `RetypeCheckpointRepository::insert()` has that defect today, which is why `compactModel()`'s "safe to re-run" claim does not hold for an already-relocated field. This repository uses `INSERT … ON DUPLICATE KEY UPDATE` and does not inherit it. Fixing the retype side is tracked separately.
+
+**Correction, 2026-08-24.** This section used to open "Nothing in the engine ever deletes from `backfill_checkpoints`". That is no longer true: ADR 0037's `DeleteCheckpointRepository` deletes terminal rename/retype rows at deletion initiation, and deletes its own row on the purge's final chunk (`src/Delete/CLAUDE.md`). The conclusion is unaffected — a rename checkpoint is still only ever cleared by a *field deletion*, which refuses to start while a rename is running, so the upsert remains necessary.
 
 ## Final-chunk atomicity
 

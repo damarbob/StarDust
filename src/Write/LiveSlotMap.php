@@ -61,11 +61,15 @@ final class LiveSlotMap
      * @param array<string, LiveSlotEntry> $byFieldName
      * @param array<string, bool> $registeredFieldFilterability field name → is_filterable
      * @param array<string, string> $canonicalByPreviousName ADR 0036: old field name → current name
+     * @param list<string> $pendingDeletionNames ADR 0037: names of fields whose deletion is
+     *                     in flight. NOT present in the other two maps — the mapping is
+     *                     severed — but carried so `canonicalise()` can strip them.
      */
     public function __construct(
         private readonly array $byFieldName,
         private readonly array $registeredFieldFilterability,
         private readonly array $canonicalByPreviousName = [],
+        private readonly array $pendingDeletionNames = [],
     ) {
     }
 
@@ -78,7 +82,7 @@ final class LiveSlotMap
         // from "unknown payload key" (silent drop, per ADR 0007 + 0013).
         $stmt = $pdo->prepare(
             'SELECT f.id AS field_id, f.name AS field_name, f.declared_type,'
-            . ' f.is_filterable, f.previous_name,'
+            . ' f.is_filterable, f.previous_name, f.deleted_at,'
             . ' a.slot_column, a.page_id, a.status'
             . ' FROM stardust_fields f'
             . ' LEFT JOIN stardust_slot_assignments a'
@@ -90,8 +94,23 @@ final class LiveSlotMap
         $entries = [];
         $registeredFieldFilterability = [];
         $canonicalByPreviousName = [];
+        $pendingDeletionNames = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $name = (string) $row['field_name'];
+
+            // ADR 0037: severed from the write path immediately, so it
+            // is deliberately absent from every map below. It is NOT
+            // enough to simply drop it: an unregistered key is an
+            // *unknown* key, and ADR 0013 preserves those verbatim in
+            // `entry_data.fields` — so a client still sending the name
+            // would keep writing it back into new entries forever, and
+            // the purge's single forward pass would never catch them.
+            // `canonicalise()` strips it instead.
+            if ($row['deleted_at'] !== null) {
+                $pendingDeletionNames[] = $name;
+                continue;
+            }
+
             $registeredFieldFilterability[$name] = (bool) $row['is_filterable'];
 
             if ($row['previous_name'] !== null) {
@@ -112,7 +131,12 @@ final class LiveSlotMap
             );
         }
 
-        return new self($entries, $registeredFieldFilterability, $canonicalByPreviousName);
+        return new self(
+            $entries,
+            $registeredFieldFilterability,
+            $canonicalByPreviousName,
+            $pendingDeletionNames,
+        );
     }
 
     /**
@@ -126,8 +150,18 @@ final class LiveSlotMap
     }
 
     /**
+     * True while any field in this model has an ADR 0037 deletion in
+     * flight whose payload purge has not finished.
+     */
+    public function hasPendingDeletions(): bool
+    {
+        return $this->pendingDeletionNames !== [];
+    }
+
+    /**
      * Rewrites any payload key naming a field by its pre-rename name to
-     * the field's current name.
+     * the field's current name, and removes any key naming a field whose
+     * deletion is in flight.
      *
      * **This is a data-loss guard, not a convenience.** A rename flips
      * `stardust_fields.name` immediately, so a client that has not yet
@@ -148,12 +182,23 @@ final class LiveSlotMap
      * the stale one is dropped — unreachable through a sane client, but
      * it must be deterministic.
      *
+     * **The ADR 0037 half is the same class of guard, for the opposite
+     * reason.** Simply leaving a deleted field out of the map does NOT
+     * drop its key: an unregistered key is an *unknown* key, and ADR
+     * 0013 preserves those verbatim in `entry_data.fields`. So a client
+     * still sending the deleted name would write it back into every new
+     * entry indefinitely, and into existing ones on update — including
+     * rows the purge cursor has already passed, which its single forward
+     * pass will never revisit. The deletion would then never actually
+     * complete in any observable sense. Stripping here is what bounds
+     * the purge.
+     *
      * @param  array<string, mixed> $fields
      * @return array<string, mixed>
      */
     public function canonicalise(array $fields): array
     {
-        if (! $this->hasAliases()) {
+        if (! $this->hasAliases() && ! $this->hasPendingDeletions()) {
             return $fields;
         }
 
@@ -165,6 +210,10 @@ final class LiveSlotMap
                 $fields[$current] = $fields[$previous];
             }
             unset($fields[$previous]);
+        }
+
+        foreach ($this->pendingDeletionNames as $deleted) {
+            unset($fields[$deleted]);
         }
 
         return $fields;

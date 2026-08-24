@@ -9,11 +9,13 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\CompactionCapacityException;
+use StarDust\Exception\FieldDeletionInProgressException;
 use StarDust\Exception\FieldNotFoundException;
 use StarDust\Exception\IncompatibleRetypeException;
 use StarDust\Exception\RenameInProgressException;
 use StarDust\Exception\RetypeInProgressException;
 use StarDust\Rename\RenameCheckpointRepository;
+use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
 use Throwable;
 
@@ -73,6 +75,7 @@ final class RetypeInitiator
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
         private readonly SlotReserver $slotReserver,
+        private readonly LiveSlotTombstoner $tombstoner,
         private readonly RetypeCheckpointRepository $checkpointRepository,
         private readonly RenameCheckpointRepository $renameCheckpointRepository,
     ) {
@@ -218,7 +221,7 @@ final class RetypeInitiator
             }
 
             // 2. Tombstone the field's current live slot, if any.
-            $oldSlotId = $this->tombstoneLiveSlot($fieldId, $now);
+            $oldSlotId = $this->tombstoner->tombstone($fieldId, $now);
 
             // 3. Reserve a new `backfilling` slot — only for a
             //    filterable target. The reservation is unreachable for
@@ -324,7 +327,7 @@ final class RetypeInitiator
     private function loadField(int $tenantId, int $fieldId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT f.declared_type, f.is_filterable, f.model_id, m.tenant_id'
+            'SELECT f.declared_type, f.is_filterable, f.model_id, f.deleted_at, m.tenant_id'
             . ' FROM stardust_fields f'
             . ' JOIN stardust_models m ON m.id = f.model_id'
             . ' WHERE f.id = ?'
@@ -340,48 +343,23 @@ final class RetypeInitiator
                 "Field {$fieldId} does not belong to tenant {$tenantId}."
             );
         }
+        // ADR 0037, the third lifecycle guard. Keyed on the registry
+        // column rather than the checkpoint, so it still fires for a
+        // field whose purge checkpoint was manually failed or deleted.
+        // Rides the SELECT this method already runs, and sits here
+        // rather than on the facade for the same reason the rename
+        // guard does: `initiateRelocation()` shares `runTuple()`, so
+        // `compactModel()` inherits it.
+        if ($row['deleted_at'] !== null) {
+            throw new FieldDeletionInProgressException(
+                "Field {$fieldId} is being deleted; it cannot be retyped,"
+                . ' promoted, demoted, or relocated.'
+            );
+        }
         return [
             'declared_type' => (string) $row['declared_type'],
             'is_filterable' => (bool) $row['is_filterable'],
             'model_id'      => (int) $row['model_id'],
         ];
-    }
-
-    /**
-     * Flips the field's current live slot (in any of the live
-     * statuses) to `tombstoned`. Returns the old slot's assignment id
-     * or `null` if the field had no live slot.
-     */
-    private function tombstoneLiveSlot(int $fieldId, string $now): ?int
-    {
-        $select = $this->pdo->prepare(
-            'SELECT id FROM stardust_slot_assignments'
-            . " WHERE field_id = ? AND status IN ('assigned','backfilling','ready')"
-            . ' LIMIT 1 FOR UPDATE'
-        );
-        $select->execute([$fieldId]);
-        $id = $select->fetchColumn();
-        if ($id === false) {
-            return null;
-        }
-        $slotId = (int) $id;
-
-        // Two-step tombstone: clear field_id, then flip status. The
-        // partial unique index `ux_slot_assignments_field_live` would
-        // otherwise complain if a new slot reservation later tries to
-        // take `field_id` while a non-tombstoned row still holds it.
-        $clearField = $this->pdo->prepare(
-            'UPDATE stardust_slot_assignments SET field_id = NULL, updated_at = ? WHERE id = ?'
-        );
-        $clearField->execute([$now, $slotId]);
-
-        $tombstone = $this->pdo->prepare(
-            'UPDATE stardust_slot_assignments'
-            . " SET status = 'tombstoned', tombstoned_at = ?, updated_at = ?"
-            . ' WHERE id = ?'
-        );
-        $tombstone->execute([$now, $now, $slotId]);
-
-        return $slotId;
     }
 }
