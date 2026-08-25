@@ -77,6 +77,76 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
         self::assertSame($entryIds[4], (int) $row['sweep_cursor_id']);
     }
 
+    /**
+     * ADR 0038 regression: a **lock wait timeout (errno 1205)** is
+     * retried, exactly as a deadlock is.
+     *
+     * Before ADR 0038 `SlotSweeper` tested for `SQLSTATE 40001` / errno
+     * 1213 only. That was sufficient until model deletion existed;
+     * measured on MySQL 8.0.13, the purge cascading `entry_data` deletes
+     * into `entry_slots_page_X` contends with this sweeper over the same
+     * rows and the loser gets **1205 in both directions, never 1213** —
+     * and severance tombstones every slot of the deleted model, so the
+     * Liberator is guaranteed to be sweeping precisely those slots.
+     *
+     * An unretried 1205 propagated out of `sweep()` past the gap path,
+     * and `PollLoop` deliberately does not catch tick exceptions, so the
+     * daemon exited and crash-looped for the duration of every model
+     * purge. That is why the fix landed with the purge rather than after
+     * it.
+     */
+    public function testLockWaitTimeoutIsRetriedLikeADeadlock(): void
+    {
+        [$modelId, $fieldId, $pageId, $_fieldName] = $this->setupModelWithReservedField(1, 'string');
+        $tableName = $this->pageTableNameFor($pageId);
+        $slotAssignmentId = $this->slotAssignmentIdFor($fieldId);
+        $slotColumn = $this->slotColumnFor($slotAssignmentId);
+
+        $entryIds = $this->seedSlotValues($modelId, $tableName, $slotColumn, 5);
+        $this->tombstoneSlotAssignment($slotAssignmentId);
+
+        $pdo = DeadlockInjectingPdo::wrap(
+            $this->pdo,
+            $tableName,
+            $slotColumn,
+            throwTimes: 1,
+            errorInfo: DeadlockInjectingPdo::LOCK_WAIT_TIMEOUT,
+        );
+
+        $stream = fopen('php://memory', 'r+');
+        self::assertNotFalse($stream);
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        $sweeper = new SlotSweeper(
+            pdo: $pdo,
+            logger: $logger,
+            chunkSize: 500,
+            interChunkDelayMicros: 0,
+            deadlockRetryBudget: 3,
+            sleepFn: static fn (int $_micros) => null,
+        );
+
+        $slot = new TombstonedSlot(
+            slotAssignmentId: $slotAssignmentId,
+            pageId: $pageId,
+            slotColumn: $slotColumn,
+            tableName: $tableName,
+            sweepCursorId: null,
+        );
+
+        // Without the fix this throws straight out and kills the daemon.
+        $sweeper->sweep($slot, 'test-corr-lockwait');
+
+        $events = array_map(static fn ($e) => $e['event'], $this->readNdjsonStream($stream));
+        self::assertSame(['deadlock_retry', 'sweep_chunk', 'sweep_complete'], $events);
+
+        self::assertSame(0, $this->countNonNullValues($tableName, $slotColumn));
+        $row = $this->fetchSlotAssignment($slotAssignmentId);
+        self::assertSame('free', $row['status'], 'The sweep must still complete and reclaim the slot.');
+        self::assertSame(0, (int) $row['sweep_gap_count'], 'A successful retry must not bump sweep_gap_count.');
+        self::assertSame($entryIds[4], (int) $row['sweep_cursor_id']);
+    }
+
     public function testThreeConsecutiveDeadlocksTriggersSweepGap(): void
     {
         [$modelId, $fieldId, $pageId, $_fieldName] = $this->setupModelWithReservedField(1, 'string');
@@ -167,14 +237,39 @@ final class DeadlockInjectingPdo extends PDO
     private PDO $inner;
     private int $remaining;
     private string $targetSqlFragment;
+    /** @var array{0: string, 1: int, 2: string} */
+    private array $errorInfo;
 
-    public static function wrap(PDO $inner, string $tableName, string $slotColumn, int $throwTimes): self
-    {
+    /** The InnoDB deadlock this fixture was originally written for. */
+    public const DEADLOCK = ['40001', 1213, 'Deadlock found when trying to get lock; try restarting transaction'];
+
+    /**
+     * ADR 0038: the failure a concurrent model purge actually produces.
+     *
+     * Measured on MySQL 8.0.13 in both directions — the purge cascading
+     * `entry_data` deletes into `entry_slots_page_X` versus this sweeper
+     * nullifying the same rows — the loser gets errno **1205**, never
+     * 1213. `SlotSweeper` matched only 40001/1213 until ADR 0038, so
+     * this propagated past the retry budget and the gap path, out of
+     * `sweep()`, and `PollLoop` deliberately does not catch: the
+     * Liberator daemon exited and crash-looped for the whole purge.
+     */
+    public const LOCK_WAIT_TIMEOUT = ['HY000', 1205, 'Lock wait timeout exceeded; try restarting transaction'];
+
+    /** @param array{0: string, 1: int, 2: string} $errorInfo */
+    public static function wrap(
+        PDO $inner,
+        string $tableName,
+        string $slotColumn,
+        int $throwTimes,
+        array $errorInfo = self::DEADLOCK,
+    ): self {
         $reflection = new ReflectionClass(self::class);
         /** @var self $instance */
         $instance = $reflection->newInstanceWithoutConstructor();
         $instance->inner = $inner;
         $instance->remaining = $throwTimes;
+        $instance->errorInfo = $errorInfo;
         // Match the literal fragment SlotSweeper builds:
         //   UPDATE <table> SET <col> = NULL WHERE entry_id IN (...)
         $instance->targetSqlFragment = "UPDATE {$tableName} SET {$slotColumn} = NULL";
@@ -188,7 +283,7 @@ final class DeadlockInjectingPdo extends PDO
             return false;
         }
         if (str_contains($query, $this->targetSqlFragment) && $this->remaining > 0) {
-            return DeadlockInjectingStatement::wrap($stmt, $this->consumeThrow(...));
+            return DeadlockInjectingStatement::wrap($stmt, $this->consumeThrow(...), $this->errorInfo);
         }
         return $stmt;
     }
@@ -279,23 +374,32 @@ final class DeadlockInjectingStatement extends PDOStatement
     private PDOStatement $inner;
     /** @var callable():int */
     private $shouldThrow;
+    /** @var array{0: string, 1: int, 2: string} */
+    private array $errorInfo;
 
-    /** @param callable():int $shouldThrow Returns 1 to throw, 0 to pass through. */
-    public static function wrap(PDOStatement $inner, callable $shouldThrow): self
-    {
+    /**
+     * @param callable():int $shouldThrow Returns 1 to throw, 0 to pass through.
+     * @param array{0: string, 1: int, 2: string} $errorInfo
+     */
+    public static function wrap(
+        PDOStatement $inner,
+        callable $shouldThrow,
+        array $errorInfo = DeadlockInjectingPdo::DEADLOCK,
+    ): self {
         $reflection = new ReflectionClass(self::class);
         /** @var self $instance */
         $instance = $reflection->newInstanceWithoutConstructor();
         $instance->inner = $inner;
         $instance->shouldThrow = $shouldThrow;
+        $instance->errorInfo = $errorInfo;
         return $instance;
     }
 
     public function execute(?array $params = null): bool
     {
         if (($this->shouldThrow)() === 1) {
-            $e = new PDOException('Mock InnoDB deadlock injected by test fixture.');
-            $e->errorInfo = ['40001', 1213, 'Deadlock found when trying to get lock; try restarting transaction'];
+            $e = new PDOException('Mock InnoDB lock failure injected by test fixture.');
+            $e->errorInfo = $this->errorInfo;
             throw $e;
         }
         return $params === null ? $this->inner->execute() : $this->inner->execute($params);

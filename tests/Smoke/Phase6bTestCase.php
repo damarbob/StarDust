@@ -9,11 +9,16 @@ use Psr\Log\NullLogger;
 use StarDust\Clock\SystemClock;
 use StarDust\Delete\DeleteCheckpointRepository;
 use StarDust\Delete\DeleteFieldInitiator;
+use StarDust\Delete\DeleteModelInitiator;
 use StarDust\Delete\DeletePurgeExecutor;
 use StarDust\Delete\DeletePurgeWorkSource;
+use StarDust\Delete\ModelDeleteCheckpointRepository;
+use StarDust\Delete\ModelPurgeExecutor;
+use StarDust\Delete\ModelPurgeWorkSource;
 use StarDust\Read\SlotResolver;
 use StarDust\Read\SnapshotEntry;
 use StarDust\Reconciler\Reconciler;
+use StarDust\Reconciler\TickOutcome;
 use StarDust\Rename\RenameBackfillExecutor;
 use StarDust\Rename\RenameBackfillWorkSource;
 use StarDust\Rename\RenameCheckpointRepository;
@@ -185,6 +190,119 @@ abstract class Phase6bTestCase extends Phase6aTestCase
             'last_processed_id' => (int) $row['last_processed_id'],
         ];
     }
+
+    protected function makeDeleteModelInitiator(?LoggerInterface $logger = null): DeleteModelInitiator
+    {
+        return new DeleteModelInitiator(
+            pdo: $this->pdo,
+            clock: new SystemClock(),
+            logger: $logger ?? new NullLogger(),
+            tombstoner: new LiveSlotTombstoner($this->pdo),
+            modelCheckpoints: new ModelDeleteCheckpointRepository($this->pdo),
+        );
+    }
+
+    protected function makeModelPurgeWorkSource(
+        ?LoggerInterface $logger = null,
+        int $chunkSize = 500,
+        int $lockRetryBudget = 3,
+    ): ModelPurgeWorkSource {
+        return new ModelPurgeWorkSource(
+            pdo: $this->pdo,
+            clock: new SystemClock(),
+            logger: $logger ?? new NullLogger(),
+            repository: new ModelDeleteCheckpointRepository($this->pdo),
+            executor: new ModelPurgeExecutor(pdo: $this->pdo),
+            chunkSize: $chunkSize,
+            lockRetryBudget: $lockRetryBudget,
+            retryDelayMicros: 0,
+            sleepFn: static function (int $micros): void {
+            },
+        );
+    }
+
+    /**
+     * One model-purge tick.
+     *
+     * Deliberately not routed through the full Reconciler, so a test can
+     * stop a drain half-purged and inspect the window.
+     */
+    protected function runModelPurgeTick(
+        ?LoggerInterface $logger = null,
+        int $chunkSize = 500,
+    ): TickOutcome {
+        return $this->makeModelPurgeWorkSource($logger, $chunkSize)
+            ->tickOne('test-model-purge-' . bin2hex(random_bytes(4)));
+    }
+
+    /**
+     * Drains a model purge to completion, with a bound so a bug is a
+     * failed assertion rather than a hung suite.
+     */
+    protected function drainModelPurge(int $chunkSize = 500, int $maxTicks = 200): int
+    {
+        for ($i = 1; $i <= $maxTicks; $i++) {
+            if ($this->runModelPurgeTick(null, $chunkSize) === TickOutcome::IDLE) {
+                return $i;
+            }
+        }
+        self::fail("Model purge did not drain within {$maxTicks} ticks.");
+    }
+
+    /** @return array<string, mixed>|null */
+    protected function fetchModelDeleteCheckpoint(int $modelId): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, status, last_processed_id FROM backfill_checkpoints WHERE job_name = ?'
+        );
+        $stmt->execute([ModelDeleteCheckpointRepository::jobNameFor($modelId)]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+        return $row === false ? null : $row;
+    }
+
+    /** @return array<string, mixed>|null */
+    protected function fetchEntryRowOrNull(int $entryId): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, tenant_id, model_id, deleted_at FROM entry_data WHERE id = ?'
+        );
+        $stmt->execute([$entryId]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+        return $row === false ? null : $row;
+    }
+
+    /** @param list<int> $entryIds */
+    protected function countSyncQueueRowsFor(array $entryIds): int
+    {
+        if ($entryIds === []) {
+            return 0;
+        }
+        $placeholders = implode(',', array_fill(0, count($entryIds), '?'));
+        $stmt = $this->pdo->prepare(
+            "SELECT COUNT(*) FROM stardust_sync_queue WHERE entry_id IN ({$placeholders})"
+        );
+        $stmt->execute($entryIds);
+
+        return (int) $stmt->fetchColumn();
+    }
+
+    /** @param list<int> $entryIds */
+    protected function countPageRowsFor(string $tableName, array $entryIds): int
+    {
+        if ($entryIds === []) {
+            return 0;
+        }
+        $placeholders = implode(',', array_fill(0, count($entryIds), '?'));
+        $stmt = $this->pdo->prepare(
+            "SELECT COUNT(*) FROM {$tableName} WHERE entry_id IN ({$placeholders})"
+        );
+        $stmt->execute($entryIds);
+
+        return (int) $stmt->fetchColumn();
+    }
+
     /**
      * ADR 0038: set `stardust_models.deleted_at` by hand.
      *

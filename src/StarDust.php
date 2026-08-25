@@ -40,7 +40,11 @@ use StarDust\Read\SchemaVersionCache;
 use StarDust\Delete\DeleteCheckpointRepository;
 use StarDust\Delete\DeleteFieldInitiator;
 use StarDust\Delete\DeletePurgeExecutor;
+use StarDust\Delete\DeleteModelInitiator;
 use StarDust\Delete\DeletePurgeWorkSource;
+use StarDust\Delete\ModelDeleteCheckpointRepository;
+use StarDust\Delete\ModelPurgeExecutor;
+use StarDust\Delete\ModelPurgeWorkSource;
 use StarDust\Reconciler\DlqReplayer;
 use StarDust\Reconciler\DlqWriter;
 use StarDust\Reconciler\ImportJobWorkSource;
@@ -119,6 +123,7 @@ final class StarDust
     private ?RenameInitiator $renameInitiator = null;
     private ?ModelRenamer $modelRenamer = null;
     private ?DeleteFieldInitiator $deleteFieldInitiator = null;
+    private ?DeleteModelInitiator $deleteModelInitiator = null;
     private ?CompactionService $compactionService = null;
     private ?ExportJobSubmitter $exportSubmitter = null;
     private ?SchemaBuilder $schemaBuilder = null;
@@ -492,6 +497,65 @@ final class StarDust
     }
 
     /**
+     * The ADR 0038 deletion entry point: remove a model, its fields, and
+     * every entry belonging to it.
+     *
+     * **This returns before anything has been deleted, and it needs a
+     * running Reconciler to finish.** The call commits one registry
+     * transaction that severs the model from every first-class surface,
+     * then returns. The Reconciler destroys the entries in bounded chunks
+     * and its final chunk drops the `stardust_models` row, cascading the
+     * field rows away with it. Without a Reconciler the model stays
+     * permanently severed-but-unpurged — invisible through the API, still
+     * occupying the largest table in the engine. That is a safe resting
+     * state rather than a corrupt one, and re-issuing the delete resumes
+     * rather than crashes, but it is not finished.
+     *
+     * From the moment this returns:
+     *
+     * - `listModels()` and `describeModel()` omit the model.
+     * - `read()`, `search()` and `get()` go **dark** — an empty page and
+     *   `null` respectively, indistinguishable from a model that never
+     *   existed.
+     * - `write()`, `updateEntry()`, `bulkWrite()` and `submitBulkWrite()`
+     *   **throw** `ModelDeletionInProgressException`. This is the one
+     *   place the engine rejects a write rather than accepting it: a row
+     *   created here would either be destroyed seconds later or become a
+     *   permanent orphan, so rejection costs the caller nothing real.
+     * - `deleteEntry()` returns `false` — soft-deleting a row about to be
+     *   hard-deleted achieves nothing.
+     * - `compactModel()` and `submitExport()` are refused.
+     * - The model's **name is not reusable** until the purge lands;
+     *   `defineModel()` raises `ModelDeletionInProgressException`.
+     *
+     * Not bridged, deliberately: an export job already claimed by the
+     * Chronicler produces a zero-column artifact, dead-letter rows naming
+     * the model outlive it, and a raw `entry_data` dump shows the rows
+     * that have not been reached yet.
+     *
+     * **There is no undelete.** Entries, extension rows, sync-queue rows,
+     * field definitions and the model itself are all destroyed, and
+     * nothing in the engine retains a copy. Export before you call this.
+     *
+     * Returns `false` — rather than throwing — when there is nothing to
+     * do: the model does not exist, belongs to another tenant, or is
+     * already being deleted. Matching `deleteField()` and `deleteEntry()`,
+     * and the tenant-isolation rule that a caller must not be able to
+     * probe another tenant's ids. A typo in a model id is therefore
+     * silent.
+     *
+     * @throws \StarDust\Exception\InvalidTenantIdException
+     * @throws \StarDust\Exception\RenameInProgressException        a field of this model is mid-rename
+     * @throws \StarDust\Exception\RetypeInProgressException        a field of this model is mid-retype
+     * @throws \StarDust\Exception\FieldDeletionInProgressException a field of this model is mid-delete
+     */
+    public function deleteModel(int $tenantId, int $modelId): bool
+    {
+        TenantId::assertValid($tenantId);
+        return $this->deleteModelInitiator()->initiate($tenantId, $modelId);
+    }
+
+    /**
      * Every model registered for this tenant.
      *
      * Read-only, lock-free, and safe to call per request.
@@ -558,14 +622,17 @@ final class StarDust
     /**
      * Phase 5 reconciliation daemon (multi-worker safe). Drains
      * `stardust_sync_queue`, `stardust_import_jobs`, retype backfills,
-     * ADR 0036 rename rewrites and ADR 0037 deletion purges via five
+     * ADR 0036 rename rewrites, ADR 0037 field-deletion purges and ADR
+     * 0038 model-deletion purges via six
      * {@see \StarDust\Reconciler\ReconcilerWorkSource} implementations
      * ticked round-robin under one chunk correlation id per tick.
      *
      * The order is observable in event streams, so **new sources append
-     * rather than insert**. Ordering between the three backfill sources
-     * is immaterial: each field lifecycle refuses to start while another
-     * is running, so no two can ever contend for the same field.
+     * rather than insert**. Ordering between the three field-backfill
+     * sources is immaterial: each field lifecycle refuses to start while
+     * another is running, so no two can ever contend for the same field.
+     * The model purge is last on purpose — it and the sync-queue drain
+     * both touch `stardust_sync_queue`.
      */
     public function reconciler(): Reconciler
     {
@@ -640,6 +707,20 @@ final class StarDust
             chunkSize: $this->config->reconcilerChunkSize,
         );
 
+        // Sixth, appended. Last in the tick on purpose: it and the
+        // sync-queue drain both touch `stardust_sync_queue`, so putting
+        // the purge after the drain gives the drain its turn first.
+        $modelPurge = new ModelPurgeWorkSource(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            repository: new ModelDeleteCheckpointRepository($this->config->pdo),
+            executor: new ModelPurgeExecutor(pdo: $this->config->pdo),
+            chunkSize: $this->config->modelPurgeChunkSize,
+            lockRetryBudget: $this->config->modelPurgeLockRetryBudget,
+            retryDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
+        );
+
         return new Reconciler(
             workSources: [
                 $syncQueue,
@@ -647,6 +728,7 @@ final class StarDust
                 $retypeBackfill,
                 $renameBackfill,
                 $deletePurge,
+                $modelPurge,
             ],
             capacityWaitMillis: $this->config->reconcilerCapacityWaitMillis,
             interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
@@ -1052,6 +1134,17 @@ final class StarDust
             deleteCheckpoints: new DeleteCheckpointRepository($this->config->pdo),
             renameCheckpoints: new RenameCheckpointRepository($this->config->pdo),
             retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
+        );
+    }
+
+    private function deleteModelInitiator(): DeleteModelInitiator
+    {
+        return $this->deleteModelInitiator ??= new DeleteModelInitiator(
+            pdo: $this->config->pdo,
+            clock: $this->config->clock,
+            logger: $this->config->logger,
+            tombstoner: $this->liveSlotTombstoner(),
+            modelCheckpoints: new ModelDeleteCheckpointRepository($this->config->pdo),
         );
     }
 

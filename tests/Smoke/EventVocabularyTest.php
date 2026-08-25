@@ -37,6 +37,12 @@ final class EventVocabularyTest extends TestCase
         'capacity_wait',
         'coercion_null',
         'lease_lost',
+        // ADR 0038: the model purge retries errno 1205 / 1213 on a
+        // bounded budget. The name is shared with the liberator and
+        // chronicler sources deliberately — it is the same phenomenon,
+        // and the `source` field disambiguates exactly as it does for
+        // `cache_miss`.
+        'deadlock_retry',
     ];
 
     private const LIBERATOR_EVENTS = [
@@ -63,6 +69,14 @@ final class EventVocabularyTest extends TestCase
         'model_renamed',
         'delete_started',
         'delete_complete',
+        // ADR 0038. Distinct names rather than `delete_*` plus a scope
+        // discriminator: `model_renamed` already answered that question
+        // one ADR ago, and `delete_complete` is documented as the only
+        // event reporting a registry row removal — sharing it would make
+        // that false and would silently fold model deletions into any
+        // dashboard counting field deletions.
+        'model_delete_started',
+        'model_delete_complete',
     ];
 
     private const CHRONICLER_EVENTS = [

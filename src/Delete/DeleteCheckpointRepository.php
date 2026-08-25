@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Delete;
 
 use PDO;
+use StarDust\Support\LikePattern;
 use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Retype\RetypeCheckpointRepository;
 
@@ -63,12 +64,12 @@ final class DeleteCheckpointRepository
             . '   ON f.id = CAST(SUBSTRING(c.job_name, '
                 . (strlen(self::JOB_NAME_PREFIX) + 1) . ') AS UNSIGNED)'
             . ' JOIN stardust_models m ON m.id = f.model_id'
-            . " WHERE c.status = 'running' AND c.job_name LIKE ?"
+            . " WHERE c.status = 'running' AND c.job_name LIKE ? ESCAPE '\\\\'"
             . '   AND f.deleted_at IS NOT NULL'
             . ' ORDER BY c.id'
             . ' LIMIT 1 FOR UPDATE SKIP LOCKED'
         );
-        $stmt->execute([self::JOB_NAME_PREFIX . '%']);
+        $stmt->execute([LikePattern::escapedPrefix(self::JOB_NAME_PREFIX)]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($row === false) {
             return null;

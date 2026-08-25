@@ -35,6 +35,10 @@ final class Config
     public readonly int $cardinalityRowFloor;
     public readonly int $cardinalityDistinctFloor;
     public readonly int $spreadExcessPageThreshold;
+
+    /** ADR 0038 model purge — see the constructor for why it is not `reconcilerChunkSize`. */
+    public readonly int $modelPurgeChunkSize;
+    public readonly int $modelPurgeLockRetryBudget;
     public readonly int $reconcilerChunkSize;
     public readonly int $reconcilerInterChunkDelayMicros;
     public readonly int $reconcilerCapacityWaitMillis;
@@ -104,6 +108,8 @@ final class Config
         ?int $reconcilerImportLeaseTimeoutSeconds = null,
         ?int $cardinalityJitterSeconds = null,
         ?int $spreadExcessPageThreshold = null,
+        ?int $modelPurgeChunkSize = null,
+        ?int $modelPurgeLockRetryBudget = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -197,5 +203,27 @@ final class Config
         // Default 30 s mirrors $chroniclerLeaseTimeoutSeconds; injectable
         // so tests can shorten the lease through the same code path.
         $this->reconcilerImportLeaseTimeoutSeconds = $reconcilerImportLeaseTimeoutSeconds ?? 30;
+
+        // ADR 0038 model purge. Deliberately NOT $reconcilerChunkSize,
+        // and the reason is not "the purge is slower" — it is that 500
+        // means something structurally different here. Every other work
+        // source's chunk is N row updates on one table; a model-purge
+        // chunk is N `entry_data` deletes that CASCADE into N × (pages
+        // the model occupies) extension-table deletes, plus up to N
+        // sync-queue deletes, all in one transaction, contending with the
+        // Liberator over the same page rows. Tuning the shared knob down
+        // to make a large purge survivable would simultaneously slow the
+        // sync-queue drain, which is the ADR 0007 write-availability path.
+        //
+        // 200 rather than 500 because the cascade multiplies the row
+        // count by (1 + pages occupied).
+        $this->modelPurgeChunkSize = $modelPurgeChunkSize ?? 200;
+
+        // Bounded retry for errno 1205 / 1213 on a purge chunk. 3 mirrors
+        // $liberatorDeadlockRetryBudget and $chroniclerDeadlockRetryBudget,
+        // which are the precedent for a per-subsystem budget rather than a
+        // shared one. Note the purge has no gap path: on exhaustion it
+        // rethrows with the cursor untouched rather than skipping rows.
+        $this->modelPurgeLockRetryBudget = $modelPurgeLockRetryBudget ?? 3;
     }
 }

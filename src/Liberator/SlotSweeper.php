@@ -104,7 +104,7 @@ final class SlotSweeper
             try {
                 $this->commitChunk($slot, $rowIds, $newCursor, $isLast);
             } catch (PDOException $e) {
-                if ($this->isDeadlock($e)) {
+                if ($this->isRetryableLockFailure($e)) {
                     if ($this->pdo->inTransaction()) {
                         $this->pdo->rollBack();
                     }
@@ -262,15 +262,38 @@ final class SlotSweeper
         }
     }
 
-    private function isDeadlock(PDOException $e): bool
+    /**
+     * Retryable lock failures: deadlock (errno 1213 / SQLSTATE 40001) and
+     * **lock wait timeout (errno 1205)**.
+     *
+     * The 1205 half was added with ADR 0038, and it is not hypothetical.
+     * A model purge deletes `entry_data` rows, which cascade into the
+     * same `entry_slots_page_X` rows this sweeper is nullifying — and
+     * severance tombstones every slot of the deleted model, so the
+     * Liberator picks up precisely those slots. Measured on MySQL 8.0.13
+     * in both directions: the loser gets **1205, never 1213**.
+     *
+     * Without this, that 1205 propagated past the retry budget and the
+     * gap path, out of `sweep()`, and `PollLoop` deliberately does not
+     * catch — so the Liberator daemon exited and crash-looped for the
+     * duration of every model purge.
+     *
+     * A lock wait timeout is the more benign of the two: the transaction
+     * rolls back whole, so the chunk is byte-for-byte re-executable from
+     * the same cursor. It shares the existing budget and gap path rather
+     * than getting its own.
+     */
+    private function isRetryableLockFailure(PDOException $e): bool
     {
         $info = $e->errorInfo;
-        if (is_array($info) && isset($info[0]) && $info[0] === '40001') {
+        if (! is_array($info)) {
+            return false;
+        }
+        if (isset($info[0]) && $info[0] === '40001') {
             return true;
         }
-        if (is_array($info) && isset($info[1]) && (int) $info[1] === 1213) {
-            return true;
-        }
-        return false;
+        $errno = isset($info[1]) ? (int) $info[1] : 0;
+
+        return $errno === 1213 || $errno === 1205;
     }
 }
