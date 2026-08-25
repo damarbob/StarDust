@@ -11,6 +11,8 @@ use PDOException;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\FieldDeletionInProgressException;
+use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Support\ModelDeletionProbe;
 use Throwable;
 
 /**
@@ -163,10 +165,23 @@ final class SchemaBuilder
         return $fieldId;
     }
 
+    /**
+     * `deleted_at IS NULL` is the same data-loss guard `findFieldId()`
+     * carries, one level up.
+     *
+     * This is the get-or-create half of `defineModel()`. Without the
+     * predicate it would hand back the id of a model whose ADR 0038
+     * deletion is in flight — so a seed script re-running during a purge
+     * would silently adopt a model whose entries are being destroyed and
+     * whose registry row is about to be dropped, taking every field with
+     * it. Missing here routes the caller to `insertModel()`, where the
+     * unique index becomes a typed error.
+     */
     private function findModelId(int $tenantId, string $name): ?int
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM stardust_models WHERE tenant_id = ? AND name = ?'
+            'SELECT id FROM stardust_models'
+            . ' WHERE tenant_id = ? AND name = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$tenantId, $name]);
         $id = $stmt->fetchColumn();
@@ -174,14 +189,48 @@ final class SchemaBuilder
         return $id === false ? null : (int) $id;
     }
 
+    /**
+     * @throws ModelDeletionInProgressException when the name is still held by a model
+     *                                          whose ADR 0038 purge has not finished
+     */
     private function insertModel(int $tenantId, string $name, string $now): int
     {
         $stmt = $this->pdo->prepare(
             'INSERT INTO stardust_models (tenant_id, name, created_at) VALUES (?, ?, ?)'
         );
-        $stmt->execute([$tenantId, $name, $now]);
+
+        try {
+            $stmt->execute([$tenantId, $name, $now]);
+        } catch (PDOException $e) {
+            // Exactly the `insertField()` shape below. `ux_models_tenant_name`
+            // is unconditional, so a deleting model still holds its name;
+            // `findModelId()` deliberately did not see it, so the only way
+            // to reach errno 1062 on this tenant+name is a deletion in
+            // flight (or a concurrent insert, which wants to fail too).
+            if ($this->isDuplicateEntry($e) && $this->nameHeldByDeletedModel($tenantId, $name)) {
+                throw new ModelDeletionInProgressException(sprintf(
+                    "Model '%s' in tenant %d is being deleted; its name cannot be reused"
+                    . ' until the entry purge completes. Run a reconciler to finish it.',
+                    $name,
+                    $tenantId,
+                ));
+            }
+            throw $e;
+        }
 
         return (int) $this->pdo->lastInsertId();
+    }
+
+    private function nameHeldByDeletedModel(int $tenantId, string $name): bool
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT 1 FROM stardust_models'
+            . ' WHERE tenant_id = ? AND name = ? AND deleted_at IS NOT NULL'
+            . ' LIMIT 1'
+        );
+        $stmt->execute([$tenantId, $name]);
+
+        return $stmt->fetchColumn() !== false;
     }
 
     /**
@@ -211,9 +260,38 @@ final class SchemaBuilder
     /**
      * @throws FieldDeletionInProgressException when the name is still held by a field
      *                                          whose ADR 0037 purge has not finished
+     * @throws ModelDeletionInProgressException when the model itself is being deleted
      */
     private function insertField(int $modelId, FieldDefinition $field, string $now): int
     {
+        // ADR 0038, and this one cannot ride the unique index the way the
+        // name guards do — a *new* field name on a deleting model collides
+        // with nothing, so errno 1062 never fires and the INSERT simply
+        // succeeds.
+        //
+        // Letting it succeed is the failure this guard exists to prevent,
+        // and it is not merely untidy. A field created after severance is
+        // not marked, so `PendingDemandReader` — which gates on
+        // `is_filterable = 1 AND f.deleted_at IS NULL` with no model
+        // predicate — reads it as demand and has the Watcher provision a
+        // page for a model being destroyed; then `UnmappedFieldReserver`
+        // reserves it a slot on the ADR 0007 exhaustion path, re-taking
+        // `fk_slot_assignments_field`. The purge's final chunk then fails
+        // errno 1451, permanently, *after* earlier chunks have already
+        // committed their deletes. Measured on MySQL 8.0.13.
+        //
+        // The guard sits here rather than in `defineField()` /
+        // `createModel()` so it covers every path that can create a field,
+        // present and future — the `SlotReserver::reserveCore()` precedent.
+        if ($this->modelIsDeleting($modelId)) {
+            throw new ModelDeletionInProgressException(sprintf(
+                "Model %d is being deleted; field '%s' cannot be added to it."
+                . ' Run a reconciler to finish the purge.',
+                $modelId,
+                $field->name,
+            ));
+        }
+
         $stmt = $this->pdo->prepare(
             'INSERT INTO stardust_fields'
             . ' (model_id, name, declared_type, is_filterable, created_at, updated_at)'
@@ -248,6 +326,11 @@ final class SchemaBuilder
         }
 
         return (int) $this->pdo->lastInsertId();
+    }
+
+    private function modelIsDeleting(int $modelId): bool
+    {
+        return ModelDeletionProbe::isDeleting($this->pdo, $modelId);
     }
 
     private function nameHeldByDeletedField(int $modelId, string $name): bool

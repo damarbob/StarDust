@@ -11,6 +11,8 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\ExportFilterNotSupportedException;
 use StarDust\Exception\ExportJobActiveCapExceededException;
+use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Support\ModelDeletionProbe;
 use StarDust\Write\TenantId;
 use Throwable;
 
@@ -74,6 +76,25 @@ final class ExportJobSubmitter
                 modelId:    $request->modelId,
                 filterKeys: array_map('strval', array_keys($request->filter)),
             );
+        }
+
+        // ADR 0038, and it inherits the position above for the same
+        // reasons: before any SQL, so a refused submission touches no row
+        // and burns none of the tenant's cap slots.
+        //
+        // Without it the job is accepted and the Chronicler drains it
+        // against a model whose fields are all severed, so
+        // `HeaderResolver::resolve()` returns an empty column set and the
+        // artifact is a **zero-column CSV over a shrinking row set** — a
+        // correct-looking file the consumer keeps and never retries,
+        // which is the worst available failure shape and precisely what
+        // `ExportFilterNotSupportedException` was added to close.
+        if (ModelDeletionProbe::isDeleting($this->pdo, $request->modelId)) {
+            throw new ModelDeletionInProgressException(sprintf(
+                'Model %d is being deleted; no export can be submitted for it.'
+                . ' Run a reconciler to finish the purge.',
+                $request->modelId,
+            ));
         }
 
         // Wrap the consumer's QueryFilter so the stored `filter`

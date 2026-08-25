@@ -61,7 +61,11 @@ final class SchemaReader
     public function listModels(int $tenantId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, name FROM stardust_models WHERE tenant_id = ? ORDER BY id'
+            // ADR 0038: a model being deleted is gone from introspection
+            // the instant severance commits, matching every other
+            // first-class surface.
+            'SELECT id, name FROM stardust_models'
+            . ' WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY id'
         );
         $stmt->execute([$tenantId]);
 
@@ -83,7 +87,11 @@ final class SchemaReader
     public function describeModel(int $tenantId, int $modelId): ?ModelDescription
     {
         $model = $this->pdo->prepare(
-            'SELECT id, name FROM stardust_models WHERE id = ? AND tenant_id = ?'
+            // ADR 0038: `null` for a deleting model, the same answer
+            // this method already gives for a model that does not exist
+            // or belongs to another tenant.
+            'SELECT id, name FROM stardust_models'
+            . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
         $model->execute([$modelId, $tenantId]);
         $modelRow = $model->fetch(PDO::FETCH_ASSOC);

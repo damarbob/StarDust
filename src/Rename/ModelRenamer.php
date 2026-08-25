@@ -155,7 +155,11 @@ final class ModelRenamer
     private function loadName(int $tenantId, int $modelId): string
     {
         $stmt = $this->pdo->prepare(
-            'SELECT name FROM stardust_models WHERE id = ? AND tenant_id = ?'
+            // ADR 0038: a deleting model must not be renamable. Its
+            // name is held until the purge lands (`ux_models_tenant_name`
+            // is unconditional), and moving it would defeat that.
+            'SELECT name FROM stardust_models'
+            . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$modelId, $tenantId]);
         $name = $stmt->fetchColumn();
@@ -175,6 +179,15 @@ final class ModelRenamer
      * INSIDE its transaction; in autocommit the lock would be dropped at
      * the end of the SELECT. `ux_models_tenant_name` remains the backstop;
      * this exists to turn errno 1062 into a typed exception.
+     *
+     * **Deliberately carries no `deleted_at IS NULL` predicate, unlike
+     * every other model lookup in the engine.** `ux_models_tenant_name`
+     * is unconditional, so a model whose ADR 0038 deletion is in flight
+     * still holds its name until the purge lands. Excluding it here would
+     * report that name as free, let this rename proceed, and then blow up
+     * on errno 1062 outside the typed path — turning a clean
+     * `ModelNameConflictException` into a raw `PDOException`. The clash
+     * is real; it is just temporary.
      */
     private function assertNameAvailable(int $tenantId, int $modelId, string $newName): void
     {

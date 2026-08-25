@@ -6,7 +6,9 @@ namespace StarDust\Write;
 
 use PDO;
 use Psr\Log\LoggerInterface;
+use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Exception\PayloadTooLargeException;
+use StarDust\Support\ModelDeletionProbe;
 use Throwable;
 
 /**
@@ -79,8 +81,27 @@ final class BulkIngestor
 
         // Validate tenant_id on every payload up-front so a forged
         // record at index 47 doesn't burn 46 chunks first.
+        $modelIds = [];
         foreach ($payloads as $p) {
             TenantId::assertValid($p->tenantId);
+            $modelIds[] = $p->modelId;
+        }
+
+        // ADR 0038, and for exactly the reason the comment above gives.
+        // `EntryWriter::writeWithinTransaction()` carries the same guard,
+        // but reaching it via a chunk means `processChunk()` catches the
+        // throw and rolls the whole chunk back — so one payload naming a
+        // deleting model at index 550 would discard 499 good entries and
+        // report the failure as a per-chunk `failureReason` string rather
+        // than raising. One batched query up front instead of one per
+        // payload: this path is >1 000 entities by construction.
+        $deleting = ModelDeletionProbe::deletingAmong($this->pdo, $modelIds);
+        if ($deleting !== []) {
+            throw new ModelDeletionInProgressException(
+                'Bulk write rejected: model(s) ' . implode(', ', $deleting)
+                . ' are being deleted and can accept no entries.'
+                . ' Run a reconciler to finish the purge.'
+            );
         }
 
         if ($count === 0) {

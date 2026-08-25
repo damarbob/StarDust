@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Compaction;
 
 use PDO;
+use StarDust\Support\ModelDeletionProbe;
 
 /**
  * The two registry reads {@see CompactionPlanner} needs.
@@ -20,6 +21,25 @@ final class CompactionRepository
 {
     public function __construct(private readonly PDO $pdo)
     {
+    }
+
+    /**
+     * ADR 0038: is this model's deletion in flight?
+     *
+     * Registry-only, like the rest of this class, so it does not weaken
+     * the "safe against production at any time" property `--dry-run`
+     * depends on.
+     *
+     * Compaction needs it because `loadModelSlots()` below reports an
+     * *empty slot set* for a severed model — its fields fail both
+     * `is_filterable = 1` and the live-status predicate — so without this
+     * "nothing to compact" and "this model is being erased" are
+     * indistinguishable, and a dry run prints a successful empty plan for
+     * a model that is being destroyed.
+     */
+    public function modelIsDeleting(int $modelId): bool
+    {
+        return ModelDeletionProbe::isDeleting($this->pdo, $modelId);
     }
 
     /**

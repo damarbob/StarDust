@@ -58,6 +58,30 @@ final class BackfillExecutor
         }
 
         $map = LiveSlotMap::loadFor($this->pdo, (int) $row['model_id']);
+
+        // ADR 0038: a queued entry whose model is being purged. This is
+        // a skip, not a guard — nothing is wrong, there is simply no slot
+        // work worth doing on a row that is about to be deleted.
+        //
+        // It is not merely an optimisation. This method reads `entry_data`
+        // with a plain non-locking SELECT and then UPSERTs into the page
+        // tables; if the purge commits the row's deletion in between, that
+        // UPSERT hits `fk_<page>_entry` with errno 1452 and
+        // `SyncQueueWorkSource`'s catch-all files it as a `reason: 'other'`
+        // dead-letter row. That is precisely the self-inflicted DLQ noise
+        // the purge's in-transaction sync-queue delete exists to prevent,
+        // arriving through a different door. Returning empty lets the
+        // Reconciler treat the queue row as drained and delete it.
+        //
+        // A residual window remains: a chunk claimed before severance
+        // committed carries a transaction snapshot that predates the
+        // marker. It is bounded by one chunk and costs one DLQ row.
+        // Closing it would need a lock on the write path, which is not
+        // worth it.
+        if ($map->isModelDeleting()) {
+            return new BackfillResult(slotsWritten: [], stillUnmapped: []);
+        }
+
         $plan = PayloadSplitter::split($map, $fields);
 
         $pageTableNames = $this->resolvePageTableNames(array_keys($plan->slotWrites));

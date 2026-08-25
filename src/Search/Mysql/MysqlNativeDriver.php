@@ -77,6 +77,26 @@ final class MysqlNativeDriver implements EntrySearchInterface
             $request->correlationId,
         );
 
+        // ADR 0038: the read surfaces go DARK for a model being deleted —
+        // an empty page, indistinguishable from a model that never
+        // existed, matching the posture `SchemaReader::describeModel()`
+        // already takes for tenant isolation.
+        //
+        // This belongs here rather than in `SearchService` or the
+        // pre-flight, and the reason is structural: `SearchService`
+        // resolves the snapshot only when `filter !== null`, so a
+        // match-all read would sail straight past a check placed there.
+        // The driver resolves it unconditionally, so this one site covers
+        // filtered and unfiltered alike — and covers `read()`, which is a
+        // façade over exactly this call.
+        if ($snapshot->isModelDeleting()) {
+            return new SearchResult(
+                rows:       [],
+                nextCursor: null,
+                pageSize:   $request->pageSize,
+            );
+        }
+
         $query = new EntryQuery(
             tenantId:     $request->tenantId,
             modelId:      $request->modelId,
@@ -150,6 +170,18 @@ final class MysqlNativeDriver implements EntrySearchInterface
             $tenantId,
             UuidV4::generate(),
         );
+        // ADR 0038, and this MUST come before the canonicalisation below
+        // rather than being folded into it. A model deletion marks every
+        // field, so `pendingDeletionNames` holds all of them and
+        // `canonicalisePayloadKeys()` would strip every key — returning a
+        // real `Entry` with a real id and `fields: []`. That is a positive
+        // claim that the entry exists, which is worse than the leak it
+        // was meant to prevent. Returning null matches the `$row === false`
+        // path above, so a caller cannot tell the two apart.
+        if ($snapshot->isModelDeleting()) {
+            return null;
+        }
+
         if ($snapshot->hasRenamesInFlight() || $snapshot->hasPendingDeletions()) {
             $fields = $snapshot->canonicalisePayloadKeys($fields);
         }

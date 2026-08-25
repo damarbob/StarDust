@@ -10,6 +10,8 @@ use PDOException;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
+use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Support\ModelDeletionProbe;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -72,6 +74,7 @@ final class BulkIngestSubmitter
         // tenant matches the submission's tenant — async submission
         // is single-tenant by contract (per-tenant idempotency key,
         // per-tenant queue depth).
+        $modelIds = [];
         foreach ($payloads as $i => $p) {
             TenantId::assertValid($p->tenantId);
             if ($p->tenantId !== $tenantId) {
@@ -80,6 +83,21 @@ final class BulkIngestSubmitter
                     . "{$p->tenantId} but submission tenant_id is {$tenantId}."
                 );
             }
+            $modelIds[] = $p->modelId;
+        }
+
+        // ADR 0038. Position matters: this must stay ahead of
+        // `writeArtifact()` below, or a refused submission leaves a
+        // multi-megabyte JSON artifact on disk that nothing collects.
+        // Note the submission is single-*tenant* by contract but not
+        // single-*model*, so the batch really can name several.
+        $deleting = ModelDeletionProbe::deletingAmong($this->pdo, $modelIds);
+        if ($deleting !== []) {
+            throw new ModelDeletionInProgressException(
+                'Bulk submission rejected: model(s) ' . implode(', ', $deleting)
+                . ' are being deleted and can accept no entries.'
+                . ' Run a reconciler to finish the purge.'
+            );
         }
 
         // Idempotency-key fast path: if a row already exists for this

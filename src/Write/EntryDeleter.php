@@ -70,9 +70,27 @@ final class EntryDeleter
             // `deleted_at IS NULL` in the WHERE is what makes the call
             // idempotent without a prior SELECT: a second delete matches
             // zero rows instead of overwriting the original timestamp.
+            //
+            // ADR 0038 rides the same statement rather than adding a
+            // pre-SELECT, which would cost this class the no-pre-SELECT
+            // idempotence its whole design rests on. Soft-deleting a row
+            // whose model is being hard-purged achieves nothing, so the
+            // join makes it match zero rows and return `false` — matching
+            // the idempotent posture already documented above.
+            //
+            // **The join MUST be LEFT.** An INNER join would require a
+            // live `stardust_models` row, and several fixtures (and any
+            // real deployment predating the registry) carry `entry_data`
+            // rows whose `model_id` has no registry row at all. Those
+            // would silently start returning `false`. With LEFT, a missing
+            // model yields NULL, which satisfies `IS NULL` — absent is not
+            // deleting.
             $stmt = $this->pdo->prepare(
-                'UPDATE entry_data SET deleted_at = ?, updated_at = ?'
-                . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
+                'UPDATE entry_data e'
+                . ' LEFT JOIN stardust_models m ON m.id = e.model_id'
+                . ' SET e.deleted_at = ?, e.updated_at = ?'
+                . ' WHERE e.id = ? AND e.tenant_id = ? AND e.deleted_at IS NULL'
+                . '   AND m.deleted_at IS NULL'
             );
             $stmt->execute([$now, $now, $entryId, $tenantId]);
             $deleted = $stmt->rowCount() === 1;

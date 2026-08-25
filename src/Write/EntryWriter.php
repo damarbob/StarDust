@@ -9,6 +9,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\EntryNotFoundException;
+use StarDust\Exception\ModelDeletionInProgressException;
 use Throwable;
 
 /**
@@ -113,6 +114,21 @@ final class EntryWriter
         // just to the slot plan: a client still sending a pre-rename
         // field name would otherwise store the stale key verbatim.
         $map = LiveSlotMap::loadFor($this->pdo, $payload->modelId);
+
+        // ADR 0038, and note this deliberately INVERTS the ADR 0037 rule
+        // one line below. A deleted *field's* key is stripped rather than
+        // rejected, because a rejected write loses data while a strip
+        // converges. For a model there is no residual valid entry to
+        // preserve: this row would land either behind the purge cursor,
+        // making the acceptance a lie, or ahead of it, becoming a
+        // permanent orphan with a dangling `model_id`.
+        if ($map->isModelDeleting()) {
+            throw new ModelDeletionInProgressException(
+                "Model {$payload->modelId} is being deleted; no entry can be written to it."
+                . ' Run a reconciler to finish the purge.'
+            );
+        }
+
         $fields = $map->canonicalise($payload->fields);
 
         $jsonFields = json_encode(
@@ -258,6 +274,17 @@ final class EntryWriter
         // would make the renamed field look absent and NULL its slot on
         // every update during the rename window.
         $map = LiveSlotMap::loadFor($this->pdo, $modelId);
+
+        // ADR 0038 — see the identical guard on the write path. `$modelId`
+        // comes from the locked `entry_data` row rather than the caller,
+        // so an update cannot reach a model the caller never named.
+        if ($map->isModelDeleting()) {
+            throw new ModelDeletionInProgressException(
+                "Model {$modelId} is being deleted; entry {$entryId} cannot be updated."
+                . ' Run a reconciler to finish the purge.'
+            );
+        }
+
         $fields = $map->canonicalise($fields);
 
         $jsonFields = json_encode(

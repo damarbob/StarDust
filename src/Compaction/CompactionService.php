@@ -8,6 +8,7 @@ use Closure;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\CompactionCapacityException;
+use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Retype\RetypeInitiator;
 use StarDust\Support\UuidV4;
@@ -83,6 +84,24 @@ final class CompactionService
      */
     public function plan(int $tenantId, int $modelId): CompactionPlan
     {
+        // ADR 0038. Guarding `plan()` rather than `compact()` covers both,
+        // including `compactModel(dryRun: true)` — which is the surface
+        // that actually matters here, because without this it prints a
+        // *successful empty plan* for a model being destroyed.
+        //
+        // `CompactionRepository::loadModelSlots()` selects on
+        // `status IN ('assigned','ready') AND is_filterable = 1`, and a
+        // severed field fails both, so the planner genuinely cannot see
+        // the model's slots — "nothing to compact" and "this model is
+        // being erased" would be reported identically.
+        if ($this->repository->modelIsDeleting($modelId)) {
+            throw new ModelDeletionInProgressException(sprintf(
+                'Model %d is being deleted; it cannot be compacted.'
+                . ' Run a reconciler to finish the purge.',
+                $modelId,
+            ));
+        }
+
         return CompactionPlanner::plan(
             tenantId: $tenantId,
             modelId: $modelId,
