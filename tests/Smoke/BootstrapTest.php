@@ -446,6 +446,99 @@ final class BootstrapTest extends TestCase
         self::assertSame(1, $exists, 'Re-running bootstrap must not duplicate the column.');
     }
 
+    /**
+     * ADR 0038 deliverable: `stardust_models.deleted_at`, the model-level
+     * drain marker. Nullable with no default, so existing rows stay valid
+     * — a non-null value means "a model deletion is in flight".
+     *
+     * This gives `stardust_models` its first nullable column. The table
+     * still has no `updated_at`, which is why `ModelRenamer` takes no
+     * clock; that negative is asserted here so a future migration adding
+     * one is a decision rather than a drift.
+     */
+    public function testBootstrapAddsModelsDeletedAtColumn(): void
+    {
+        (new Bootstrapper($this->pdo))->run();
+
+        $column = $this->pdo
+            ->query(
+                'SELECT IS_NULLABLE, DATA_TYPE, COLUMN_DEFAULT'
+                . ' FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_models'"
+                . " AND column_name = 'deleted_at'"
+            )
+            ->fetch(\PDO::FETCH_ASSOC);
+
+        self::assertIsArray($column, 'deleted_at column must be present on stardust_models.');
+        self::assertSame('YES', $column['IS_NULLABLE'], 'deleted_at must be nullable.');
+        self::assertSame('datetime', $column['DATA_TYPE']);
+        self::assertNull($column['COLUMN_DEFAULT'], 'deleted_at must default to NULL.');
+
+        $updatedAt = (int) $this->pdo
+            ->query(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_models'"
+                . " AND column_name = 'updated_at'"
+            )
+            ->fetchColumn();
+        self::assertSame(0, $updatedAt, 'stardust_models still has no updated_at — ModelRenamer takes no clock.');
+
+        // Idempotent across re-runs.
+        (new Bootstrapper($this->pdo))->run();
+        (new Bootstrapper($this->pdo))->run();
+
+        $exists = (int) $this->pdo
+            ->query(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_models'"
+                . " AND column_name = 'deleted_at'"
+            )
+            ->fetchColumn();
+        self::assertSame(1, $exists, 'Re-running bootstrap must not duplicate the column.');
+    }
+
+    /**
+     * ADR 0038 prerequisite: `stardust_sync_queue (entry_id)`.
+     *
+     * The table carried a primary key and nothing else since Phase 1,
+     * deliberately deferring indexes to "a separate, reviewable schema
+     * change". This is that change — the model purge deletes queue rows
+     * by `entry_id`, and without the index that is a full table scan
+     * taking one exclusive record lock per row in the queue, held for a
+     * whole chunk transaction. `EntryWriter`'s exhaustion enqueue does
+     * not use SKIP LOCKED, so a blocked INSERT there is a blocked
+     * `write()` — an ADR 0007 regression.
+     */
+    public function testBootstrapAddsSyncQueueEntryIdIndex(): void
+    {
+        (new Bootstrapper($this->pdo))->run();
+
+        $rows = $this->pdo->query('SHOW INDEX FROM stardust_sync_queue')->fetchAll(\PDO::FETCH_ASSOC);
+        $matching = array_values(array_filter(
+            $rows,
+            static fn (array $r): bool => $r['Key_name'] === 'ix_sync_queue_entry',
+        ));
+
+        self::assertCount(1, $matching, 'ix_sync_queue_entry must exist and be single-column.');
+        self::assertSame('entry_id', $matching[0]['Column_name']);
+        self::assertSame(1, (int) $matching[0]['Seq_in_index']);
+        self::assertSame(1, (int) $matching[0]['Non_unique'], 'The index must not be unique — many rows may queue one entry.');
+
+        // Idempotent across re-runs.
+        (new Bootstrapper($this->pdo))->run();
+        (new Bootstrapper($this->pdo))->run();
+
+        $again = $this->pdo->query('SHOW INDEX FROM stardust_sync_queue')->fetchAll(\PDO::FETCH_ASSOC);
+        $count = count(array_filter(
+            $again,
+            static fn (array $r): bool => $r['Key_name'] === 'ix_sync_queue_entry',
+        ));
+        self::assertSame(1, $count, 'Re-running bootstrap must not duplicate the index.');
+    }
+
     /** Engine convenience method delegates to the Bootstrapper. */
     public function testEngineBootstrapMethodInvokesBootstrapper(): void
     {

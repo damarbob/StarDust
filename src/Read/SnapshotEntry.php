@@ -32,6 +32,12 @@ final class SnapshotEntry
      *                                       the mapping is severed, so nothing may resolve
      *                                       or filter them. Carried only so the point read
      *                                       can strip their keys from un-purged payloads.
+     * @param bool                           $modelDeleted ADR 0038: `stardust_models.deleted_at`
+     *                                       is non-null — a model deletion is in flight.
+     *                                       **Not derivable from `$fieldsByName` being empty**:
+     *                                       a model registered with no fields is legal, and a
+     *                                       `modelId` with no registry row at all must read
+     *                                       `false` here, not `true`.
      */
     public function __construct(
         public readonly int $modelId,
@@ -40,6 +46,7 @@ final class SnapshotEntry
         public readonly array $fieldsByName,
         public readonly array $pageTableNames,
         public readonly array $pendingDeletionNames = [],
+        public readonly bool $modelDeleted = false,
     ) {
         // Computed once here rather than memoised lazily: the snapshot
         // is immutable and cached per schema version, so the answer
@@ -82,6 +89,29 @@ final class SnapshotEntry
     public function hasPendingDeletions(): bool
     {
         return $this->pendingDeletionNames !== [];
+    }
+
+    /**
+     * True when this model's ADR 0038 deletion is initiated and its entry
+     * purge has not finished.
+     *
+     * The read surfaces go **dark** on this rather than raising:
+     * `read()` / `search()` return an empty page and `get()` returns
+     * `null`, indistinguishable from a model that never existed. That
+     * matches the tenant-isolation posture `SchemaReader::describeModel()`
+     * already takes, and it is why the check belongs in the driver rather
+     * than in the pre-flight — an unfiltered (match-all) request never
+     * reaches pre-flight at all.
+     *
+     * Note this is independent of {@see self::hasPendingDeletions()}. A
+     * model deletion marks every field too, so both are true during a
+     * model purge — but a *field* deletion sets only the latter, and the
+     * two must never be conflated. Reading them from one aliased column
+     * is the mistake this pair exists to prevent.
+     */
+    public function isModelDeleting(): bool
+    {
+        return $this->modelDeleted;
     }
 
     /**

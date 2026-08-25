@@ -11,6 +11,8 @@ use StarDust\Delete\DeleteCheckpointRepository;
 use StarDust\Delete\DeleteFieldInitiator;
 use StarDust\Delete\DeletePurgeExecutor;
 use StarDust\Delete\DeletePurgeWorkSource;
+use StarDust\Read\SlotResolver;
+use StarDust\Read\SnapshotEntry;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Rename\RenameBackfillExecutor;
 use StarDust\Rename\RenameBackfillWorkSource;
@@ -23,6 +25,7 @@ use StarDust\Retype\RetypeInitiator;
 use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CardinalitySampler;
+use StarDust\Write\LiveSlotMap;
 use StarDust\Write\SlotRowUpserter;
 
 /**
@@ -181,6 +184,83 @@ abstract class Phase6bTestCase extends Phase6aTestCase
             'status'            => (string) $row['status'],
             'last_processed_id' => (int) $row['last_processed_id'],
         ];
+    }
+    /**
+     * ADR 0038: set `stardust_models.deleted_at` by hand.
+     *
+     * The keystone helper of the whole model-deletion test surface. The
+     * drain marker is a plain column rather than a checkpoint row, so
+     * every severance guard can be exercised with no lifecycle code at
+     * all — which is what lets the guards ship and be tested ahead of the
+     * purge that sets the marker in production.
+     */
+    protected function markModelDeleted(int $modelId, ?string $at = null): void
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE stardust_models SET deleted_at = ? WHERE id = ?'
+        );
+        $stmt->execute([$at ?? gmdate('Y-m-d H:i:s'), $modelId]);
+    }
+
+    /** Clear the ADR 0038 marker — for tests asserting the guard is the cause. */
+    protected function clearModelDeleted(int $modelId): void
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE stardust_models SET deleted_at = NULL WHERE id = ?'
+        );
+        $stmt->execute([$modelId]);
+    }
+
+    /**
+     * The model row, or null when it is gone.
+     *
+     * The nullable counterpart the model lifecycle needs, mirroring
+     * `fetchFieldRowOrNull()`: after the purge's final chunk there is no
+     * row, and a helper that asserts existence cannot express that.
+     *
+     * @return array<string, mixed>|null
+     */
+    protected function fetchModelRowOrNull(int $modelId): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, tenant_id, name, deleted_at FROM stardust_models WHERE id = ?'
+        );
+        $stmt->execute([$modelId]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+        return $row === false ? null : $row;
+    }
+
+    /** The read-path snapshot for a model, loaded fresh (no cache). */
+    protected function snapshotFor(int $modelId, int $atVersion = 1): SnapshotEntry
+    {
+        return SlotResolver::load($this->pdo, $modelId, $atVersion);
+    }
+
+    /** The write-path live-slot map for a model. */
+    protected function liveSlotMapFor(int $modelId): LiveSlotMap
+    {
+        return LiveSlotMap::loadFor($this->pdo, $modelId);
+    }
+
+    protected function countEntryRows(int $tenantId, int $modelId): int
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT COUNT(*) FROM entry_data WHERE tenant_id = ? AND model_id = ?'
+        );
+        $stmt->execute([$tenantId, $modelId]);
+
+        return (int) $stmt->fetchColumn();
+    }
+
+    protected function countFieldRows(int $modelId): int
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT COUNT(*) FROM stardust_fields WHERE model_id = ?'
+        );
+        $stmt->execute([$modelId]);
+
+        return (int) $stmt->fetchColumn();
     }
 
     /** Raw payload for an entry, as stored — no assembler, no fallback. */

@@ -47,6 +47,8 @@ final class Bootstrapper
         $this->ensureBackfillCheckpointsSourceTypeColumn();
         $this->ensureFieldsPreviousNameColumn();
         $this->ensureFieldsDeletedAtColumn();
+        $this->ensureModelsDeletedAtColumn();
+        $this->ensureSyncQueueEntryIdIndex();
         $this->seedSchemaVersionSingleton();
     }
 
@@ -75,6 +77,12 @@ final class Bootstrapper
         // added here — the table is "tiny" by design and the Reconciler's
         // access patterns (Phase 5) will introduce any indexes they need
         // as a separate, reviewable schema change.
+        //
+        // ADR 0038 is the first such change: see
+        // `ensureSyncQueueEntryIdIndex()`, which adds `(entry_id)` because
+        // the model purge deletes queue rows by that column. It stays an
+        // ALTER rather than moving here, so an existing deployment picks
+        // it up on the next bootstrap.
         $this->pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS stardust_sync_queue (
                 id          BIGINT   NOT NULL AUTO_INCREMENT,
@@ -93,6 +101,7 @@ final class Bootstrapper
                 tenant_id   BIGINT       NOT NULL,
                 name        VARCHAR(128) NOT NULL,
                 created_at  DATETIME     NOT NULL,
+                deleted_at  DATETIME         NULL DEFAULT NULL,
                 PRIMARY KEY (id),
                 UNIQUE KEY ux_models_tenant_name (tenant_id, name)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -525,6 +534,106 @@ final class Bootstrapper
             return true;
         }
         return str_contains($e->getMessage(), '1060');
+    }
+
+    /**
+     * ADR 0038 model-deletion drain marker. The model-level analogue of
+     * `stardust_fields.deleted_at` above, and **not redundant with it**.
+     *
+     * A model deletion marks every field of the model as well, which is
+     * what makes every existing field-severance guard fire with no new
+     * predicates. But a guard derived only from those markers has to be
+     * spelled "no field of this model is live" — which is true of every
+     * brand-new empty model, and a model registered with no fields at all
+     * is legal. So the model needs its own marker: it is what lets the
+     * purge's claim query assert its own integrity, what keeps a deleting
+     * model out of `listModels()` / `describeModel()`, and what stops the
+     * get-or-create model lookup handing back the id of a model whose
+     * entries are being erased.
+     *
+     * A non-null value means exactly "a model deletion is in flight". The
+     * row is hard-deleted by the final purge chunk, which cascades the
+     * field rows away with it — so this is a drain-window marker, not a
+     * soft-delete tier. There is no undelete.
+     *
+     * This gives `stardust_models` its first nullable column. The table
+     * still has no `updated_at`, so `ModelRenamer` still needs no clock.
+     *
+     * Nullable, and null in steady state.
+     */
+    private function ensureModelsDeletedAtColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_models'
+              AND column_name = 'deleted_at'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_models
+                    ADD COLUMN deleted_at DATETIME NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * The "separate, reviewable schema change" `createSyncQueue()` above
+     * has been deferring since Phase 1 — ADR 0038 is the access pattern
+     * that needs it.
+     *
+     * The model purge deletes each chunk's queue rows by `entry_id` in the
+     * same transaction as the entries themselves, or `SyncQueueWorkSource`
+     * quarantines every one of them as `missing_entry_data` and the purge
+     * manufactures a dead-letter row per pending write. Measured on MySQL
+     * 8.0.13: without this index, deleting ten rows by `entry_id` from a
+     * 100 000-row queue is a full table scan taking **100 261 exclusive
+     * record locks** — held for the length of a chunk transaction that is
+     * also holding the `entry_data` deletes and their page cascade. With
+     * it, the same delete takes 30.
+     *
+     * That is a write-availability prerequisite rather than a purge
+     * optimisation: `SyncQueueWorkSource` claims with `SKIP LOCKED` and
+     * steps aside, but `EntryWriter`'s exhaustion enqueue does not, and a
+     * blocked sync-queue INSERT is a blocked `write()` — which ADR 0007
+     * does not permit.
+     *
+     * Callers must bind the chunk's ids as literals; expressed as a
+     * subquery the delete reverts to the full scan this index exists to
+     * prevent.
+     */
+    private function ensureSyncQueueEntryIdIndex(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.STATISTICS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_sync_queue'
+              AND index_name = 'ix_sync_queue_entry'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                CREATE INDEX ix_sync_queue_entry
+                    ON stardust_sync_queue (entry_id)
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateKeyName($e)) {
+                throw $e;
+            }
+        }
     }
 
     private function seedSchemaVersionSingleton(): void

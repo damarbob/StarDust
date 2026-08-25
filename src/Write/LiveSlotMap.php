@@ -64,12 +64,16 @@ final class LiveSlotMap
      * @param list<string> $pendingDeletionNames ADR 0037: names of fields whose deletion is
      *                     in flight. NOT present in the other two maps — the mapping is
      *                     severed — but carried so `canonicalise()` can strip them.
+     * @param bool $modelDeleted ADR 0038: `stardust_models.deleted_at` is non-null.
+     *                     **Not derivable from the maps being empty** — a fieldless model is
+     *                     legal, and a model id with no registry row must read `false`.
      */
     public function __construct(
         private readonly array $byFieldName,
         private readonly array $registeredFieldFilterability,
         private readonly array $canonicalByPreviousName = [],
         private readonly array $pendingDeletionNames = [],
+        private readonly bool $modelDeleted = false,
     ) {
     }
 
@@ -80,22 +84,51 @@ final class LiveSlotMap
         // LEFT JOIN so rows with no live slot still appear in the result —
         // needed to distinguish "registered field, slot exhausted" (enqueue)
         // from "unknown payload key" (silent drop, per ADR 0007 + 0013).
+        //
+        // ADR 0038: `stardust_models` drives, joined out to the fields.
+        // Driving off `stardust_fields` cannot tell a fieldless model from
+        // a nonexistent one, and the model-deletion marker has to be
+        // readable in exactly that case. Both `deleted_at` columns are
+        // aliased — under one name `FETCH_ASSOC` keeps only the last, and
+        // "this field is being deleted" would silently become "this model
+        // is". No tenant predicate: see {@see \StarDust\Read\SlotResolver}.
         $stmt = $pdo->prepare(
             'SELECT f.id AS field_id, f.name AS field_name, f.declared_type,'
-            . ' f.is_filterable, f.previous_name, f.deleted_at,'
+            . ' f.is_filterable, f.previous_name,'
+            . ' f.deleted_at AS field_deleted_at,'
+            . ' m.deleted_at AS model_deleted_at,'
             . ' a.slot_column, a.page_id, a.status'
-            . ' FROM stardust_fields f'
+            . ' FROM stardust_models m'
+            . ' LEFT JOIN stardust_fields f ON f.model_id = m.id'
             . ' LEFT JOIN stardust_slot_assignments a'
             . "   ON a.field_id = f.id AND a.status IN ({$placeholders})"
-            . ' WHERE f.model_id = ?'
+            . ' WHERE m.id = ?'
         );
+        // Statuses first, model id last — unchanged. Reordering the joins
+        // means reordering these, and static analysis will not catch it.
         $stmt->execute(array_merge(self::LIVE_STATUSES, [$modelId]));
+
+        /** @var list<array<string, mixed>> $rows */
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Read outside the loop: it runs zero times for a fieldless model.
+        // Zero rows means the model row is absent, which must read `false`
+        // — absent is not the same as deleting.
+        $modelDeleted = $rows !== [] && $rows[0]['model_deleted_at'] !== null;
 
         $entries = [];
         $registeredFieldFilterability = [];
         $canonicalByPreviousName = [];
         $pendingDeletionNames = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($rows as $row) {
+            // The outer join's all-null row for a model with no fields.
+            // Keyed on `field_id`: `name` is NOT NULL in the table, so
+            // `(string) null` yields `''`, which would register a phantom
+            // field under the empty string.
+            if ($row['field_id'] === null) {
+                continue;
+            }
+
             $name = (string) $row['field_name'];
 
             // ADR 0037: severed from the write path immediately, so it
@@ -106,7 +139,7 @@ final class LiveSlotMap
             // would keep writing it back into new entries forever, and
             // the purge's single forward pass would never catch them.
             // `canonicalise()` strips it instead.
-            if ($row['deleted_at'] !== null) {
+            if ($row['field_deleted_at'] !== null) {
                 $pendingDeletionNames[] = $name;
                 continue;
             }
@@ -136,7 +169,28 @@ final class LiveSlotMap
             $registeredFieldFilterability,
             $canonicalByPreviousName,
             $pendingDeletionNames,
+            $modelDeleted,
         );
+    }
+
+    /**
+     * True while this model's ADR 0038 deletion is in flight.
+     *
+     * The write path **refuses** on this, inverting the ADR 0037 rule
+     * that a deleted *field's* key is stripped rather than rejected.
+     * There is no residual valid entry to preserve: the write would
+     * create a row in a partition being erased, landing either behind the
+     * purge cursor (so the acceptance was a lie) or ahead of it (a
+     * permanent orphan with a dangling `model_id`). Rejection costs the
+     * caller nothing real, because the row would be destroyed inside the
+     * drain window regardless.
+     *
+     * Independent of {@see self::hasPendingDeletions()}: a model deletion
+     * sets both, a field deletion sets only that one.
+     */
+    public function isModelDeleting(): bool
+    {
+        return $this->modelDeleted;
     }
 
     /**
