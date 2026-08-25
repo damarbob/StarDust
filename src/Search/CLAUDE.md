@@ -61,3 +61,16 @@ The point read returns the payload verbatim, so during a rename backfill it woul
 **This costs a schema-version probe `get()` did not previously pay**, and that was a deliberate trade rather than an oversight: `read()` pays it on every call, ADR 0015 designs the probe to be sub-millisecond, and the rewrite itself is gated behind a precomputed `hasRenamesInFlight()` bool so steady state is one boolean check. `get()`'s previous single-query shape was incidental, not a designed optimisation. If that ever needs revisiting, the alternative is to leave it verbatim and document the divergence — but it must stay a decision, not drift.
 
 **Filters are not aliased and must not become so.** `FieldRefResolver` resolves leaves by current name only, so a filter on a renamed field's old name raises `UnknownFieldException` from the instant the rename commits. That is correct: a rejected filter loses nothing, whereas a rejected write loses data, which is why the write path converges instead. The slot is never touched by a rename, so a filter on the *new* name is correct immediately.
+
+## ADR 0038: going dark is the driver's job, not the pipeline's
+
+`MysqlNativeDriver::list()` returns an empty `SearchResult` and `get()` returns `null` when the snapshot carries `isModelDeleting()`. Both checks live in the driver rather than in `SearchService` or the pre-flight, for two structural reasons:
+
+- **`SearchService` resolves the snapshot only when `filter !== null`.** A match-all read would sail straight past a check placed there. The driver resolves it unconditionally, so one site covers filtered and unfiltered alike.
+- **`get()` bypasses `SearchService` entirely.** Putting the check in the driver is what keeps `get()` and `list()` agreeing, which is the invariant `DeleteWindowTest` already pins for fields.
+
+In `get()` the check must come **before** `canonicalisePayloadKeys()`, not be folded into it: a model deletion marks every field, so the canonicaliser would strip every key and hand back a real `Entry` with a real id and `fields: []` — a positive existence claim, worse than the leak it was meant to prevent.
+
+**A third-party ADR 0022 driver does not inherit any of this.** That is the same jurisdiction split the interface already draws for `is_filterable` via `supportsFilterOn()`, so it is consistent rather than an oversight — but a custom driver must implement the darkening itself or it will serve entries from a model the rest of the engine reports as gone.
+
+Filters are the deliberate exception, and the asymmetry is correct: severance marks every field, so `FieldRefResolver` raises `UnknownFieldException` before the driver is reached. That is the same answer an unknown model id gives today, so the model still cannot be distinguished from one that never existed.

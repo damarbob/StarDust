@@ -158,13 +158,13 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 - **Field lifecycle** — online field retype, and filterability promotion and demotion, through a type-coercion matrix, with JSON-payload fallback throughout the backfill window. Demotion is registry-only and takes effect immediately: the slot is tombstoned for the Liberator to reclaim, and reads fall straight back to the payload.
 - **Model rename** — `renameModel()` is immediate and complete when it returns: a model's name is a label, not an identity, so entries, slots, filters and exports all keep working untouched and there is no background catch-up to wait for. One caveat: `schemaBuilder()`'s `createModel()` / `defineModel()` find a model by name, so a setup or seed script still using the old name will create a **second** model rather than finding the renamed one — update those scripts in step with the rename.
 - **Online field rename** — `renameField()` returns as soon as the registry is updated, and the stored data catches up in the background. Because each entry's JSON payload is keyed by field name, a rename rewrites every entry in the model, so it needs a running Reconciler to finish. Nothing breaks while it runs: reads return the value under the new name for every entry, migrated or not; a client still sending the old name keeps working, because inbound writes are rewritten to the new name before they are stored; and filters on the new name work from the moment the call returns, since a rename never disturbs the index. Filters using the *old* name are rejected outright rather than silently returning nothing. A field being renamed cannot be retyped, promoted, demoted, or compacted until the rewrite finishes.
+- **Model deletion** — `deleteModel()` removes a model, its fields and all of its entries. It returns as soon as the registry is updated, and from that moment the model is gone from `listModels()` and `describeModel()`, while reads of it go dark — an empty page, as if it had never existed. Destroying the data happens in the background and needs a running Reconciler. Unlike a field deletion, **writes to the model are refused** rather than quietly dropped, because an entry written to a model being erased has nowhere to live. This is the only operation in the library that physically deletes entry rows: there is no undelete, so export first if you might want the data back.
 - **Field deletion** — `deleteField()` removes a field and its stored values. It returns as soon as the registry is updated, and from that moment the field is gone everywhere you can observe it: reads and `describeModel()` stop reporting it, filters against it are rejected, new CSV exports drop its column, and writes still sending its name have the value dropped. Clearing the values out of already-stored entries happens in the background, so it needs a running Reconciler to finish — until it does, the data is still physically present in the table (and visible in the JSON artifact of an export that runs during the window), just unreachable through the API. The field's name becomes reusable once that pass completes, not before: registering it again in the meantime raises `FieldDeletionInProgressException` rather than silently handing you back the field being deleted. A field cannot be deleted while it is being renamed or retyped, and once deletion starts it cannot be renamed, retyped, promoted, demoted or compacted. There is no undelete.
 - **Schema introspection** — `listModels()` and `describeModel()` report a tenant's models and each field's declared type, so a UI can render the schema without hand-written registry SQL. Every field reports both whether it is *declared* filterable and whether it is *currently* indexed — the two differ during a backfill, and gating on the latter is what stops a UI from offering a filter the engine would reject.
 - **Slot maintenance** — `spread:report` shows how many extension pages each model's filterable fields occupy versus the fewest they could, so avoidable joins are visible before they cost you. `compact:model` acts on that: it relocates a fragmented model's fields onto a minimal page set, one field at a time so only one field is unfilterable at any moment, and `--dry-run` prints the plan without touching anything.
 
 **Not yet available:**
 
-- **No delete for models.** The field lifecycle is now complete — `schemaBuilder()` registers, `listModels()` / `describeModel()` introspect, `renameField()` and `renameModel()` rename, `retypeField()` changes a field's type online, `promoteFieldToFilterable()` / `demoteFieldFromFilterable()` turn indexing on and off, and `deleteField()` removes a field outright — but there is still no entry point for removing a *model*. Deleting a model by hand is not supported; foreign keys will at least refuse to drop one whose fields still hold live slots, so a mistake fails loudly rather than corrupting your slot inventory, but you would be left with orphaned entry rows either way. Model deletion is on the roadmap.
 - **Exports cannot be filtered.** An export always covers every non-deleted entry in the model. A `submitExport()` call carrying a non-empty `filter` is **rejected** with `ExportFilterNotSupportedException` rather than accepted and quietly ignored, so you find out at submission instead of discovering a full extract in the artifact. The argument is kept on the request DTO so filtering can be added later without a breaking signature change.
 - **No async import-job status reads.** `submitBulkWrite()` returns an `ImportJobId`, but there is no `getImportJob()` to resolve it (exports do have `getExportJob()`). The job itself does reach a terminal state — `completed` with a manifest, or `failed` with a `failed_reason` and a dead-letter row — so the information exists; there is simply no supported way to read it back. Query `stardust_import_jobs` directly if you need it before this lands.
 
@@ -752,6 +752,29 @@ What lags is the stored data. Each entry's JSON payload is keyed by field name, 
 
 **The name is not reusable until then.** Registering a new field with the same name on the same model raises `FieldDeletionInProgressException` instead of silently handing you back the field being deleted. A field cannot be deleted while it is being renamed or retyped, and once deletion starts it cannot be renamed, retyped, promoted, demoted or compacted. There is no undelete.
 
+### Deleting a model
+
+```php
+// Removes a model, every field it owns, and every entry belonging to
+// it. Returns as soon as the registry is updated — the data itself is
+// destroyed in the background, so this needs a running Reconciler.
+//
+// Returns false — rather than throwing — when there is nothing to do:
+// the model doesn't exist for this tenant, or a deletion is already in
+// flight.
+$deleted = $engine->deleteModel(tenantId: 42, modelId: $modelId);
+```
+
+**This is the only call in the library that physically deletes entry rows, and there is no undelete.** Entries, their indexed values, their queued writes, the field definitions and the model itself are all destroyed, and nothing keeps a copy. Export first if you might want the data back.
+
+The model disappears from everything you can observe the moment the call returns: `listModels()` and `describeModel()` stop reporting it, and `read()`, `search()` and `get()` go dark — an empty page and `null`, exactly as if the model had never been registered.
+
+**Writes are refused rather than ignored**, which is the one place this differs from deleting a field. `write()`, `updateEntry()`, `bulkWrite()` and `submitBulkWrite()` raise `ModelDeletionInProgressException`; `deleteEntry()` returns `false`. A field deletion quietly drops the deleted key from an incoming write because the rest of the entry is still worth storing — but an entry written to a model being erased has nowhere to live, so accepting it would either be a lie or leave a row stranded. `compactModel()` and `submitExport()` are refused for the same reason.
+
+What lags is the data itself. The Reconciler deletes the entries in bounded chunks and drops the model's registry row as the final step; that is the signal the deletion is complete. Until then the rows are still physically in `entry_data` — unreachable through the API, but visible in a raw table dump, and an export already claimed by the Chronicler when you called this will produce an empty artifact rather than failing.
+
+**The model's name is not reusable until then.** `createModel()` / `defineModel()` raise `ModelDeletionInProgressException` instead of silently handing you back the model being deleted — worth knowing if a seed script re-runs during the window. A model cannot be deleted while any of its fields is being renamed, retyped or deleted; conversely, once model deletion starts, none of those can be started on its fields.
+
 ## Async exports
 
 ```php
@@ -819,6 +842,7 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `ExportFilterNotSupportedException` | `submitExport()` was given a non-empty `filter`; exports cover the whole model (carries `$tenantId`, `$modelId`, `$filterKeys`). |
 | `ModelNotFoundException` | A model-level call named a `modelId` that does not exist for the caller's tenant (missing and cross-tenant are indistinguishable by design). |
 | `ModelNameConflictException` | `renameModel()` would collide with another model's name in the same tenant. |
+| `ModelDeletionInProgressException` | Something targeted a model whose deletion has started but whose background pass has not finished — a write, update, bulk submission, compaction or export submission against it, or an attempt to register a model or field reusing its name. Wait for the Reconciler. |
 | `FieldDeletionInProgressException` | Something targeted a field whose deletion has started but whose background pass has not finished — a rename, retype, promotion, demotion or compaction of it, or an attempt to register a new field reusing its name. Wait for the Reconciler. |
 
 ### Handling wire-format rejections

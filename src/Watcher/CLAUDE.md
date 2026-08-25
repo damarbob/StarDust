@@ -68,3 +68,11 @@ ADR 0031 §Sampling Method filters `WHERE sa.tenant_id = :tenant_id`, but **`sta
 Phase 6b adds `sampleSlot(int $slotAssignmentId): void` — the single-slot variant called post-promotion by `RetypeBackfillWorkSource`, emitting `cardinality_sampled` with `trigger='post_backfill'`.
 
 **Cardinality events carry `source: 'registry'`, not `'watcher'`**, per ADR 0020 line 49 — the Watcher merely owns the schedule.
+
+## ADR 0038: `PendingDemandReader`'s safety is not a local property
+
+`PendingDemandReader` gates on `f.is_filterable = 1 AND f.deleted_at IS NULL` and carries **no model predicate**. A model deletion marks every existing field, so those are excluded for free — but a field created *after* severance is not marked, and nothing about this query would stop it being read as demand.
+
+What actually closes that door is `SchemaBuilder::insertField()`, which refuses to add a field to a model whose `deleted_at` is set. Measured on MySQL 8.0.13: without it the INSERT succeeds, this reader returns the new field, `UnmappedFieldReserver` reserves it a slot on the ADR 0007 exhaustion path, and the model purge's **final** chunk then fails errno 1451 — permanently, after earlier chunks have already destroyed their entries, with no dead-letter route out.
+
+So the guard that protects this query lives in another package. Do not "simplify" `insertField()`'s model check away, and if this reader is ever refactored, keep the coupling in mind rather than assuming the predicate above is sufficient on its own.

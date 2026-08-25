@@ -1,6 +1,6 @@
 # Delete pipeline
 
-ADR 0037 field deletion. Five `final` collaborators mirroring the ADR 0036 rename shape — and mirroring it closely enough that the rename package is the right thing to read first.
+Two lifecycles, eleven `final` collaborators. **ADR 0037 field deletion** (five classes, `Delete*`) mirrors the ADR 0036 rename shape closely enough that the rename package is the right thing to read first. **ADR 0038 model deletion** (six classes, `*Model*`) mirrors the field one — read that first, then the model section at the bottom of this file for the four places it deliberately diverges.
 
 ## The one-line summary
 
@@ -94,3 +94,51 @@ The purge touches no slot — the initiator already tombstoned it — so it can 
 ## Final-chunk atomicity
 
 `DELETE stardust_fields` + `DELETE backfill_checkpoints` + the version bump commit **together**. Dropping the field row while the checkpoint survived would strand a `running` row whose INNER JOIN can no longer resolve — precisely the orphan class this feature exists to remove.
+
+---
+
+## Model deletion (ADR 0038)
+
+`DeleteModelInitiator`, `ModelDeleteCheckpoint`, `ModelDeleteCheckpointRepository`, `ModelDeleteChunkResult`, `ModelPurgeExecutor`, `ModelPurgeWorkSource`. Same shape as the field half, same order of operations, and the same one-line summary with one word changed:
+
+**Severance is synchronous and total; the purge is asynchronous; the model row dies last — and it destroys rows rather than keys.**
+
+### What it inherits for free, and why that is the design
+
+Severance marks `stardust_models.deleted_at` **and** sets `deleted_at` + `is_filterable = 0` on every field of the model. That second half is the whole economy of the feature: every existing field-severance guard in the engine fires with **zero new predicates** — the read snapshot, the point-read strip, `LiveSlotMap::canonicalise()`, both `SchemaReader` queries, both `SchemaBuilder` get-or-create guards, both `HeaderResolver` methods, `PendingDemandReader`, `UnmappedFieldReserver`, `SlotReserver`, `MysqlNativeDriver::supportsFilterOn()`, and the rename/retype/delete initiators. `CompactionRepository` and `SpreadSampler` exclude them structurally instead (`status IN ('assigned','ready') AND is_filterable = 1` — a severed field fails both).
+
+### `stardust_models.deleted_at` is NOT redundant with the field markers
+
+The argument that decides it: a guard derived only from field markers has to be spelled *"no field of this model is live"* — and that is **true of every brand-new empty model**. A model registered with no fields is legal (`createModel($t, 'Foo')` with an empty list), so its severance would mark zero rows and the purge's claim query would have nothing to join through. `DeleteModelInitiatorTest::testAFieldlessModelIsSeveredAndOpensAClaimableCheckpoint` pins it.
+
+### Four deliberate divergences from the field half
+
+**1. Writes are refused, not stripped.** ADR 0037's most-easily-got-backwards rule inverted. A deleted field's key is stripped because a rejected write loses data while a strip converges; for a model there is no residual valid entry — the row would land behind the purge cursor (making the acceptance a lie) or ahead of it (a permanent orphan with a dangling `model_id`). `write()` / `updateEntry()` / `bulkWrite()` / `submitBulkWrite()` throw `ModelDeletionInProgressException`; `deleteEntry()` returns `false`; `read()` / `search()` / `get()` go **dark**.
+
+**2. The final chunk re-asserts severance rather than trusting it.** If ADR 0037's final chunk is wrong, one row survives. If this one is wrong it throws errno 1451 *after every earlier chunk has already committed its deletes* — and the chunk fetch then returns nothing, so every subsequent tick believes it is the final chunk and rethrows forever. **There is no DLQ path, by design** (ADR 0018's quarantine would leave the exact orphan this eliminates), which is precisely why the last transaction must not be able to fail on a preventable condition. The re-assertion carries **no status predicate** on the slot sweep: measured, a `tombstoned` row that still holds a `field_id` re-breaks the cascade, because the FK cares about the column, not the status.
+
+**3. The tenant predicate is the access path, not hygiene.** `model_id` is globally unique so `WHERE model_id = ?` selects identical rows — but both `entry_data` secondary indexes lead on `tenant_id`, and for a model whose rows are not spread uniformly across the PK (every model created after the first) the tenant-scoped chunk query is a **covering** range scan while dropping the predicate collapses it to a PK scan of the whole table. Measured 43× on 150 000 rows, per chunk. ADR 0029 omits a predicate that was never on the access path; this would omit the leading column of the only usable index — same principle, opposite conclusion.
+
+**4. Lock failures are retried, and the errno is 1205, not 1213.** The purge cascades `entry_data` deletes into `entry_slots_page_X` while the Liberator nullifies the same rows — and severance tombstones every slot of the model, so the Liberator is *guaranteed* to be sweeping precisely those slots. Measured in both directions: **errno 1205, never 1213.** `ModelPurgeWorkSource` retries both on `Config::$modelPurgeLockRetryBudget`, and **there is no gap path** — skipping a chunk would leave rows with a dangling `model_id` forever, and since `entry_data` has no FK the final DELETE would still succeed, so nothing would notice.
+
+That last one had to be fixed on the Liberator side too, in the same change: `SlotSweeper::isDeadlock()` matched only 40001/1213, `PollLoop` deliberately does not catch, and an unretried 1205 therefore **killed the Liberator daemon** for the duration of every model purge. Pinned by `LiberatorDeadlockRetryTest::testLockWaitTimeoutIsRetriedLikeADeadlock`.
+
+### `stardust_sync_queue` rows die in the chunk transaction
+
+Otherwise `SyncQueueWorkSource` finds no `entry_data` row for each survivor and files a `missing_entry_data` dead-letter row — the purge manufacturing DLQ noise in proportion to pending writes. This needed a new index: the table carried a PK and nothing else, and measured, deleting ten rows by `entry_id` from a 100 000-row queue was a full scan taking **100 261 exclusive record locks** (30 with `ix_sync_queue_entry`), held for a whole chunk transaction. `EntryWriter`'s exhaustion enqueue does not use `SKIP LOCKED`, so that is a blocked `write()` — an ADR 0007 regression. Bind the ids as literals; a subquery reverts to the full scan.
+
+**One race ADR 0038 does not name, closed here:** `BackfillExecutor` reads `entry_data` non-locking then UPSERTs into page tables, so a purge committing in between produces errno 1452, which `SyncQueueWorkSource`'s catch-all files as `reason: 'other'` — the same DLQ noise through a different door. It returns an empty `BackfillResult` for a deleting model instead.
+
+### `delete_model_{id}`, and why the LIKE is escaped
+
+The fourth namespace. All four prefixes are thirteen characters, so every claim query shares `SUBSTRING(job_name, 14)`, and `delete_model_` / `delete_field_` diverge at position 8. But `job_name` is **operator-supplied** for Backfill Pump jobs and `_` is a single-character wildcard — `schema_reference` §5.4's own example is `model_42_rebuild`. For ADR 0037 a stray match meant a spurious `JSON_REMOVE`; here it is an unrecoverable `DELETE`. So the pattern goes through `Support\LikePattern` **and** the query carries `m.deleted_at IS NOT NULL`. Verified on MySQL 8.0.13: `deleteXmodelY_rebuild` matches the unescaped pattern and not the escaped one. All four repositories were escaped in the same change.
+
+Severance opens **one** checkpoint, never one per field — N field purges would rewrite the same rows N times and never drop the model — and clears every field-scoped checkpoint across **all three** namespaces (the `delete_field_` leg is new relative to ADR 0037, and reachable: a field purge manually marked `failed` leaves its row).
+
+### The E0 emptiness probe
+
+`count($ids) < $chunkSize` is a hypothesis; the probe before the model DELETE is the proof. A write transaction that opened before severance committed carries a pre-severance snapshot for its whole life and can commit rows afterwards; `entry_data.id` is auto-increment so those land ahead of the cursor and the purge normally catches them — unless they commit after what we thought was the last chunk. One indexed probe per completed purge turns a silent permanent orphan into an extra tick. Beyond what ADR 0038 requires, and kept deliberately.
+
+### Testing note: the vacuous-pass hazard is worse than for a field
+
+A *model* window test can pass for free in two ways, not one: the purge already finished, **or the model never existed** — `read()` on an unknown model id returns an empty page and `describeModel()` returns null today, with no code change at all. `ModelDeleteWindowTest::halfPurgedModel()` therefore asserts five things about its own fixture before returning, and `testTheDarkAssertionsCannotDistinguishAModelThatNeverExisted` records the reason in code.
