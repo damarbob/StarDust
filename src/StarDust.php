@@ -89,6 +89,7 @@ use StarDust\Write\EntryDeleter;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriteResult;
 use StarDust\Write\EntryWriter;
+use StarDust\Write\ImportJob;
 use StarDust\Write\ImportJobId;
 use StarDust\Write\SlotRowUpserter;
 use StarDust\Write\TenantId;
@@ -231,6 +232,26 @@ final class StarDust
     ): ImportJobId {
         TenantId::assertValid($tenantId);
         return $this->bulkSubmitter()->submit($tenantId, $payloads, $idempotencyKey);
+    }
+
+    /**
+     * Consumer-side status read for an async bulk import: resolves the
+     * {@see ImportJobId} returned by {@see self::submitBulkWrite()}
+     * back to a full {@see ImportJob}. Returns `null` when the job
+     * does not exist OR belongs to a different tenant — tenant
+     * isolation is enforced by the `WHERE` clause, mirroring
+     * {@see self::getExportJob()}.
+     *
+     * `ImportJob::$entriesWritten` against `$entryCount` is the
+     * progress fraction; on a `failed` job the former is the replay
+     * boundary, since the manifest is checkpointed inside each chunk
+     * transaction and the failure path does not overwrite it. Both it
+     * and `$chunks` are `null` until the first chunk commits.
+     */
+    public function getImportJob(int $tenantId, int $jobId): ?ImportJob
+    {
+        TenantId::assertValid($tenantId);
+        return $this->bulkSubmitter()->getJob($tenantId, $jobId);
     }
 
     /**

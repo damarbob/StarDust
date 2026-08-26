@@ -179,6 +179,67 @@ abstract class Phase5TestCase extends ReadPathTestCase
         return [(int) $this->pdo->lastInsertId(), $path];
     }
 
+    /**
+     * Inserts one `stardust_import_jobs` row in an arbitrary lifecycle
+     * state and returns its id. Unlike the two writers above it puts
+     * **no artifact on disk** — that is the point of it, for tests
+     * asserting on how a row projects rather than on how it drains.
+     * Mirrors `Phase7TestCase::seedExportJob()`.
+     *
+     * `$artifactPath` defaults to a bare filename, matching what the
+     * sibling writers store. Note the divergence this fixture inherits:
+     * `BulkIngestSubmitter::writeArtifact()` stores an ABSOLUTE path,
+     * these fixtures store a filename, and
+     * `ImportJobWorkSource::resolveArtifactPath()` accepts both by
+     * joining a relative one onto its own `artifactDir`.
+     *
+     * @param array{chunks: int, entries_written: int}|null $manifest
+     */
+    protected function seedImportJob(
+        int $tenantId,
+        string $status = 'pending',
+        string $artifactPath = 'import_seeded.json',
+        int $entryCount = 0,
+        ?string $idempotencyKey = null,
+        ?array $manifest = null,
+        ?string $failedReason = null,
+        ?string $workerIdentity = null,
+        ?string $claimedAt = null,
+        ?string $heartbeatAt = null,
+        ?string $createdAt = null,
+        ?string $completedAt = null,
+    ): int {
+        // `utcNowString()` lives on Phase7TestCase, below this class in
+        // the chain, so the format is inlined as the siblings do.
+        $createdAt ??= (new SystemClock())->now()
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format('Y-m-d H:i:s');
+
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO stardust_import_jobs'
+            . ' (tenant_id, status, idempotency_key, artifact_path, entry_count,'
+            . '  manifest, failed_reason, worker_identity, claimed_at,'
+            . '  heartbeat_at, created_at, completed_at)'
+            . ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $tenantId,
+            $status,
+            $idempotencyKey,
+            $artifactPath,
+            $entryCount,
+            $manifest === null ? null : json_encode($manifest, JSON_THROW_ON_ERROR),
+            $failedReason,
+            $workerIdentity,
+            $claimedAt,
+            $heartbeatAt,
+            $createdAt,
+            $completedAt,
+        ]);
+
+        return (int) $this->pdo->lastInsertId();
+    }
+
     protected function makeBackfillExecutor(): BackfillExecutor
     {
         return new BackfillExecutor(

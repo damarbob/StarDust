@@ -166,7 +166,6 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 **Not yet available:**
 
 - **Exports cannot be filtered.** An export always covers every non-deleted entry in the model. A `submitExport()` call carrying a non-empty `filter` is **rejected** with `ExportFilterNotSupportedException` rather than accepted and quietly ignored, so you find out at submission instead of discovering a full extract in the artifact. The argument is kept on the request DTO so filtering can be added later without a breaking signature change.
-- **No async import-job status reads.** `submitBulkWrite()` returns an `ImportJobId`, but there is no `getImportJob()` to resolve it (exports do have `getExportJob()`). The job itself does reach a terminal state — `completed` with a manifest, or `failed` with a `failed_reason` and a dead-letter row — so the information exists; there is simply no supported way to read it back. Query `stardust_import_jobs` directly if you need it before this lands.
 
 The remaining build sequence toward the v0.3.0 GA contract is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
@@ -506,6 +505,23 @@ $jobId = $engine->submitBulkWrite(
     payloads:        $largeBatch,
     idempotencyKey:  'monthly-import-2026-05',
 );
+
+// Poll status. Returns null when the job does not exist for this
+// tenant (tenant isolation is enforced by the WHERE clause).
+$job = $engine->getImportJob(tenantId: 42, jobId: $jobId->jobId);
+
+// entriesWritten against entryCount is the progress fraction. Both
+// entriesWritten and chunks are null until the first chunk commits.
+if ($job?->status === 'completed') {
+    echo "{$job->entriesWritten} of {$job->entryCount} entries written";
+}
+if ($job?->status === 'failed') {
+    // A failed job stops where it broke: entries already written stay
+    // written, and later ones are never attempted. entriesWritten is
+    // the durable boundary between the two, so a retry resubmits from
+    // there. It is null when the job failed before writing anything.
+    echo "failed ({$job->failedReason}); resume from " . ($job->entriesWritten ?? 0);
+}
 
 // Build payloads from JSON / arrays instead of the typed constructor —
 // handy when entries arrive off a wire (CMS, HTTP, queue). The envelope

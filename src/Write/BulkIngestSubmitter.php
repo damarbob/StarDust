@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace StarDust\Write;
 
+use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
 use PDOException;
@@ -35,6 +36,10 @@ use Throwable;
  *   - When `$idempotencyKey` is null the column stays NULL; MySQL
  *     UNIQUE permits multiple NULL rows so unkeyed submissions never
  *     collide.
+ *
+ * `getJob()` is the tenant-isolated status read that resolves the
+ * returned {@see ImportJobId} back to an {@see ImportJob} — the
+ * polling half of the ADR 0011 contract. It emits no event.
  *
  * Structured-log events (closed vocabulary, ADR 0020):
  *   - `bulk_accepted` (source: `bulk_api`) — emitted after the job
@@ -180,6 +185,103 @@ final class BulkIngestSubmitter
         ]);
 
         return new ImportJobId($jobId);
+    }
+
+    /**
+     * Tenant-isolated read of one `stardust_import_jobs` row. Returns
+     * null when the job does not exist OR belongs to a different
+     * tenant — never throws on not-found, mirroring
+     * {@see \StarDust\Read\EntryReader::get()} and
+     * {@see \StarDust\Export\ExportJobSubmitter::getJob()}.
+     */
+    public function getJob(int $tenantId, int $jobId): ?ImportJob
+    {
+        TenantId::assertValid($tenantId);
+
+        $stmt = $this->pdo->prepare(
+            'SELECT id, tenant_id, status, idempotency_key, artifact_path,'
+            . '       entry_count, manifest, failed_reason,'
+            . '       worker_identity, claimed_at, heartbeat_at,'
+            . '       created_at, completed_at'
+            . '  FROM stardust_import_jobs'
+            . ' WHERE id = ? AND tenant_id = ?'
+        );
+        $stmt->execute([$jobId, $tenantId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return null;
+        }
+
+        [$chunks, $entriesWritten] = $this->decodeManifest($row['manifest']);
+
+        return new ImportJob(
+            id: (int) $row['id'],
+            tenantId: (int) $row['tenant_id'],
+            status: (string) $row['status'],
+            idempotencyKey: $row['idempotency_key'] === null ? null : (string) $row['idempotency_key'],
+            artifactPath: (string) $row['artifact_path'],
+            entryCount: (int) $row['entry_count'],
+            chunks: $chunks,
+            entriesWritten: $entriesWritten,
+            failedReason: $row['failed_reason'] === null ? null : (string) $row['failed_reason'],
+            workerIdentity: $row['worker_identity'] === null ? null : (string) $row['worker_identity'],
+            claimedAt: $this->parseDateTime($row['claimed_at']),
+            heartbeatAt: $this->parseDateTime($row['heartbeat_at']),
+            createdAt: $this->parseDateTime($row['created_at']) ?? new DateTimeImmutable('now', new DateTimeZone('UTC')),
+            completedAt: $this->parseDateTime($row['completed_at']),
+        );
+    }
+
+    /**
+     * Unwraps the `{chunks, entries_written}` checkpoint manifest into
+     * a typed pair, `[null, null]` when the column is NULL or holds
+     * anything else.
+     *
+     * Deliberately NOT shared with `ImportJobWorkSource`'s private
+     * decoder, which collapses a missing manifest to `0`: that is
+     * correct there (it needs an arithmetic resume offset) and wrong
+     * here, where `null` — no chunk has committed — is a real state a
+     * consumer must be able to tell apart from `0`.
+     *
+     * `is_numeric()` rather than `is_int()` because the JSON decode of
+     * a `JSON` column yields ints, but a hand-written row could carry
+     * a numeric string; anything non-numeric stays null.
+     *
+     * @return array{0: ?int, 1: ?int}
+     */
+    private function decodeManifest(mixed $raw): array
+    {
+        if (!is_string($raw) || $raw === '') {
+            return [null, null];
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [null, null];
+        }
+
+        $chunks  = $decoded['chunks'] ?? null;
+        $written = $decoded['entries_written'] ?? null;
+
+        return [
+            is_numeric($chunks) ? (int) $chunks : null,
+            is_numeric($written) ? (int) $written : null,
+        ];
+    }
+
+    private function parseDateTime(mixed $raw): ?DateTimeImmutable
+    {
+        if (!is_string($raw) || $raw === '') {
+            return null;
+        }
+        // MySQL DATETIME columns are stored without a timezone marker;
+        // every column this submitter and the Reconciler's import work
+        // source write is normalised to UTC, so parsing as UTC is
+        // correct.
+        try {
+            return new DateTimeImmutable($raw, new DateTimeZone('UTC'));
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     private function findExistingJobId(int $tenantId, string $idempotencyKey): ?int
