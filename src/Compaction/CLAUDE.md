@@ -19,7 +19,9 @@ Locked by `tests/Smoke/Retype/SameTypeRelocationTest.php` — the premise everyt
 - `CompactionService` — initiates one relocation at a time and waits, emitting `compaction_planned` / `compaction_complete`.
 - `ModelSlot` / `FieldRelocation` / `CompactionPlan` — DTOs.
 
-## Four things that are load-bearing
+## Five things that are load-bearing
+
+**Planning refuses while a field of the model is mid-lifecycle (ADR 0039).** `CompactionService::plan()` raises `RetypeInProgressException` when `RetypeCheckpointRepository::existsRunningForAnyFieldOfModel()` is true. A field mid-relocation holds a `tombstoned` old slot and a `backfilling` new one, so the population below counts neither and the planner cannot see where it is going to land — measured, that produced `pages_after: 1` against a true answer of 2, with `spread:report` still showing `excess_pages: 1`. **The guard is on `plan()`, so `--dry-run` is refused too**, matching the ADR 0038 deleting-model guard directly above it and for the same reason: a dry run exists to report numbers. It is checkpoint-keyed rather than compaction-keyed, so an ordinary `promoteFieldToFilterable()` trips it as well — the planner is exactly as blind to that. It is **not a lock**: two operators can still both pass it between one's `plan()` and its first `initiateRelocation()`, and the per-field guard catches the real collision. Note this narrows ADR 0033's "resume is re-run" to "re-run once the window closes".
 
 **The population is ADR 0031's, deliberately.** `status IN ('assigned','ready')` + `is_filterable = 1`, the identical predicate pair `SpreadSampler` uses. Not a coincidence to be tidied: it is what makes `excess_pages → 0` a real success criterion instead of two subsystems agreeing by luck. `theoretical_min_pages` is reused from `SpreadSample` for the same reason — reimplementing it lets a compaction and the metric verifying it disagree.
 
@@ -31,7 +33,9 @@ Locked by `tests/Smoke/Retype/SameTypeRelocationTest.php` — the premise everyt
 
 ## Pin-or-fail, not defer
 
-The one deliberate divergence from ADR 0016 commitment 4. `RetypeInitiator::initiateRelocation()` reserves on the planner's page via `SlotReserver::reserveForBackfillOnPageWithinTransaction()`, and a miss **throws inside the transaction** so the whole tuple rolls back — old slot un-tombstoned, no checkpoint, no version bump. A failed relocation leaves nothing to unpick, which is what makes "re-run to replan" safe advice.
+The one deliberate divergence from ADR 0016 commitment 4. `RetypeInitiator::initiateRelocation()` reserves on the planner's page via `SlotReserver::reserveForBackfillOnPageWithinTransaction()`, and a miss **throws inside the transaction** so the whole tuple rolls back — old slot un-tombstoned, no checkpoint, no version bump. A relocation that fails *at initiation* therefore leaves nothing to unpick.
+
+**That is a statement about initiation only, and it used to be over-claimed here as "which is what makes 're-run to replan' safe advice" (corrected 2026-08-27).** It does not extend to a relocation that got *past* initiation: that one holds a `tombstoned` old slot, a `backfilling` new one and a `running` checkpoint, none of which the planner's population counts — so re-running mid-drain used to replan around a field it could not see. ADR 0039 closes that by refusing rather than by widening the population; see below.
 
 Deferring instead would let the work source later reserve on whatever page it picks, silently producing a compaction that does not compact. Stage C measured why that bites hardest here: relocating a model's **last field off a page** empties its affine set, so an unpinned reservation falls back to global-oldest exactly when placement matters most.
 

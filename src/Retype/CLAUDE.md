@@ -61,6 +61,8 @@ It passes **both type arguments as `null`** on purpose. Step 1 skips the `stardu
 
 Encapsulates all SQL against `backfill_checkpoints` rows whose `job_name LIKE 'retype_field_%'`. `loadOneClaimable()` JOINs `stardust_fields ⨝ stardust_models` to hydrate the partition tuple `(tenant_id, model_id, fieldName, sourceDeclaredType, targetDeclaredType, targetIsFilterable)`.
 
+**`existsRunningForAnyFieldOfModel()` is ADR 0039's, and is not a sibling of the identically-shaped delete method.** `Delete\ModelDeleteCheckpointRepository::existsRunningForModel()` already exists for a checkpoint keyed *directly* by model id; this one answers "does **any field of** this model have a running retype checkpoint", which needs the same `CAST(SUBSTRING(job_name, 14) AS UNSIGNED)` join `loadOneClaimable()` uses. The longer name is deliberate — the two must not read as variants of one query. `CompactionService::plan()` is the only caller: a field mid-relocation is invisible to the compaction planner's population, so planning during the window silently reports an end state the ADR 0031 spread sample contradicts. Its `LIKE` is escaped through `LikePattern` like the other three namespaces; probed on 8.0.13, an operator job named `retypeXfieldY99` **is** matched unescaped and is not matched here.
+
 ## `RetypeCoercionEngine`
 
 `attempt(value, valuePresent, from, to): CoercionOutcome` is the pure-static ADR 0024 matrix, with three states:

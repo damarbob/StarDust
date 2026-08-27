@@ -8,6 +8,7 @@ use StarDust\Compaction\CompactionRepository;
 use StarDust\Compaction\CompactionService;
 use StarDust\Clock\SystemClock;
 use StarDust\Exception\CompactionCapacityException;
+use StarDust\Exception\RetypeInProgressException;
 use StarDust\Reconciler\TickOutcome;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Tests\Smoke\Phase6bTestCase;
@@ -255,8 +256,223 @@ final class CompactModelTest extends Phase6bTestCase
     }
 
     // ---------------------------------------------------------------
+    // ADR 0039 — refusing to plan around an in-flight relocation
+    // ---------------------------------------------------------------
+
+    /**
+     * Proves the window fixture is genuinely mid-relocation.
+     *
+     * **Non-negotiable, and it must come first.** Every other assertion
+     * in this group is "the operation refuses", which passes vacuously
+     * if the fixture is not actually in the window — the same trap
+     * `DeleteWindowTest::testFixtureLeavesResidueInStorage` exists to
+     * close.
+     */
+    public function testWindowFixtureIsGenuinelyMidRelocation(): void
+    {
+        [, $fields, $strandedPageId] = $this->seedModelWithARelocationInFlight();
+        $betaId = $fields['beta'];
+
+        self::assertSame(
+            'running',
+            $this->fetchCheckpointForField($betaId)['status'] ?? null,
+            'beta must hold a running retype checkpoint.',
+        );
+
+        $live = $this->fetchLiveSlotForField($betaId);
+        self::assertNotNull($live, 'beta must hold a live slot.');
+        self::assertSame('backfilling', $live['status'], 'That slot must still be backfilling.');
+        self::assertSame(
+            $strandedPageId,
+            (int) $live['page_id'],
+            'beta must be landing on the page the planner cannot see.',
+        );
+
+        // And the defect's precondition: the planner's population really
+        // does omit beta, so it sees two pages where the truth is three.
+        $visible = (new CompactionRepository($this->pdo))->loadModelSlots(1, $this->windowModelId);
+        self::assertCount(2, $visible, 'The planner must see only alpha and gamma.');
+        self::assertNotContains(
+            $betaId,
+            array_map(static fn ($slot) => $slot->fieldId, $visible),
+            'beta is invisible to the planner — that is the whole defect.',
+        );
+    }
+
+    /** The guard: planning refuses while the population is known-incomplete. */
+    public function testPlanRefusesWhileAFieldIsRelocating(): void
+    {
+        [$modelId] = $this->seedModelWithARelocationInFlight();
+
+        $this->expectException(RetypeInProgressException::class);
+        $this->makeCompactionService()->plan(1, $modelId);
+    }
+
+    /**
+     * `--dry-run` refuses too, through the real facade.
+     *
+     * This is the surface an operator actually calls, and the one the
+     * defect hurts most: a dry run's whole purpose is to report numbers,
+     * and `pages_after: 1` against a true answer of 2 is the defect in
+     * its purest form. Same placement rationale as the ADR 0038
+     * deleting-model guard, which also sits in `plan()`.
+     */
+    public function testDryRunRefusesToo(): void
+    {
+        [$modelId] = $this->seedModelWithARelocationInFlight();
+
+        $this->expectException(RetypeInProgressException::class);
+        (new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $this->pdo)))
+            ->compactModel(1, $modelId, dryRun: true);
+    }
+
+    /**
+     * The guard is checkpoint-keyed, not compaction-keyed: an ordinary
+     * promotion blocks compaction exactly as a relocation does.
+     *
+     * The planner is equally blind to both — a promotion in flight also
+     * holds a `backfilling` slot on a page the plan does not account
+     * for — so narrowing this guard to relocations would leave the same
+     * defect reachable from `promoteFieldToFilterable()`.
+     */
+    public function testAnOrdinaryPromotionAlsoBlocksCompaction(): void
+    {
+        [$modelId] = $this->seedFragmentedModel();
+
+        // A JSON-only field promoted to filterable opens a running
+        // retype checkpoint with no compaction involved at all.
+        $deltaId = $this->createField($modelId, 'string', false, 'delta');
+        $this->makeRetypeInitiator()->initiate(1, $deltaId, null, true);
+        self::assertSame(
+            'running',
+            $this->fetchCheckpointForField($deltaId)['status'] ?? null,
+            'The promotion must actually be in flight.',
+        );
+
+        $this->expectException(RetypeInProgressException::class);
+        $this->makeCompactionService()->plan(1, $modelId);
+    }
+
+    /** A refusal is not a half-migration: nothing moves, nothing is emitted. */
+    public function testRefusalMutatesNothing(): void
+    {
+        [$modelId] = $this->seedModelWithARelocationInFlight();
+
+        $logger = $this->makeRecordingLogger();
+        $versionBefore = $this->fetchSchemaVersion();
+        $slotsBefore = $this->slotFingerprint();
+
+        try {
+            $this->makeCompactionService($logger)->compact(1, $modelId);
+            self::fail('Expected RetypeInProgressException.');
+        } catch (RetypeInProgressException $e) {
+            self::assertStringContainsString('reconciler', $e->getMessage());
+        }
+
+        self::assertSame($versionBefore, $this->fetchSchemaVersion());
+        self::assertSame($slotsBefore, $this->slotFingerprint(), 'A refusal must not touch a single slot.');
+        self::assertSame(
+            [],
+            $this->recordsWithEvent($logger->records(), 'compaction_planned'),
+            'A refused compaction must emit nothing.',
+        );
+    }
+
+    /**
+     * The refusal is transient, and self-clearing.
+     *
+     * "Resume is re-run" survives ADR 0039 — it just is not *immediate*.
+     * Once the Reconciler drains the stranded relocation, compaction
+     * plans against a complete population and reaches `excess_pages = 0`,
+     * which is the criterion the rest of this file uses. Without the
+     * guard the earlier run would have reported `pages_after: 1` here
+     * and left the model on two pages.
+     */
+    public function testCompactionProceedsOnceTheRelocationDrains(): void
+    {
+        [$modelId, $fields] = $this->seedModelWithARelocationInFlight();
+
+        $workSource = $this->makeRetypeBackfillWorkSource();
+        for ($i = 0; $i < 50; $i++) {
+            if ($this->fetchCheckpointForField($fields['beta'])['status'] === 'completed') {
+                break;
+            }
+            $workSource->tickOne('test-drain');
+        }
+        self::assertSame(
+            'completed',
+            $this->fetchCheckpointForField($fields['beta'])['status'],
+            'The stranded relocation must drain before the re-run.',
+        );
+
+        $plan = $this->makeCompactionService()->compact(1, $modelId);
+
+        $after = (new SpreadSampler($this->pdo, $this->makeRecordingLogger(), 2))->report(1, $modelId);
+        self::assertSame(
+            $plan->pagesAfter(),
+            $after[0]->pagesOccupied,
+            'The reported end state must match the ADR 0031 spread sample that verifies it.',
+        );
+        self::assertSame(0, $after[0]->excessPages(), 'excess_pages -> 0 is the success criterion.');
+        self::assertSame(3, $after[0]->liveSlotCount, 'No slot may be lost.');
+    }
+
+    // ---------------------------------------------------------------
     // Fixtures
     // ---------------------------------------------------------------
+
+    /** Set by {@see self::seedModelWithARelocationInFlight()}. */
+    private int $windowModelId = 0;
+
+    /**
+     * The ADR 0039 window: a model with one field stranded mid-relocation
+     * onto a page the planner will not choose.
+     *
+     * Reproduces the 2026-08-27 measurement exactly. Page 1 is roomy, so
+     * the planner consolidates there; beta is relocated onto page 3
+     * instead and left undrained. The planner then sees only alpha(p1)
+     * and gamma(p3) — two pages against a true three — and would plan
+     * gamma to page 1 and report `pages_after: 1`, while the real end
+     * state once beta drains is alpha+gamma on p1 and beta on p3, which
+     * ADR 0031 samples as `pages_occupied: 2, excess_pages: 1`.
+     *
+     * Page layout is forced by direct registry UPDATE for the reason
+     * `seedFragmentedModel()` documents — `SlotReserver` packs affinely
+     * (ADR 0032) and cannot produce a fragmented model on request.
+     *
+     * @return array{0: int, 1: array<string, int>, 2: int}
+     */
+    private function seedModelWithARelocationInFlight(): array
+    {
+        $roomy = $this->provisionPage(['i_str_01', 'i_str_02', 'i_str_03']);
+        $lonely = $this->provisionPage(['i_str_01']);
+        $stranded = $this->provisionPage(['i_str_01', 'i_str_02']);
+
+        $modelId = $this->createModel(1);
+        $fields = [];
+        foreach (['alpha', 'beta', 'gamma'] as $name) {
+            $fields[$name] = $this->createField($modelId, 'string', true, $name);
+        }
+
+        $this->bindSlot($roomy, 'i_str_01', $fields['alpha'], 'assigned');
+        $this->bindSlot($lonely, 'i_str_01', $fields['beta'], 'assigned');
+        $this->bindSlot($stranded, 'i_str_01', $fields['gamma'], 'assigned');
+
+        $this->seedEntry(1, $modelId, [
+            'alpha' => 'alpha-value',
+            'beta'  => 'beta-value',
+            'gamma' => 'gamma-value',
+        ]);
+
+        // Strand beta mid-flight: real initiation, deliberately undrained.
+        // Its old slot goes `tombstoned`, its new one `backfilling` on the
+        // page the planner is about to overlook.
+        $this->makeRetypeInitiator()->initiateRelocation(1, $fields['beta'], $stranded);
+
+        $this->windowModelId = $modelId;
+
+        return [$modelId, $fields, $stranded];
+    }
 
     /**
      * A model with three string fields forced onto three separate pages.

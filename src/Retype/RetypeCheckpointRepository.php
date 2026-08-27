@@ -86,6 +86,47 @@ final class RetypeCheckpointRepository
     }
 
     /**
+     * Does **any** field of this model have a running retype checkpoint?
+     *
+     * ADR 0039. {@see \StarDust\Compaction\CompactionService::plan()} asks
+     * this before planning, because a field mid-relocation is invisible to
+     * {@see \StarDust\Compaction\CompactionRepository::loadModelSlots()} —
+     * its old slot is `tombstoned` and its new one `backfilling`, and that
+     * population deliberately counts neither. Planning anyway produces a
+     * plan computed against a partial picture, whose `pages_before` and
+     * `pages_after` then contradict the ADR 0031 spread sample that is
+     * supposed to confirm the operation succeeded.
+     *
+     * **Deliberately not named `existsRunningForModel()`.**
+     * {@see \StarDust\Delete\ModelDeleteCheckpointRepository::existsRunningForModel()}
+     * already carries that name for a checkpoint keyed *directly* by model
+     * id. This is the different question — "does any field of this model
+     * have one" — and the names must not suggest the two are siblings.
+     *
+     * The `LIKE` is escaped for the reason {@see LikePattern} documents:
+     * `job_name` is operator-supplied for Backfill Pump jobs and `_` is a
+     * single-character wildcard, so the unescaped pattern also matches
+     * `retypeXfieldY_rebuild`. Here a stray match costs a spurious refusal
+     * rather than a spurious write, but the join to `stardust_fields` is
+     * what makes the answer meaningful either way.
+     */
+    public function existsRunningForAnyFieldOfModel(int $modelId): bool
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT 1'
+            . ' FROM backfill_checkpoints c'
+            . ' JOIN stardust_fields f'
+            . '   ON f.id = CAST(SUBSTRING(c.job_name, ' . (strlen(self::JOB_NAME_PREFIX) + 1) . ') AS UNSIGNED)'
+            . " WHERE c.status = 'running' AND c.job_name LIKE ? ESCAPE '\\\\'"
+            . '   AND f.model_id = ?'
+            . ' LIMIT 1'
+        );
+        $stmt->execute([LikePattern::escapedPrefix(self::JOB_NAME_PREFIX), $modelId]);
+
+        return $stmt->fetchColumn() !== false;
+    }
+
+    /**
      * The field's checkpoint status, or `null` when it has none.
      *
      * ADR 0033 compaction polls this between relocations: it initiates

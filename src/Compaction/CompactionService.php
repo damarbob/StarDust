@@ -9,6 +9,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\CompactionCapacityException;
 use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Exception\RetypeInProgressException;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Retype\RetypeInitiator;
 use StarDust\Support\UuidV4;
@@ -40,13 +41,21 @@ use StarDust\Support\UuidV4;
  * ADR 0033 as an explicit opt-in and is deliberately not implemented
  * yet; the surface stays forward-compatible.
  *
- * ## Resume is re-run
+ * ## Resume is re-run, once the window closes
  *
  * If the caller dies mid-operation nothing is stuck: in-flight
  * checkpoints are ordinary retype checkpoints the Reconciler drains
  * regardless. Re-running replans against the new state, and fields that
  * already reached a target page are no-ops — so the operation converges
  * idempotently with no cleanup step.
+ *
+ * **ADR 0039 narrows this: the re-run is not immediate.** A re-run
+ * issued while the abandoned relocation is still draining is refused
+ * rather than served a plan computed without it — see {@see self::plan()}.
+ * Convergence and no-stuck-state both survive; what the operator loses
+ * is the ability to re-run *inside* the drain window, and what they gain
+ * is that the numbers compaction reports agree with the ADR 0031 spread
+ * sample that verifies them.
  */
 final class CompactionService
 {
@@ -79,8 +88,11 @@ final class CompactionService
      * would violate the write-then-log discipline the rest of the engine
      * holds to.
      *
-     * @throws CompactionCapacityException when the model is fragmented but no
-     *                                     smaller page set can absorb the moves
+     * @throws CompactionCapacityException    when the model is fragmented but no
+     *                                        smaller page set can absorb the moves
+     * @throws ModelDeletionInProgressException when the model is being deleted
+     * @throws RetypeInProgressException      when a field of the model is mid-lifecycle,
+     *                                        so the slot population is known-incomplete
      */
     public function plan(int $tenantId, int $modelId): CompactionPlan
     {
@@ -98,6 +110,40 @@ final class CompactionService
             throw new ModelDeletionInProgressException(sprintf(
                 'Model %d is being deleted; it cannot be compacted.'
                 . ' Run a reconciler to finish the purge.',
+                $modelId,
+            ));
+        }
+
+        // ADR 0039, and it sits here for the reason spelled out directly
+        // above: guarding `plan()` covers `compactModel(dryRun: true)`
+        // too, which is the surface that matters. A dry run reporting
+        // `pages_after: 1` when the true answer is 2 is the whole defect.
+        //
+        // A field mid-relocation holds a `tombstoned` old slot and a
+        // `backfilling` new one, and `loadModelSlots()` counts neither —
+        // deliberately, since that population is ADR 0031's. So the
+        // planner cannot see where such a field is going to land, and a
+        // plan built without it reports a `pages_after` the ADR 0031
+        // spread sample then contradicts. Refusing keeps the operation
+        // and the metric that verifies it measuring one thing.
+        //
+        // Two things this guard is NOT:
+        //
+        // - It is not compaction-specific. An ordinary `retypeField()`
+        //   or `promoteFieldToFilterable()` on any field of the model
+        //   trips it, and that is correct — the planner is exactly as
+        //   blind to those as it is to a relocation.
+        // - It is not a lock. Two operators can still both get past this
+        //   in the window between one's `plan()` and its first
+        //   `initiateRelocation()`; `RetypeInitiator`'s per-field
+        //   `RetypeInProgressException` catches the real collision.
+        //   Closing that window needs a lock and is out of scope.
+        if ($this->checkpointRepository->existsRunningForAnyFieldOfModel($modelId)) {
+            throw new RetypeInProgressException(sprintf(
+                'Model %d has a field with a retype, promotion, demotion or relocation'
+                . ' still in flight, so its slot layout cannot be planned accurately yet.'
+                . ' The checkpoint is durable and a running `bin/stardust reconciler` will'
+                . ' drain it; wait for that and re-run. `spread:report` is safe meanwhile.',
                 $modelId,
             ));
         }

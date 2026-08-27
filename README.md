@@ -161,7 +161,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 - **Model deletion** — `deleteModel()` removes a model, its fields and all of its entries. It returns as soon as the registry is updated, and from that moment the model is gone from `listModels()` and `describeModel()`, while reads of it go dark — an empty page, as if it had never existed. Destroying the data happens in the background and needs a running Reconciler. Unlike a field deletion, **writes to the model are refused** rather than quietly dropped, because an entry written to a model being erased has nowhere to live. This is the only operation in the library that physically deletes entry rows: there is no undelete, so export first if you might want the data back.
 - **Field deletion** — `deleteField()` removes a field and its stored values. It returns as soon as the registry is updated, and from that moment the field is gone everywhere you can observe it: reads and `describeModel()` stop reporting it, filters against it are rejected, new CSV exports drop its column, and writes still sending its name have the value dropped. Clearing the values out of already-stored entries happens in the background, so it needs a running Reconciler to finish — until it does, the data is still physically present in the table (and visible in the JSON artifact of an export that runs during the window), just unreachable through the API. The field's name becomes reusable once that pass completes, not before: registering it again in the meantime raises `FieldDeletionInProgressException` rather than silently handing you back the field being deleted. A field cannot be deleted while it is being renamed or retyped, and once deletion starts it cannot be renamed, retyped, promoted, demoted or compacted. There is no undelete.
 - **Schema introspection** — `listModels()` and `describeModel()` report a tenant's models and each field's declared type, so a UI can render the schema without hand-written registry SQL. Every field reports both whether it is *declared* filterable and whether it is *currently* indexed — the two differ during a backfill, and gating on the latter is what stops a UI from offering a filter the engine would reject.
-- **Slot maintenance** — `spread:report` shows how many extension pages each model's filterable fields occupy versus the fewest they could, so avoidable joins are visible before they cost you. `compact:model` acts on that: it relocates a fragmented model's fields onto a minimal page set, one field at a time so only one field is unfilterable at any moment, and `--dry-run` prints the plan without touching anything.
+- **Slot maintenance** — `spread:report` shows how many extension pages each model's filterable fields occupy versus the fewest they could, so avoidable joins are visible before they cost you. `compact:model` acts on that: it relocates a fragmented model's fields onto a minimal page set, one field at a time so only one field is unfilterable at any moment, and `--dry-run` prints the plan without touching anything. Compaction declines to run — dry run included — while any field of the model is still being retyped, promoted, demoted or relocated, because a field mid-move has no settled location to plan around; wait for the Reconciler and re-run.
 
 **Not yet available:**
 
@@ -851,7 +851,7 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `InvalidCursorException` | An opaque cursor fails its structural decode. |
 | `QueryFilterValidationException` | A JSON wire-format filter fails decode or pre-flight (see below). |
 | `IncompatibleRetypeException` | A retype crosses a categorically rejected pair (`int ↔ datetime`, `numeric ↔ datetime`). |
-| `RetypeInProgressException` | A retype is initiated for a field that already has one running. |
+| `RetypeInProgressException` | A retype is initiated for a field that already has one running — or a model is compacted while any of its fields is still being retyped, promoted, demoted or relocated. Wait for the Reconciler and retry. |
 | `FieldNotFoundException` | `retypeField()` / `promoteFieldToFilterable()` / `renameField()` receive a field id that doesn't exist for the tenant. Note `deleteField()` returns `false` instead. |
 | `NonFilterableFieldSlotException` | A slot reservation was attempted for a non-filterable field. Such fields live in the JSON payload only and never occupy a slot, so this signals a caller bug rather than a capacity problem — distinct from `FieldNotFilterableException`, which rejects a *query* that filters on one. |
 | `ExportJobActiveCapExceededException` | A tenant is already at its active-export cap (carries `$tenantId`, `$activeCount`, `$cap`). |
@@ -957,6 +957,12 @@ vendor/bin/stardust spread:report --tenant=1 --model=7
 # running reconciler. While a field is in flight, filters on THAT field
 # are rejected; reads keep working, and every other field is unaffected.
 # Safe to re-run: fields already in place are skipped.
+#
+# A model cannot be compacted — not even with --dry-run — while one of
+# its fields is still being retyped, promoted, demoted or relocated.
+# Mid-move, a field's storage location is not yet settled, so any plan
+# would report page counts that disagree with spread:report. Wait for
+# the reconciler to finish and re-run; spread:report stays available.
 vendor/bin/stardust compact:model --tenant=1 --model=7 --dry-run
 vendor/bin/stardust compact:model --tenant=1 --model=7
 ```
