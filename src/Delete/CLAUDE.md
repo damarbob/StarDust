@@ -89,7 +89,9 @@ Same reasoning and the same trap as the rename executor: `json_decode($json, tru
 
 ## No `CAPACITY_WAIT`
 
-The purge touches no slot — the initiator already tombstoned it — so it can never be blocked on inventory. The work source returns only `WORK_DONE` or `IDLE`.
+The purge touches no slot — the initiator already tombstoned it — so it can never be blocked on inventory. The work source returns `WORK_DONE`, `IDLE`, or `LOCK_WAIT`.
+
+`LOCK_WAIT` arrived on 2026-08-27 with the Reconciler-wide lock-retry budgets: `tickOne()` wraps `attemptOne()` on `Support\RetryableLockFailure`, and exhaustion defers the chunk rather than letting the `PDOException` kill the daemon. **Note this is the opposite of what the model purge below does** — see the divergence table.
 
 ## Final-chunk atomicity
 
@@ -119,7 +121,9 @@ The argument that decides it: a guard derived only from field markers has to be 
 
 **3. The tenant predicate is the access path, not hygiene.** `model_id` is globally unique so `WHERE model_id = ?` selects identical rows — but both `entry_data` secondary indexes lead on `tenant_id`, and for a model whose rows are not spread uniformly across the PK (every model created after the first) the tenant-scoped chunk query is a **covering** range scan while dropping the predicate collapses it to a PK scan of the whole table. Measured 43× on 150 000 rows, per chunk. ADR 0029 omits a predicate that was never on the access path; this would omit the leading column of the only usable index — same principle, opposite conclusion.
 
-**4. Lock failures are retried, and the errno is 1205, not 1213.** The purge cascades `entry_data` deletes into `entry_slots_page_X` while the Liberator nullifies the same rows — and severance tombstones every slot of the model, so the Liberator is *guaranteed* to be sweeping precisely those slots. Measured in both directions: **errno 1205, never 1213.** `ModelPurgeWorkSource` retries both on `Config::$modelPurgeLockRetryBudget`, and **there is no gap path** — skipping a chunk would leave rows with a dangling `model_id` forever, and since `entry_data` has no FK the final DELETE would still succeed, so nothing would notice.
+**4. Lock failures are retried, the errno is 1205 not 1213, and exhaustion rethrows.** The purge cascades `entry_data` deletes into `entry_slots_page_X` while the Liberator nullifies the same rows — and severance tombstones every slot of the model, so the Liberator is *guaranteed* to be sweeping precisely those slots. Measured in both directions: **errno 1205, never 1213.** `ModelPurgeWorkSource` retries both on `Config::$modelPurgeLockRetryBudget`, and **there is no gap path** — skipping a chunk would leave rows with a dangling `model_id` forever, and since `entry_data` has no FK the final DELETE would still succeed, so nothing would notice.
+
+**It also keeps its rethrow while the other five work sources moved to `TickOutcome::LOCK_WAIT` (2026-08-27).** Their argument — a rolled-back chunk is re-claimable with nothing skipped — is true here too. It is declined anyway: a soft outcome would render an unrecoverable drain as ordinary back-pressure, and this is the one drain in the engine that destroys rows. Two rules in the package is the honest outcome, not an inconsistency to tidy away.
 
 That last one had to be fixed on the Liberator side too, in the same change: `SlotSweeper::isDeadlock()` matched only 40001/1213, `PollLoop` deliberately does not catch, and an unretried 1205 therefore **killed the Liberator daemon** for the duration of every model purge. Pinned by `LiberatorDeadlockRetryTest::testLockWaitTimeoutIsRetriedLikeADeadlock`.
 

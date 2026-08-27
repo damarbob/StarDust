@@ -11,6 +11,9 @@ use Psr\Log\LoggerInterface;
 use StarDust\Reconciler\ReconcilerWorkSource;
 use StarDust\Reconciler\TickOutcome;
 use Throwable;
+use Closure;
+use PDOException;
+use StarDust\Support\RetryableLockFailure;
 
 /**
  * Fifth Reconciler work source: drains ADR 0037 field deletions.
@@ -23,6 +26,12 @@ use Throwable;
  */
 final class DeletePurgeWorkSource implements ReconcilerWorkSource
 {
+    /** @var Closure(int): void */
+    private readonly Closure $sleepFn;
+
+    /**
+     * @param callable(int):void|null $sleepFn injected for tests; defaults to `usleep`
+     */
     public function __construct(
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
@@ -30,10 +39,77 @@ final class DeletePurgeWorkSource implements ReconcilerWorkSource
         private readonly DeleteCheckpointRepository $repository,
         private readonly DeletePurgeExecutor $executor,
         private readonly int $chunkSize,
+        private readonly int $lockRetryBudget = 3,
+        private readonly int $retryDelayMicros = 0,
+        ?callable $sleepFn = null,
     ) {
+        $this->sleepFn = $sleepFn !== null
+            ? Closure::fromCallable($sleepFn)
+            : static function (int $micros): void {
+                if ($micros > 0) {
+                    usleep($micros);
+                }
+            };
     }
 
+    /**
+     * One chunk per tick, with a bounded in-tick retry on InnoDB lock
+     * failures.
+     *
+     * The budget wraps the whole claim-plus-chunk transaction rather
+     * than living in the executor, which does not own the transaction —
+     * the same placement `ModelPurgeWorkSource` uses.
+     *
+     * **On exhaustion this returns `LOCK_WAIT` rather than rethrowing.**
+     * A lock failure rolls the transaction back whole, and this source's
+     * cursor lives on a row that transaction owns, so the chunk is
+     * byte-for-byte re-executable and the next tick retries the
+     * identical work. Letting the `PDOException` escape instead would
+     * reach `PollLoop`, which deliberately does not catch — killing the
+     * daemon over a condition that resolves itself when the contending
+     * sweep finishes.
+     *
+     * `chunk_claimed` is emitted per *attempt*, correlated by
+     * `chunk_correlation_id`; it is a claim event, not a commit one.
+     */
     public function tickOne(string $chunkCorrelationId): TickOutcome
+    {
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                return $this->attemptOne($chunkCorrelationId);
+            } catch (PDOException $e) {
+                if (! RetryableLockFailure::matches($e)) {
+                    throw $e;
+                }
+
+                if ($attempt >= $this->lockRetryBudget) {
+                    $this->logger->warning('delete_purge lock wait', [
+                        'event'          => 'lock_wait',
+                        'source'         => 'reconciler',
+                        'correlation_id' => $chunkCorrelationId,
+                        'queue'          => 'delete_purge',
+                        'attempts'       => $attempt,
+                        'errno'          => RetryableLockFailure::errnoOf($e),
+                    ]);
+
+                    return TickOutcome::LOCK_WAIT;
+                }
+
+                $this->logger->warning('delete_purge lock retry', [
+                    'event'          => 'deadlock_retry',
+                    'source'         => 'reconciler',
+                    'correlation_id' => $chunkCorrelationId,
+                    'queue'          => 'delete_purge',
+                    'attempt'        => $attempt,
+                    'errno'          => RetryableLockFailure::errnoOf($e),
+                ]);
+
+                ($this->sleepFn)($this->retryDelayMicros);
+            }
+        }
+    }
+
+    private function attemptOne(string $chunkCorrelationId): TickOutcome
     {
         $now = $this->clock->now()
             ->setTimezone(new DateTimeZone('UTC'))

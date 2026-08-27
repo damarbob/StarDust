@@ -42,6 +42,8 @@ final class Config
     public readonly int $reconcilerChunkSize;
     public readonly int $reconcilerInterChunkDelayMicros;
     public readonly int $reconcilerCapacityWaitMillis;
+    public readonly int $reconcilerLockRetryBudget;
+    public readonly int $reconcilerLockRetryDelayMicros;
     public readonly string $pidFileDir;
     public readonly int $liberatorIdleIntervalSeconds;
     public readonly int $liberatorBatchSize;
@@ -110,6 +112,8 @@ final class Config
         ?int $spreadExcessPageThreshold = null,
         ?int $modelPurgeChunkSize = null,
         ?int $modelPurgeLockRetryBudget = null,
+        ?int $reconcilerLockRetryBudget = null,
+        ?int $reconcilerLockRetryDelayMicros = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -148,6 +152,16 @@ final class Config
         $this->reconcilerChunkSize             = $reconcilerChunkSize             ?? 500;
         $this->reconcilerInterChunkDelayMicros = $reconcilerInterChunkDelayMicros ?? 0;
         $this->reconcilerCapacityWaitMillis    = $reconcilerCapacityWaitMillis    ?? 5_000;
+
+        // Bounded in-tick retry for InnoDB lock failures (errno 1205 /
+        // 1213) across the Reconciler's work sources. Budget 3 matches
+        // `liberatorDeadlockRetryBudget` and `modelPurgeLockRetryBudget`
+        // — the same phenomenon deserves the same default. On exhaustion
+        // the source returns `TickOutcome::LOCK_WAIT` rather than
+        // throwing, and the back-off sleep borrows
+        // `reconcilerCapacityWaitMillis` instead of a third knob.
+        $this->reconcilerLockRetryBudget       = $reconcilerLockRetryBudget       ?? 3;
+        $this->reconcilerLockRetryDelayMicros  = $reconcilerLockRetryDelayMicros  ?? 0;
         $this->pidFileDir = $pidFileDir ?? (sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'stardust');
 
         // Phase 6a Liberator tuning. Defaults pin ADR 0009's normative

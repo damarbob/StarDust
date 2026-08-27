@@ -91,10 +91,16 @@ final class RetypeCheckpointRepository
      * ADR 0033 compaction polls this between relocations: it initiates
      * field *k*, waits for the Reconciler to drain it, then moves on. A
      * bool is not enough there — {@see self::existsRunningForField()}
-     * reports `false` for both `completed` and `failed`, and an
-     * orchestrator that cannot tell them apart would march happily past
-     * a failed relocation and report success on a compaction that left a
-     * field behind.
+     * reports `false` for a `completed` row *and* for a field that has
+     * no checkpoint at all, and `CompactionService` treats those two
+     * identically only because both mean "not still running".
+     *
+     * It used to also have to distinguish `failed`. It no longer can:
+     * `markFailed()` was removed along with the compaction branch that
+     * consumed it, because nothing in `src/` ever called it and a
+     * relocation's realistic stall — lock contention — is now retried
+     * and then deferred as `TickOutcome::LOCK_WAIT`, which leaves the
+     * checkpoint `running` and drainable.
      */
     public function statusForField(int $fieldId): ?string
     {
@@ -180,18 +186,5 @@ final class RetypeCheckpointRepository
             . ' WHERE id = ?'
         );
         $stmt->execute([$finalCursor, $now, $now, $checkpointId]);
-    }
-
-    public function markFailed(int $checkpointId, string $reason, string $now): void
-    {
-        $stmt = $this->pdo->prepare(
-            'UPDATE backfill_checkpoints'
-            . " SET status = 'failed',"
-            . '     updated_at = ?,'
-            . '     completed_at = ?,'
-            . '     last_error = ?'
-            . ' WHERE id = ?'
-        );
-        $stmt->execute([$now, $now, substr($reason, 0, 512), $checkpointId]);
     }
 }

@@ -43,6 +43,14 @@ final class EventVocabularyTest extends TestCase
         // and the `source` field disambiguates exactly as it does for
         // `cache_miss`.
         'deadlock_retry',
+        // Added 2026-08-27 with the work-source lock-retry budgets.
+        // `deadlock_retry` reports an attempt that will be retried;
+        // `lock_wait` reports the give-up, where the source returns
+        // TickOutcome::LOCK_WAIT and the next tick retries the identical
+        // chunk. Deliberately not `capacity_wait`, which means the
+        // engine is out of slot inventory rather than momentarily
+        // blocked behind another transaction.
+        'lock_wait',
     ];
 
     private const LIBERATOR_EVENTS = [

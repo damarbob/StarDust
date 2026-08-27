@@ -673,6 +673,8 @@ final class StarDust
                 slotReserver: $this->slotReserver(),
             ),
             chunkSize: $this->config->reconcilerChunkSize,
+            lockRetryBudget: $this->config->reconcilerLockRetryBudget,
+            retryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
         );
 
         $importJobs = new ImportJobWorkSource(
@@ -685,6 +687,8 @@ final class StarDust
             chunkSize: $this->config->reconcilerChunkSize,
             interChunkDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
             leaseTimeoutSeconds: $this->config->reconcilerImportLeaseTimeoutSeconds,
+            lockRetryBudget: $this->config->reconcilerLockRetryBudget,
+            lockRetryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
         );
 
         $retypeBackfill = new RetypeBackfillWorkSource(
@@ -700,6 +704,8 @@ final class StarDust
             cardinalitySampler: $this->cardinalitySampler(),
             spreadSampler: $this->spreadSampler(),
             chunkSize: $this->config->reconcilerChunkSize,
+            lockRetryBudget: $this->config->reconcilerLockRetryBudget,
+            retryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
         );
 
         // Appended as the fourth source rather than inserted: the
@@ -713,6 +719,8 @@ final class StarDust
             repository: new RenameCheckpointRepository($this->config->pdo),
             executor: new RenameBackfillExecutor(pdo: $this->config->pdo),
             chunkSize: $this->config->reconcilerChunkSize,
+            lockRetryBudget: $this->config->reconcilerLockRetryBudget,
+            retryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
         );
 
         // Fifth, appended for the same reason the fourth was: the
@@ -726,6 +734,8 @@ final class StarDust
             repository: new DeleteCheckpointRepository($this->config->pdo),
             executor: new DeletePurgeExecutor(pdo: $this->config->pdo),
             chunkSize: $this->config->reconcilerChunkSize,
+            lockRetryBudget: $this->config->reconcilerLockRetryBudget,
+            retryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
         );
 
         // Sixth, appended. Last in the tick on purpose: it and the

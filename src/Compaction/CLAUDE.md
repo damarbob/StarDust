@@ -39,7 +39,9 @@ Deferring instead would let the work source later reserve on whatever page it pi
 
 One field in flight. During a field's relocation window its filters are rejected (ADR 0004 / ADR 0016) while reads fall back to the JSON payload (ADR 0013) — relocating K fields at once would reject filters on all K simultaneously. `--parallel=N` is described by ADR 0033 as an explicit opt-in and is **not implemented yet**; the CLI surface stays forward-compatible.
 
-`CompactionService` blocks on `RetypeCheckpointRepository::statusForField()`, which exists because `existsRunningForField()` returns `false` for both `completed` and `failed` — an orchestrator that cannot tell them apart marches past a failed relocation and reports success on a compaction that left a field behind. A `failed` checkpoint aborts the run; the poll budget turns a stopped Reconciler into a clear error instead of a hang.
+`CompactionService` blocks on `RetypeCheckpointRepository::statusForField()`, which exists because `existsRunningForField()` is a bool and cannot separate `completed` from a field with no checkpoint at all. The poll budget turns a stopped Reconciler into a clear error instead of a hang.
+
+**There is no longer a `failed` branch, and that is deliberate (2026-08-27).** One used to sit here, aborting the run and telling the operator to inspect the reconciler DLQ — advice for a state nothing in `src/` could produce, because `RetypeCheckpointRepository::markFailed()` had no caller anywhere. Both were removed rather than wired together: a relocation's realistic stall is lock contention, which the retype work source now retries and then defers as `TickOutcome::LOCK_WAIT`, leaving the checkpoint `running` and drainable. Failing it would convert a self-clearing condition into one needing operator action. A relocation that genuinely stops progressing surfaces through the poll budget, same as a Reconciler that is not running — and the remedy is the same in both cases.
 
 ## A trap worth knowing before reading the tests
 

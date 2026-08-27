@@ -10,6 +10,9 @@ use StarDust\Exception\EntryDataMissingException;
 use StarDust\Exception\UncoercibleSlotValueException;
 use StarDust\Write\BackfillExecutor;
 use Throwable;
+use Closure;
+use PDOException;
+use StarDust\Support\RetryableLockFailure;
 
 /**
  * Drains `stardust_sync_queue` one chunk at a time.
@@ -67,6 +70,12 @@ use Throwable;
  */
 final class SyncQueueWorkSource implements ReconcilerWorkSource
 {
+    /** @var Closure(int): void */
+    private readonly Closure $sleepFn;
+
+    /**
+     * @param callable(int):void|null $sleepFn injected for tests; defaults to `usleep`
+     */
     public function __construct(
         private readonly PDO $pdo,
         private readonly LoggerInterface $logger,
@@ -74,10 +83,77 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
         private readonly DlqWriter $dlqWriter,
         private readonly UnmappedFieldReserver $unmappedFieldReserver,
         private readonly int $chunkSize,
+        private readonly int $lockRetryBudget = 3,
+        private readonly int $retryDelayMicros = 0,
+        ?callable $sleepFn = null,
     ) {
+        $this->sleepFn = $sleepFn !== null
+            ? Closure::fromCallable($sleepFn)
+            : static function (int $micros): void {
+                if ($micros > 0) {
+                    usleep($micros);
+                }
+            };
     }
 
+    /**
+     * One chunk per tick, with a bounded in-tick retry on InnoDB lock
+     * failures.
+     *
+     * The budget wraps the whole claim-plus-chunk transaction rather
+     * than living in the executor, which does not own the transaction —
+     * the same placement `ModelPurgeWorkSource` uses.
+     *
+     * **On exhaustion this returns `LOCK_WAIT` rather than rethrowing.**
+     * A lock failure rolls the transaction back whole, and this source's
+     * cursor lives on a row that transaction owns, so the chunk is
+     * byte-for-byte re-executable and the next tick retries the
+     * identical work. Letting the `PDOException` escape instead would
+     * reach `PollLoop`, which deliberately does not catch — killing the
+     * daemon over a condition that resolves itself when the contending
+     * sweep finishes.
+     *
+     * `chunk_claimed` is emitted per *attempt*, correlated by
+     * `chunk_correlation_id`; it is a claim event, not a commit one.
+     */
     public function tickOne(string $chunkCorrelationId): TickOutcome
+    {
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                return $this->attemptOne($chunkCorrelationId);
+            } catch (PDOException $e) {
+                if (! RetryableLockFailure::matches($e)) {
+                    throw $e;
+                }
+
+                if ($attempt >= $this->lockRetryBudget) {
+                    $this->logger->warning('sync_queue lock wait', [
+                        'event'          => 'lock_wait',
+                        'source'         => 'reconciler',
+                        'correlation_id' => $chunkCorrelationId,
+                        'queue'          => 'sync_queue',
+                        'attempts'       => $attempt,
+                        'errno'          => RetryableLockFailure::errnoOf($e),
+                    ]);
+
+                    return TickOutcome::LOCK_WAIT;
+                }
+
+                $this->logger->warning('sync_queue lock retry', [
+                    'event'          => 'deadlock_retry',
+                    'source'         => 'reconciler',
+                    'correlation_id' => $chunkCorrelationId,
+                    'queue'          => 'sync_queue',
+                    'attempt'        => $attempt,
+                    'errno'          => RetryableLockFailure::errnoOf($e),
+                ]);
+
+                ($this->sleepFn)($this->retryDelayMicros);
+            }
+        }
+    }
+
+    private function attemptOne(string $chunkCorrelationId): TickOutcome
     {
         $this->pdo->beginTransaction();
         try {
@@ -130,6 +206,21 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
                     $dlqCount++;
                     continue;
                 } catch (Throwable $e) {
+                    // A retryable lock failure is transient contention,
+                    // not a poison row. Left to the catch-all below it
+                    // would quarantine a perfectly good entry as
+                    // `reason: 'other'` — permanently, since nothing
+                    // replays the DLQ without an operator — because the
+                    // Liberator happened to be sweeping the same page
+                    // table at the time. Rethrow so the tick's retry
+                    // budget sees it and the whole chunk is re-attempted.
+                    //
+                    // ADR 0018's DLQ is for rows that cannot succeed. A
+                    // lock timeout says nothing about the row.
+                    if ($e instanceof PDOException && RetryableLockFailure::matches($e)) {
+                        throw $e;
+                    }
+
                     $this->writeDlq(
                         chunkCorrelationId: $chunkCorrelationId,
                         entryId: $entryId,

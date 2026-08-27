@@ -173,11 +173,21 @@ final class CompactionService
      * Block until the Reconciler finishes this field, so the next
      * relocation only starts once this one's filterability is restored.
      *
-     * A `failed` checkpoint aborts the run rather than marching on: the
-     * remaining plan was computed against capacity this field was
-     * supposed to consume, and continuing would report success on a
-     * compaction that left a field behind. The operator re-runs, which
-     * replans against whatever actually happened.
+     * **There is no `failed` branch, because a retype checkpoint cannot
+     * reach `failed`.** One used to sit here, aborting the run and
+     * telling the operator to inspect the reconciler DLQ — advice for a
+     * state nothing in `src/` could produce, since `markFailed()` had no
+     * caller anywhere. It was removed rather than wired up: a lock
+     * failure, the only realistic way a relocation stalls, is transient
+     * contention that the work source now retries and then defers with
+     * `TickOutcome::LOCK_WAIT`, leaving the checkpoint `running` and
+     * drainable. Failing it would turn a self-clearing condition into
+     * one needing operator action.
+     *
+     * A relocation that genuinely stops making progress therefore
+     * surfaces through the poll budget below, which is the same signal
+     * as a Reconciler that is not running — and in both cases the
+     * remedy is identical.
      *
      * The poll budget exists so a stopped Reconciler surfaces as a clear
      * error instead of an operator process that hangs until someone
@@ -191,17 +201,6 @@ final class CompactionService
 
             if ($status === 'completed' || $status === null) {
                 return;
-            }
-
-            if ($status === 'failed') {
-                throw new CompactionCapacityException(sprintf(
-                    'Relocation of field %d (%s) to page %d failed during backfill; its checkpoint'
-                    . ' is marked failed. Compaction stopped rather than continuing against a plan'
-                    . ' that no longer holds. Inspect the reconciler DLQ, then re-run to replan.',
-                    $relocation->fieldId,
-                    $relocation->fieldName,
-                    $relocation->toPageId,
-                ));
             }
 
             ($this->sleepFn)($this->pollIntervalMicros);

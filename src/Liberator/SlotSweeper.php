@@ -9,6 +9,7 @@ use PDO;
 use PDOException;
 use Psr\Log\LoggerInterface;
 use Throwable;
+use StarDust\Support\RetryableLockFailure;
 
 /**
  * Per-slot sweep loop. Owns ADR 0009's `sweep` and `reclaim` phases:
@@ -263,8 +264,8 @@ final class SlotSweeper
     }
 
     /**
-     * Retryable lock failures: deadlock (errno 1213 / SQLSTATE 40001) and
-     * **lock wait timeout (errno 1205)**.
+     * Delegates to {@see RetryableLockFailure}, which is shared with
+     * `ModelPurgeWorkSource` and the five Reconciler work sources.
      *
      * The 1205 half was added with ADR 0038, and it is not hypothetical.
      * A model purge deletes `entry_data` rows, which cascade into the
@@ -285,15 +286,6 @@ final class SlotSweeper
      */
     private function isRetryableLockFailure(PDOException $e): bool
     {
-        $info = $e->errorInfo;
-        if (! is_array($info)) {
-            return false;
-        }
-        if (isset($info[0]) && $info[0] === '40001') {
-            return true;
-        }
-        $errno = isset($info[1]) ? (int) $info[1] : 0;
-
-        return $errno === 1213 || $errno === 1205;
+        return RetryableLockFailure::matches($e);
     }
 }

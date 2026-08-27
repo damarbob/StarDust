@@ -78,6 +78,19 @@ final class Reconciler implements Tickable
                 ($this->sleepFn)($this->capacityWaitMillis * 1000);
                 return;
             }
+            // LOCK_WAIT is handled exactly like CAPACITY_WAIT, and for
+            // the analogous reason: the contention is on the shared
+            // `entry_slots_page_X` tables every backfill writes, so one
+            // source losing a lock predicts the rest will too, and
+            // marching on would just spend the other sources' budgets
+            // against the same holder. It borrows
+            // `capacityWaitMillis` for the sleep rather than earning a
+            // third timing knob — the two back-offs want the same order
+            // of magnitude, and `Config` already has two.
+            if ($outcome === TickOutcome::LOCK_WAIT) {
+                ($this->sleepFn)($this->capacityWaitMillis * 1000);
+                return;
+            }
             if ($outcome === TickOutcome::WORK_DONE && $this->interChunkDelayMicros > 0) {
                 ($this->sleepFn)($this->interChunkDelayMicros);
             }

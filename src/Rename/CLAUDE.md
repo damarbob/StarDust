@@ -54,6 +54,12 @@ The delete leg is checked differently from the other two: it keys on `stardust_f
 
 The retype-side guard sits inside `RetypeInitiator::runTuple()`, **not** on the `StarDust` facade, because `initiateRelocation()` shares `runTuple()` — so `compactModel()` inherits it. A facade-level check would leave compaction as an unguarded back door into a real bug: `RetypeBackfillExecutor` locates values by name, so mid-rename every un-migrated row reads as "value absent" and its slot is written NULL, silently, with no `coercion_null` event because no coercion was attempted.
 
+## Lock failures are retried, then deferred
+
+`RenameBackfillWorkSource::tickOne()` wraps `attemptOne()` in a budget of `Config::$reconcilerLockRetryBudget`; exhaustion emits `lock_wait` and returns `TickOutcome::LOCK_WAIT` rather than letting the `PDOException` reach `PollLoop`, which does not catch and would exit the daemon. The checkpoint cursor only advances on commit, so a rolled-back chunk is retried identically next tick. Shared rationale: `src/Reconciler/CLAUDE.md`.
+
+`markFailed()` was removed from `RenameCheckpointRepository` in the same change — it never had a caller.
+
 ## `insertOrReset()`, not `insert()`
 
 Nothing deletes a *rename* checkpoint, and `ux_backfill_job_name` is UNIQUE, so a plain INSERT makes the *second* lifecycle for a field throw a raw `PDOException` once the first completes — `existsRunningForField()` returns false for a `completed` row and offers no protection. This repository uses `INSERT … ON DUPLICATE KEY UPDATE` and does not have that defect.

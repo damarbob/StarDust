@@ -12,6 +12,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Reconciler\ReconcilerWorkSource;
 use StarDust\Reconciler\TickOutcome;
+use StarDust\Support\RetryableLockFailure;
 use Throwable;
 
 /**
@@ -187,14 +188,14 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
     }
 
     /**
-     * Both errno 1205 (lock wait timeout) and errno 1213 (deadlock) are
-     * retryable here, and the 1205 half is the one that matters.
+     * Delegates to {@see RetryableLockFailure}; what is local to this
+     * work source is what happens on exhaustion, not what counts as a
+     * lock failure.
      *
      * Measured on MySQL 8.0.13: the purge and the Liberator contend over
      * the same `entry_slots_page_X` rows — the purge deleting them by
      * cascade, the Liberator nullifying a tombstoned column across them —
-     * and in **both directions** the loser gets 1205, never 1213. A
-     * budget that tested only for deadlocks would never fire.
+     * and in **both directions** the loser gets 1205, never 1213.
      *
      * **There is deliberately no gap path**, unlike the Liberator's
      * equivalent loop. Skipping a chunk would leave `entry_data` rows with
@@ -204,19 +205,17 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
      * exhaustion this rethrows with the cursor untouched; the next tick
      * re-claims and retries the identical chunk, which is safe because a
      * lock failure rolls the transaction back whole.
+     *
+     * **That rethrow is why this source did not join the five that
+     * return `TickOutcome::LOCK_WAIT`.** Their argument is that a
+     * rolled-back chunk is re-claimable with nothing skipped, which is
+     * true here too — but a soft outcome would make an unrecoverable
+     * drain look like ordinary back-pressure, and this is the one drain
+     * that destroys rows.
      */
     private static function isRetryableLockFailure(PDOException $e): bool
     {
-        $info = $e->errorInfo;
-        if (! is_array($info)) {
-            return false;
-        }
-        if (isset($info[0]) && $info[0] === '40001') {
-            return true;
-        }
-        $errno = isset($info[1]) ? (int) $info[1] : 0;
-
-        return $errno === 1213 || $errno === 1205;
+        return RetryableLockFailure::matches($e);
     }
 
     private function entriesRemain(ModelDeleteCheckpoint $checkpoint): bool

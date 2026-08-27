@@ -33,9 +33,19 @@ The `source` field is the disambiguator in every case below — do not rename to
 
 - **`cache_miss`** — `api` (Phase 4 schema-version cache) and `reconciler`.
 - **`lease_lost`** — `chronicler` (Phase 7) and `reconciler` (added 2026-06-18 for the import-job abandoned-claim self-abort, sharing the name per ADR 0025).
-- **`deadlock_retry`** — `liberator` and `chronicler`.
+- **`deadlock_retry`** — `liberator`, `chronicler` and `reconciler` (added to the reconciler source on 2026-08-25 for the ADR 0038 model purge; this list said only the first two until 2026-08-27, which is drift the ADR did not have).
 - **`cardinality_sampled` / `low_cardinality_index`** — emitted by Watcher-scheduled code but carry `source: 'registry'` per ADR 0020 line 49. The Watcher owns the schedule, not the event identity.
 - **`coercion_null`** — emitted by Phase 6b retype code under source `reconciler`.
+
+### `lock_wait` is not `capacity_wait`, and not `deadlock_retry`
+
+Three events describe a chunk that did not commit, and conflating any two of them costs an operator a real distinction.
+
+- **`deadlock_retry`** — an attempt failed and will be retried. Carries `attempt`.
+- **`lock_wait`** — the source stopped retrying and handed the chunk back as `TickOutcome::LOCK_WAIT`. Carries `attempts` (the budget, spent) and `errno`. **Not an error**: the chunk rolled back whole with its cursor untouched, so the next tick retries identical work. Alert on its persistence, never its occurrence.
+- **`capacity_wait`** — the engine is out of slot inventory and needs the Watcher to provision. A different remedy entirely.
+
+The five work sources that emit `lock_wait` are sync-queue, import-job, retype, rename and field-delete purge. `ModelPurgeWorkSource` deliberately does not: it rethrows on exhaustion, because a soft outcome would make an unrecoverable drain look like ordinary back-pressure, and it is the one drain that destroys rows.
 
 ### Phase 8 notes
 

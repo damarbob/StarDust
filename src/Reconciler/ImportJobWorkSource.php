@@ -15,6 +15,8 @@ use StarDust\Support\UuidV4;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriter;
 use Throwable;
+use PDOException;
+use StarDust\Support\RetryableLockFailure;
 
 /**
  * Claims one `stardust_import_jobs` row at a time and applies the
@@ -61,6 +63,17 @@ use Throwable;
 final class ImportJobWorkSource implements ReconcilerWorkSource
 {
     /**
+     * Outcomes of one window transaction. Strings rather than an enum:
+     * they never leave this class, and a private enum for four internal
+     * branches is ceremony the rest of the package does not use.
+     */
+    private const WINDOW_COMMITTED = 'committed';
+    private const WINDOW_RETRY     = 'retry';
+    private const WINDOW_LOCK_WAIT = 'lock_wait';
+    private const WINDOW_LEASE_LOST = 'lease_lost';
+    private const WINDOW_FAILED    = 'failed';
+
+    /**
      * Normalised to a `Closure` rather than left as `?callable`: the
      * constructor always supplies a default, so the property is never
      * actually null.
@@ -83,6 +96,8 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         private readonly int $interChunkDelayMicros = 0,
         private readonly int $leaseTimeoutSeconds = 30,
         ?callable $sleepFn = null,
+        private readonly int $lockRetryBudget = 3,
+        private readonly int $lockRetryDelayMicros = 0,
     ) {
         $this->sleepFn = $sleepFn !== null
             ? Closure::fromCallable($sleepFn)
@@ -145,6 +160,13 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             resumeOffset: $resumeOffset,
             priorChunks: $priorChunks,
         );
+
+        if ($manifest instanceof TickOutcome) {
+            // A window exhausted its lock-retry budget. The job stays
+            // claimed and checkpointed; the lease timeout hands it to
+            // whichever worker picks it up next.
+            return $manifest;
+        }
 
         if ($manifest === null) {
             // Job was failed, or the lease was lost mid-chunk and the
@@ -350,8 +372,22 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     }
 
     /**
+     * Three outcomes, because a lock failure is neither success nor a
+     * reason to fail the job:
+     *
+     *   - a manifest ⇒ every window committed; the caller completes.
+     *   - `null` ⇒ the job was failed, or the lease was lost; the caller
+     *     must NOT call `completeJob()`.
+     *   - `TickOutcome::LOCK_WAIT` ⇒ a window lost a lock
+     *     `lockRetryBudget` times running. Windows already committed are
+     *     checkpointed in the manifest, so nothing is lost and nothing is
+     *     re-applied; the job stays `processing` under this worker's
+     *     identity until `reconcilerImportLeaseTimeoutSeconds` lapses and
+     *     the abandoned-claim path resumes it from
+     *     `manifest.entries_written`.
+     *
      * @param array{tenant_id: int, entries: list<array{tenant_id: int, model_id: int, fields?: array<string, mixed>}>} $payload
-     * @return array{chunks: int, entries_written: int}|null `null` ⇒ job was failed OR the lease was lost; caller must NOT call completeJob
+     * @return array{chunks: int, entries_written: int}|TickOutcome|null
      */
     private function processEntries(
         int $jobId,
@@ -361,7 +397,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         string $workerIdentity,
         int $resumeOffset,
         int $priorChunks,
-    ): ?array {
+    ): array|TickOutcome|null {
         $entries = $payload['entries'];
         $totalEntries = count($entries);
         // Resume from the committed boundary. entries_written counts
@@ -381,65 +417,39 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             $chunk = array_slice($entries, $offset, $this->chunkSize);
             $chunkCount++;
 
-            $this->pdo->beginTransaction();
-            try {
-                foreach ($chunk as $entry) {
-                    $this->entryWriter->writeWithinTransaction(new EntryPayload(
-                        tenantId: (int) $entry['tenant_id'],
-                        modelId: (int) $entry['model_id'],
-                        fields: (array) ($entry['fields'] ?? []),
-                    ));
-                    $entriesWritten++;
-                }
+            // Per-window lock retry. It cannot wrap the whole tick the
+            // way the other work sources do: the claim is an
+            // autocommitted UPDATE that ran before any transaction, so
+            // re-running tickOne() would re-claim the job and re-read the
+            // artifact.
+            //
+            // `$windowStart` is what makes a retry safe — the counter is
+            // incremented per entry inside the transaction, so a rolled
+            // back attempt must rewind it before the next one.
+            $windowStart = $entriesWritten;
 
-                // Checkpoint the running manifest + heartbeat in the same
-                // transaction as the chunk's writes. The
-                // `worker_identity = self` predicate is the lease-loss
-                // detector: 0 rows matched ⇒ a re-claimer overwrote our
-                // identity. entries_written strictly increases, so a
-                // matched row is always *changed* — rowCount()===0 can
-                // only mean the identity no longer matches, never a
-                // no-op update.
-                $manifest = json_encode(
-                    ['chunks' => $chunkCount, 'entries_written' => $entriesWritten],
-                    JSON_THROW_ON_ERROR,
-                );
-                $checkpoint = $this->pdo->prepare(
-                    'UPDATE stardust_import_jobs'
-                    . ' SET heartbeat_at = ?, manifest = ?'
-                    . ' WHERE id = ? AND worker_identity = ?'
-                );
-                $checkpoint->execute([$this->utcNow(), $manifest, $jobId, $workerIdentity]);
-                if ($checkpoint->rowCount() === 0) {
-                    // Lease lost — roll back this chunk's writes so the
-                    // re-claimer's copy is authoritative, and stop WITHOUT
-                    // failing the row (the re-claimer owns terminal state,
-                    // per schema_reference §5.5 / ADR 0025).
-                    $this->pdo->rollBack();
-                    $this->logger->warning('import_job lease lost', [
-                        'event'          => 'lease_lost',
-                        'source'         => 'reconciler',
-                        'correlation_id' => $chunkCorrelationId,
-                        'queue'          => 'import_jobs',
-                        'job_id'         => $jobId,
-                        'tenant_id'      => $tenantId,
-                    ]);
-                    return null;
-                }
-
-                $this->pdo->commit();
-            } catch (Throwable $e) {
-                if ($this->pdo->inTransaction()) {
-                    $this->pdo->rollBack();
-                }
-                $this->failJob(
+            for ($attempt = 1; ; $attempt++) {
+                $entriesWritten = $windowStart;
+                $windowOutcome = $this->writeWindow(
+                    chunk: $chunk,
                     jobId: $jobId,
                     tenantId: $tenantId,
-                    failedReason: 'entry_write_failed',
                     chunkCorrelationId: $chunkCorrelationId,
-                    errorMessage: $e->getMessage(),
+                    workerIdentity: $workerIdentity,
+                    chunkCount: $chunkCount,
+                    entriesWritten: $entriesWritten,
+                    attempt: $attempt,
                 );
-                return null;
+
+                if ($windowOutcome !== self::WINDOW_RETRY) {
+                    break;
+                }
+
+                ($this->sleepFn)($this->lockRetryDelayMicros);
+            }
+
+            if ($windowOutcome !== self::WINDOW_COMMITTED) {
+                return $windowOutcome === self::WINDOW_LOCK_WAIT ? TickOutcome::LOCK_WAIT : null;
             }
         }
 
@@ -470,6 +480,132 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             'chunks'          => $manifest['chunks'],
             'entries_written' => $manifest['entries_written'],
         ]);
+    }
+
+    /**
+     * One window's transaction: write the chunk's entries, checkpoint
+     * the manifest and heartbeat together, commit.
+     *
+     * Split out of {@see self::processEntries()} so a lock failure can be
+     * retried without re-claiming the job. Returns one of the `WINDOW_*`
+     * constants rather than a bool, because the caller has to
+     * distinguish "committed" from "retry me", and from the two terminal
+     * decisions already made in here.
+     *
+     * `$entriesWritten` is by reference and is incremented per entry
+     * *inside* the transaction, so a caller retrying this method must
+     * rewind it to the window's starting value first.
+     *
+     * @param list<array{tenant_id: int, model_id: int, fields?: array<string, mixed>}> $chunk
+     */
+    private function writeWindow(
+        array $chunk,
+        int $jobId,
+        int $tenantId,
+        string $chunkCorrelationId,
+        string $workerIdentity,
+        int $chunkCount,
+        int &$entriesWritten,
+        int $attempt,
+    ): string {
+        $this->pdo->beginTransaction();
+        try {
+            foreach ($chunk as $entry) {
+                $this->entryWriter->writeWithinTransaction(new EntryPayload(
+                    tenantId: (int) $entry['tenant_id'],
+                    modelId: (int) $entry['model_id'],
+                    fields: (array) ($entry['fields'] ?? []),
+                ));
+                $entriesWritten++;
+            }
+
+            // Checkpoint the running manifest + heartbeat in the same
+            // transaction as the chunk's writes. The
+            // `worker_identity = self` predicate is the lease-loss
+            // detector: 0 rows matched ⇒ a re-claimer overwrote our
+            // identity. entries_written strictly increases, so a matched
+            // row is always *changed* — rowCount()===0 can only mean the
+            // identity no longer matches, never a no-op update.
+            $manifest = json_encode(
+                ['chunks' => $chunkCount, 'entries_written' => $entriesWritten],
+                JSON_THROW_ON_ERROR,
+            );
+            $checkpoint = $this->pdo->prepare(
+                'UPDATE stardust_import_jobs'
+                . ' SET heartbeat_at = ?, manifest = ?'
+                . ' WHERE id = ? AND worker_identity = ?'
+            );
+            $checkpoint->execute([$this->utcNow(), $manifest, $jobId, $workerIdentity]);
+            if ($checkpoint->rowCount() === 0) {
+                // Lease lost — roll back this chunk's writes so the
+                // re-claimer's copy is authoritative, and stop WITHOUT
+                // failing the row (the re-claimer owns terminal state,
+                // per schema_reference §5.5 / ADR 0025).
+                $this->pdo->rollBack();
+                $this->logger->warning('import_job lease lost', [
+                    'event'          => 'lease_lost',
+                    'source'         => 'reconciler',
+                    'correlation_id' => $chunkCorrelationId,
+                    'queue'          => 'import_jobs',
+                    'job_id'         => $jobId,
+                    'tenant_id'      => $tenantId,
+                ]);
+
+                return self::WINDOW_LEASE_LOST;
+            }
+
+            $this->pdo->commit();
+
+            return self::WINDOW_COMMITTED;
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+
+            // A retryable lock failure must never reach failJob().
+            // `entry_write_failed` is terminal — the job is marked
+            // failed, a DLQ row is written, and nothing retries it — so
+            // transient contention with a Liberator sweep would
+            // permanently destroy a consumer's import over a condition
+            // that clears on its own.
+            if ($e instanceof PDOException && RetryableLockFailure::matches($e)) {
+                if ($attempt < $this->lockRetryBudget) {
+                    $this->logger->warning('import_job lock retry', [
+                        'event'          => 'deadlock_retry',
+                        'source'         => 'reconciler',
+                        'correlation_id' => $chunkCorrelationId,
+                        'queue'          => 'import_jobs',
+                        'job_id'         => $jobId,
+                        'attempt'        => $attempt,
+                        'errno'          => RetryableLockFailure::errnoOf($e),
+                    ]);
+
+                    return self::WINDOW_RETRY;
+                }
+
+                $this->logger->warning('import_job lock wait', [
+                    'event'          => 'lock_wait',
+                    'source'         => 'reconciler',
+                    'correlation_id' => $chunkCorrelationId,
+                    'queue'          => 'import_jobs',
+                    'job_id'         => $jobId,
+                    'attempts'       => $attempt,
+                    'errno'          => RetryableLockFailure::errnoOf($e),
+                ]);
+
+                return self::WINDOW_LOCK_WAIT;
+            }
+
+            $this->failJob(
+                jobId: $jobId,
+                tenantId: $tenantId,
+                failedReason: 'entry_write_failed',
+                chunkCorrelationId: $chunkCorrelationId,
+                errorMessage: $e->getMessage(),
+            );
+
+            return self::WINDOW_FAILED;
+        }
     }
 
     private function failJob(

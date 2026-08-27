@@ -16,10 +16,24 @@ namespace StarDust\Reconciler;
  *   The chunk transaction is rolled back so the rows remain claimable;
  *   the Reconciler sleeps for `Config::$reconcilerCapacityWaitMillis`
  *   to give the Watcher a chance to provision before retrying.
+ * - `LOCK_WAIT`: rows were claimed but InnoDB refused the chunk over a
+ *   lock (errno 1205 / 1213) `Config::$reconcilerLockRetryBudget` times
+ *   running. The chunk transaction is rolled back, so its cursor — which
+ *   lives on a row that transaction owns — is untouched and the next
+ *   tick retries the identical chunk. **Nothing is skipped and nothing
+ *   is failed.**
+ *
+ * `LOCK_WAIT` exists because the alternative is a dead daemon:
+ * `PollLoop` deliberately does not catch tick exceptions, so an
+ * unretried lock failure exits the process, which then crash-loops for
+ * as long as the contending sweep runs. `ModelPurgeWorkSource` is the
+ * one source that still rethrows instead, for a reason recorded on its
+ * own `isRetryableLockFailure()`.
  */
 enum TickOutcome
 {
     case WORK_DONE;
     case IDLE;
     case CAPACITY_WAIT;
+    case LOCK_WAIT;
 }

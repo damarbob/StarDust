@@ -97,8 +97,15 @@ final class RenameCheckpointRepository
      * makes any *second* lifecycle for a given field throw a raw
      * `PDOException` once the first has completed — the caller's
      * `existsRunningForField()` pre-check returns false for a
-     * `completed` row and offers no protection. The retype repository
-     * has that defect today; this one does not inherit it.
+     * `completed` row and offers no protection.
+     *
+     * All four `backfill_checkpoints` namespaces now upsert;
+     * {@see \StarDust\Retype\RetypeCheckpointRepository::insertOrReset()}
+     * was the last convert and is deliberately not a copy of this one —
+     * it must also reset `source_declared_type`, and its initiator holds
+     * a `FOR UPDATE OF f` row lock this one does not need, because a
+     * lost retype race mis-coerces stored data where a lost rename race
+     * only resets a cursor.
      */
     public function insertOrReset(int $fieldId, string $now): int
     {
@@ -160,18 +167,5 @@ final class RenameCheckpointRepository
             . ' WHERE id = ?'
         );
         $stmt->execute([$finalCursor, $now, $now, $checkpointId]);
-    }
-
-    public function markFailed(int $checkpointId, string $reason, string $now): void
-    {
-        $stmt = $this->pdo->prepare(
-            'UPDATE backfill_checkpoints'
-            . " SET status = 'failed',"
-            . '     updated_at = ?,'
-            . '     completed_at = ?,'
-            . '     last_error = ?'
-            . ' WHERE id = ?'
-        );
-        $stmt->execute([$now, $now, substr($reason, 0, 512), $checkpointId]);
     }
 }

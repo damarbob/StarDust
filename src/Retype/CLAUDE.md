@@ -55,7 +55,7 @@ Emits `retype_started` post-commit carrying `backfill_required` — false means 
 
 It passes **both type arguments as `null`** on purpose. Step 1 skips the `stardust_fields` UPDATE entirely when neither is supplied, so a relocation leaves the field row genuinely untouched — passing the current type explicitly would issue a no-op UPDATE that still moved `updated_at` on every compacted field.
 
-`statusForField()` on the checkpoint repository exists for the same operation: `existsRunningForField()` is a bool and reports `false` for both `completed` and `failed`, which an orchestrator must be able to tell apart.
+`statusForField()` on the checkpoint repository exists for the same operation: `existsRunningForField()` is a bool and cannot separate `completed` from a field that has no checkpoint at all. It used to also have to report `failed` — `markFailed()` and the compaction branch that consumed it were both removed in 2026-08-27, because nothing in `src/` ever called it and a relocation's realistic stall is lock contention, which is now retried and then deferred as `LOCK_WAIT`, leaving the checkpoint `running` and drainable.
 
 ## `RetypeCheckpointRepository`
 
@@ -89,6 +89,8 @@ Post-commit it emits per-row `coercion_null`, `chunk_complete`, and on promotion
 The spread one-shot fires **at promotion, not at initiation**. A retype vacates one slot and claims another, so it can land the model on a page it did not previously occupy — but the relocation is only real once the new slot reaches `ready`, and publishing a spread delta while the field is still `backfilling` would report a move that no query can yet see. `RetypeInitiator`'s registry-only path (a non-filterable target, or a demotion) deliberately does **not** sample: it tombstones without replacing, and the next periodic sample covers it. ADR 0031 accepts that latency explicitly.
 
 **There is no DLQ path here.** Coercion failures are silent-NULL with audit events; the JSON payload remains authoritative per ADR 0013.
+
+**Lock failures are retried, then deferred.** `tickOne()` wraps `attemptOne()` in a budget of `Config::$reconcilerLockRetryBudget` on `Support\RetryableLockFailure`; exhaustion emits `lock_wait` and returns `TickOutcome::LOCK_WAIT` instead of letting the `PDOException` reach `PollLoop`, which does not catch. Safe because the checkpoint cursor only advances on commit, so a rolled-back chunk is retried identically next tick. Shared rationale: `src/Reconciler/CLAUDE.md`.
 
 ## ADR 0036: the rename cross-guard lives in `runTuple()`
 
