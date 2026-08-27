@@ -108,22 +108,55 @@ final class RetypeCheckpointRepository
     }
 
     /**
-     * Inserts a new `running` checkpoint. The UNIQUE
-     * `ux_backfill_job_name` index enforces one row per
-     * `retype_field_{N}`; concurrent initiators will hit a
-     * `PDOException` which the caller surfaces as
-     * {@see \StarDust\Exception\RetypeInProgressException} after
-     * the {@see self::existsRunningForField()} pre-check.
+     * Opens a fresh `running` checkpoint, resetting any terminal row a
+     * previous lifecycle for the same field left behind.
+     *
+     * **An upsert rather than a plain INSERT.** `ux_backfill_job_name`
+     * is UNIQUE on `job_name` and nothing removes a *retype* checkpoint
+     * — ADR 0037's `src/Delete/` clears terminal sibling rows, but only
+     * when the field itself is being deleted. A plain INSERT therefore
+     * made the *second* filterable-target lifecycle for a field throw a
+     * raw `PDOException` (errno 1062) once the first had completed, and
+     * {@see self::existsRunningForField()} offers no protection because
+     * it reports `false` for a terminal row. Since every shape in
+     * {@see RetypeInitiator::runTuple()} with a filterable target lands
+     * here, that made a field a one-way door: one retype, promotion or
+     * relocation each, ever. This is the same fix
+     * {@see \StarDust\Rename\RenameCheckpointRepository::insertOrReset()}
+     * and both delete repositories already carry.
+     *
+     * **`source_declared_type` must be reset with the rest.** No sibling
+     * repository has that column, so porting their statement verbatim
+     * would leave the second lifecycle draining against the *first*
+     * one's source type — the wrong ADR 0024 matrix cell, with no event
+     * and no exception to show for it. Pinned by
+     * `RetypeInitiatorTest::testResetCheckpointCarriesTheNewSourceDeclaredType`.
+     *
+     * Only *terminal* rows are relaxed. A genuinely concurrent
+     * lifecycle is still refused by the caller's
+     * {@see self::existsRunningForField()} pre-check, which now runs
+     * under {@see RetypeInitiator}'s `FOR UPDATE OF f` lock on the field
+     * row and so cannot interleave with a second initiator. That lock is
+     * what keeps this upsert from silently resetting a live checkpoint.
+     *
+     * Returns nothing: the checkpoint id has never had a consumer here,
+     * and the siblings' `int` return exists only to work around
+     * `lastInsertId()` reporting 0 on the UPDATE branch of an upsert —
+     * a workaround for a value none of their callers read either.
      */
-    public function insert(int $fieldId, string $sourceDeclaredType, string $now): int
+    public function insertOrReset(int $fieldId, string $sourceDeclaredType, string $now): void
     {
         $stmt = $this->pdo->prepare(
             'INSERT INTO backfill_checkpoints'
             . ' (job_name, last_processed_id, status, started_at, updated_at, source_declared_type)'
             . " VALUES (?, 0, 'running', ?, ?, ?)"
+            . ' ON DUPLICATE KEY UPDATE'
+            . "     last_processed_id = 0, status = 'running',"
+            . '     started_at = VALUES(started_at), updated_at = VALUES(updated_at),'
+            . '     completed_at = NULL, last_error = NULL,'
+            . '     source_declared_type = VALUES(source_declared_type)'
         );
         $stmt->execute([self::jobNameFor($fieldId), $now, $now, $sourceDeclaredType]);
-        return (int) $this->pdo->lastInsertId();
     }
 
     public function advance(int $checkpointId, int $newLastProcessedId, string $now): void

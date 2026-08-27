@@ -4,11 +4,15 @@ Phase 6b field retype + filterability promotion (ADR 0016, ADR 0024). Five `fina
 
 ## `RetypeInitiator`
 
-`initiate(tenantId, fieldId, ?newDeclaredType, ?newIsFilterable)` runs the atomic registry transaction. Up-front guards, all before any mutation:
+`initiate(tenantId, fieldId, ?newDeclaredType, ?newIsFilterable)` runs the atomic registry transaction. Guards first, all before any mutation:
 
 - Validates the field exists and belongs to the tenant.
 - Rejects ADR 0024 categorical retypes (`int↔datetime`, `numeric↔datetime`) with `IncompatibleRetypeException`.
 - Refuses overlapping retypes via `RetypeCheckpointRepository::existsRunningForField()` with `RetypeInProgressException`.
+
+**The field read and all four guards run inside the transaction, not ahead of it**, because `loadField()` takes `FOR UPDATE OF f` and that lock is only worth anything while a transaction holds it — in autocommit it would be dropped the instant the SELECT finished. Same structural reason `RenameInitiator::assertNameAvailable()` sits inside its caller's transaction. "Before any mutation" still holds: nothing writes until step 1, so a guard that throws rolls back an empty transaction.
+
+`OF f` and not a bare `FOR UPDATE`: the statement joins `stardust_models` only to resolve the tenant, and locking that row too would contend with `deleteModel()` for nothing. Measured on MySQL 8.0.13 — the `OF` clause parses, a concurrent `UPDATE stardust_models` on the joined row proceeds untouched, and a second initiator's identical SELECT serialises.
 
 ### Two triggers, three shapes
 
@@ -20,7 +24,7 @@ The *trigger* decides what changes on `stardust_fields`. Whether the **target** 
 2. Tombstone the current live slot if any (`assigned/backfilling/ready → tombstoned`, `field_id = NULL`).
 3. Reserve a new `backfilling` slot via `SlotReserver::reserveForBackfillWithinTransaction()` with `requireIndexed: true` — now a literal, since the call site is unreachable for a non-filterable field. Or defer if no matching indexed free slot exists; per ADR 0016 commitment 4 there is no eager DDL.
 4. Bump `stardust_schema_version`.
-5. Insert a `running` `backfill_checkpoints` row with `job_name = 'retype_field_{id}'` plus `source_declared_type`, so the work source can pick the right matrix cell after the field's `declared_type` has been overwritten.
+5. Open a `running` `backfill_checkpoints` row with `job_name = 'retype_field_{id}'` plus `source_declared_type`, so the work source can pick the right matrix cell after the field's `declared_type` has been overwritten. An upsert, not an INSERT — see "A field is not a one-way door" below.
 
 **Non-filterable target** (retype of a JSON-only field, or a `true → false` demotion) — **registry-only**: update, tombstone a grandfathered legacy slot if one exists, bump, stop. No reservation, no checkpoint, nothing for the Reconciler to claim. The JSON payload is authoritative per ADR 0013, and on demotion reads fall straight back to `JSON_EXTRACT`.
 
@@ -100,4 +104,15 @@ Every initiator checks the same repositories in the same order — since ADR 003
 
 **The ADR 0037 delete guard is in `loadField()`, not `runTuple()`'s guard block.** It keys on `stardust_fields.deleted_at` rather than a checkpoint row, so it rides a SELECT this class already runs and still fires for a field whose purge checkpoint was manually failed. It reaches every shape — retype, promotion, demotion, relocation — because `loadField()` is `runTuple()`'s first call, so `compactModel()` inherits it for free.
 
-**Known defect, not introduced here:** `RetypeCheckpointRepository::insert()` is a plain INSERT and nothing in `src/` ever deletes from `backfill_checkpoints`, so a second retype or relocation of a field whose checkpoint is already `completed` throws a raw `PDOException` — `existsRunningForField()` returns false for a terminal row. This is why `compactModel()`'s documented "safe to re-run" does not actually hold for an already-relocated field. `RenameCheckpointRepository::insertOrReset()` shows the fix (`INSERT … ON DUPLICATE KEY UPDATE`); porting it here is tracked separately.
+## A field is not a one-way door: `insertOrReset()`
+
+`ux_backfill_job_name` is UNIQUE on `job_name` and nothing removes a *retype* checkpoint — ADR 0037's `src/Delete/` clears terminal sibling rows, but only when the field itself is being deleted. So while this repository used a plain INSERT, the **second** filterable-target lifecycle for a field died on a raw `PDOException` (errno 1062) once the first had completed, and `existsRunningForField()` offered no protection because it reports `false` for a terminal row. Every shape in `runTuple()` with a filterable target lands there, so a field got one retype, promotion or relocation each, *ever*. Reachable from three plain facade calls — `promoteFieldToFilterable` → `demoteFieldFromFilterable` → `promoteFieldToFilterable` — with no compaction involved; that is also why `compactModel()`'s documented "safe to re-run" did not hold for an already-relocated field.
+
+It is now an upsert, matching `RenameCheckpointRepository::insertOrReset()` and both delete repositories — this was the last of the four `backfill_checkpoints` namespaces still doing a plain INSERT.
+
+**Two things about it that are not in the siblings:**
+
+- **`source_declared_type` is reset with the rest of the row.** No sibling repository has that column, so porting their `ON DUPLICATE KEY UPDATE` verbatim leaves the second lifecycle draining against the *first* one's source type — the wrong ADR 0024 matrix cell, with no event and no exception. Pinned by `RetypeInitiatorTest::testResetCheckpointCarriesTheNewSourceDeclaredType`, validated by neutering.
+- **Only terminal rows are relaxed.** A genuinely `running` checkpoint still raises `RetypeInProgressException` from the caller's pre-check, which is why that pre-check now runs under the `FOR UPDATE OF f` lock above. The upsert is what makes that lock load-bearing: without it two initiators could each read `declared_type` from their own snapshot and the loser would silently reset the winner's live checkpoint.
+
+**Why the concurrency test asserts on an incompatible retype.** The obvious version — hold the field row from a sibling session, run a normal retype, expect a lock-wait timeout — cannot fail. Measured on 8.0.13: the reservation's `UPDATE stardust_slot_assignments SET field_id = ?` takes an FK shared lock on the parent `stardust_fields` row via `fk_slot_assignments_field`, so a sibling's `FOR UPDATE` blocks any filterable-target initiation at step 3 whether or not `loadField()` locks anything. An ADR 0024 categorical rejection is the one shape that resolves *between* the two points — it throws straight after the read and never reaches the reservation — so the two cases surface as different exception types. `RetypeInitiatorConcurrencyTest` documents this at length; do not "simplify" it back to a timeout assertion.

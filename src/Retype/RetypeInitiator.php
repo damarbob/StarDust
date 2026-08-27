@@ -142,69 +142,89 @@ final class RetypeInitiator
         ?bool $newIsFilterable,
         ?int $pinnedPageId,
     ): void {
-        $field = $this->loadField($tenantId, $fieldId);
-
-        $oldDeclaredType = $field['declared_type'];
-        $oldIsFilterable = $field['is_filterable'];
-
-        $effectiveDeclaredType = $newDeclaredType ?? $oldDeclaredType;
-        $effectiveIsFilterable = $newIsFilterable ?? $oldIsFilterable;
-
-        // ADR 0034: only a filterable field can hold a slot, so only a
-        // filterable target has anything to backfill. A non-filterable
-        // target — a retype of a JSON-only field, or a demotion — is
-        // registry-only: update, tombstone any grandfathered legacy
-        // slot, bump, done.
-        $backfillRequired = $effectiveIsFilterable;
-
-        if ($newDeclaredType !== null
-            && RetypeCoercionEngine::isCategoricallyRejected($oldDeclaredType, $newDeclaredType)
-        ) {
-            throw new IncompatibleRetypeException(
-                "Retype rejected: '{$oldDeclaredType}' → '{$newDeclaredType}' is categorically"
-                . ' incompatible (ADR 0024). Bridge through a `string` intermediate field if'
-                . ' you require epoch-style migration.'
-            );
-        }
-
-        // ADR 0036: an in-flight rename blocks every retype shape, and
-        // the guard lives HERE rather than on the StarDust facade on
-        // purpose — initiateRelocation() shares runTuple(), so
-        // compactModel() inherits the protection. A facade-level check
-        // would leave compaction as an unguarded back door.
-        //
-        // This is a correctness guard, not hygiene: RetypeBackfillExecutor
-        // locates values by field name, so mid-rename every row behind
-        // the rename cursor reads as "value absent" and its slot is
-        // written NULL — silently, with no coercion event, because no
-        // coercion was attempted.
-        //
-        // Checked before the retype guard, in the same order the rename
-        // initiator uses, so two concurrent initiators cannot each see
-        // the other's row as absent.
-        if ($this->renameCheckpointRepository->existsRunningForField($fieldId)) {
-            throw new RenameInProgressException(
-                "Field {$fieldId} has a rename in progress; it cannot be retyped,"
-                . ' promoted, demoted, or relocated until the rename backfill completes.'
-            );
-        }
-
-        if ($this->checkpointRepository->existsRunningForField($fieldId)) {
-            throw new RetypeInProgressException(
-                "Field {$fieldId} already has a running retype-backfill checkpoint."
-            );
-        }
-
-        $now = $this->clock->now()
-            ->setTimezone(new DateTimeZone('UTC'))
-            ->format('Y-m-d H:i:s');
-
         $newSlot = null;
         $newSlotEmittedStatus = 'backfilling';
         $oldSlotId = null;
 
+        // The field read and all four guards run INSIDE the transaction
+        // that performs the mutation, not before it. `loadField()` takes
+        // `FOR UPDATE OF f` on the field row, and that lock is only
+        // worth anything while a transaction holds it — in autocommit it
+        // would be dropped the instant the SELECT finished, which is the
+        // same reason `RenameInitiator::assertNameAvailable()` sits
+        // inside its caller's transaction.
+        //
+        // What it protects is specific to this lifecycle. Two initiators
+        // racing past the checkpoint guards would each read
+        // `declared_type` before either committed, and the loser's
+        // upsert would then stamp a stale `source_declared_type` onto
+        // the checkpoint — sending the backfill through the wrong ADR
+        // 0024 matrix cell, with no event and no exception. The other
+        // three lifecycles reset a cursor and nothing else, which is why
+        // they do not carry this lock.
+        //
+        // Nothing here mutates before step 1, so the guards still reject
+        // "before any mutation": the catch rolls back an empty
+        // transaction.
         $this->pdo->beginTransaction();
         try {
+            $field = $this->loadField($tenantId, $fieldId);
+
+            $oldDeclaredType = $field['declared_type'];
+            $oldIsFilterable = $field['is_filterable'];
+
+            $effectiveDeclaredType = $newDeclaredType ?? $oldDeclaredType;
+            $effectiveIsFilterable = $newIsFilterable ?? $oldIsFilterable;
+
+            // ADR 0034: only a filterable field can hold a slot, so only
+            // a filterable target has anything to backfill. A
+            // non-filterable target — a retype of a JSON-only field, or
+            // a demotion — is registry-only: update, tombstone any
+            // grandfathered legacy slot, bump, done.
+            $backfillRequired = $effectiveIsFilterable;
+
+            if ($newDeclaredType !== null
+                && RetypeCoercionEngine::isCategoricallyRejected($oldDeclaredType, $newDeclaredType)
+            ) {
+                throw new IncompatibleRetypeException(
+                    "Retype rejected: '{$oldDeclaredType}' → '{$newDeclaredType}' is categorically"
+                    . ' incompatible (ADR 0024). Bridge through a `string` intermediate field if'
+                    . ' you require epoch-style migration.'
+                );
+            }
+
+            // ADR 0036: an in-flight rename blocks every retype shape, and
+            // the guard lives HERE rather than on the StarDust facade on
+            // purpose — initiateRelocation() shares runTuple(), so
+            // compactModel() inherits the protection. A facade-level check
+            // would leave compaction as an unguarded back door.
+            //
+            // This is a correctness guard, not hygiene: RetypeBackfillExecutor
+            // locates values by field name, so mid-rename every row behind
+            // the rename cursor reads as "value absent" and its slot is
+            // written NULL — silently, with no coercion event, because no
+            // coercion was attempted.
+            //
+            // Checked before the retype guard, in the same order the rename
+            // initiator uses, so two concurrent initiators cannot each see
+            // the other's row as absent.
+            if ($this->renameCheckpointRepository->existsRunningForField($fieldId)) {
+                throw new RenameInProgressException(
+                    "Field {$fieldId} has a rename in progress; it cannot be retyped,"
+                    . ' promoted, demoted, or relocated until the rename backfill completes.'
+                );
+            }
+
+            if ($this->checkpointRepository->existsRunningForField($fieldId)) {
+                throw new RetypeInProgressException(
+                    "Field {$fieldId} already has a running retype-backfill checkpoint."
+                );
+            }
+
+            $now = $this->clock->now()
+                ->setTimezone(new DateTimeZone('UTC'))
+                ->format('Y-m-d H:i:s');
+
             // 1. Mutate stardust_fields.
             if ($newDeclaredType !== null || $newIsFilterable !== null) {
                 $update = $this->pdo->prepare(
@@ -283,7 +303,7 @@ final class RetypeInitiator
             //    authoritative (ADR 0013), so no checkpoint is written
             //    and the Reconciler has nothing to claim.
             if ($backfillRequired) {
-                $this->checkpointRepository->insert($fieldId, $oldDeclaredType, $now);
+                $this->checkpointRepository->insertOrReset($fieldId, $oldDeclaredType, $now);
             }
 
             $this->pdo->commit();
@@ -322,6 +342,19 @@ final class RetypeInitiator
     }
 
     /**
+     * Reads the field under a row lock, and rejects the three states no
+     * shape may start from.
+     *
+     * **`FOR UPDATE OF f`, not a bare `FOR UPDATE`.** The statement
+     * joins `stardust_models` only to resolve the tenant, and locking
+     * that row too would contend with `deleteModel()` for nothing.
+     * Verified on MySQL 8.0.13: the `OF` clause parses, a concurrent
+     * `UPDATE stardust_models` on the joined row proceeds untouched, and
+     * a second initiator's identical SELECT serialises behind this one.
+     *
+     * The lock only holds because `runTuple()` calls this inside its
+     * transaction — see the note there for what it is defending.
+     *
      * @return array{declared_type: string, is_filterable: bool, model_id: int}
      */
     private function loadField(int $tenantId, int $fieldId): array
@@ -331,6 +364,7 @@ final class RetypeInitiator
             . ' FROM stardust_fields f'
             . ' JOIN stardust_models m ON m.id = f.model_id'
             . ' WHERE f.id = ?'
+            . ' FOR UPDATE OF f'
         );
         $stmt->execute([$fieldId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);

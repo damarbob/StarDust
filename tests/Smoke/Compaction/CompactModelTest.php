@@ -116,6 +116,63 @@ final class CompactModelTest extends Phase6bTestCase
         );
     }
 
+    /**
+     * A model that fragments again is compactable again — which means a
+     * field that already relocated once can relocate a second time.
+     *
+     * `testReRunOnACompactModelIsANoop()` above does not reach this: a
+     * no-op plan short-circuits before `initiateRelocation()`, so it
+     * never opens a second checkpoint for any field. Until
+     * `RetypeCheckpointRepository::insertOrReset()` landed, that second
+     * relocation died on `ux_backfill_job_name` with a raw
+     * `PDOException` (errno 1062), because the field's first checkpoint
+     * was still sitting there `completed` and nothing removes it. So the
+     * documented "safe to re-run" held only for the case that never ran
+     * anything.
+     */
+    public function testAFieldThatAlreadyRelocatedCanRelocateAgain(): void
+    {
+        [$modelId, $fields] = $this->seedFragmentedModel();
+        $service = $this->makeCompactionService();
+
+        $first = $service->compact(1, $modelId);
+        $relocatedFieldIds = array_map(
+            static fn ($relocation) => $relocation->fieldId,
+            $first->relocations,
+        );
+        self::assertNotEmpty($relocatedFieldIds, 'The first run must actually move something.');
+
+        $movedFieldId = $relocatedFieldIds[0];
+        self::assertSame(
+            'completed',
+            $this->fetchCheckpointForField($movedFieldId)['status'],
+            'The first relocation must leave a terminal checkpoint behind — the thing that used to collide.',
+        );
+
+        // Re-fragment by direct registry UPDATE. `SlotReserver` packs
+        // onto the oldest page, so a deliberately fragmented model
+        // cannot be rebuilt through the reservation path — the same
+        // documented bypass `SlotAffinityTest` uses.
+        $this->stripeFieldOntoItsOwnPage($movedFieldId);
+
+        $second = $service->compact(1, $modelId);
+
+        self::assertContains(
+            $movedFieldId,
+            array_map(static fn ($relocation) => $relocation->fieldId, $second->relocations),
+            'The re-run must plan the already-relocated field, not skip it.',
+        );
+        self::assertSame(
+            'completed',
+            $this->fetchCheckpointForField($movedFieldId)['status'],
+            'Its second relocation must have drained, not collided.',
+        );
+
+        $after = (new SpreadSampler($this->pdo, $this->makeRecordingLogger(), 2))->report(1, $modelId);
+        self::assertSame(0, $after[0]->excessPages(), 'excess_pages -> 0 is the success criterion.');
+        self::assertSame(count($fields), $after[0]->liveSlotCount, 'No slot may be lost across two runs.');
+    }
+
     /** `--dry-run` plans without mutating or emitting. */
     public function testDryRunMutatesNothingAndEmitsNothing(): void
     {
@@ -239,6 +296,46 @@ final class CompactModelTest extends Phase6bTestCase
         ])];
 
         return [$modelId, $fields, $entryIds];
+    }
+
+    /**
+     * Moves one field's live slot onto a page nothing else of its model
+     * occupies, by direct registry UPDATE, so the model reads as
+     * fragmented again.
+     *
+     * Frees the vacated row rather than tombstoning it: a tombstone
+     * would sit there until a Liberator sweep and this fixture wants the
+     * capacity back immediately.
+     */
+    private function stripeFieldOntoItsOwnPage(int $fieldId): void
+    {
+        $current = $this->fetchLiveSlotForField($fieldId);
+        self::assertNotNull($current, 'Field must hold a live slot to be striped off it.');
+
+        $target = $this->pdo->prepare(
+            'SELECT id, page_id FROM stardust_slot_assignments'
+            . " WHERE status = 'free' AND slot_type = 'str' AND page_id <> ?"
+            . ' ORDER BY page_id, id LIMIT 1'
+        );
+        $target->execute([(int) $current['page_id']]);
+        $row = $target->fetch(\PDO::FETCH_ASSOC);
+        self::assertNotFalse($row, 'Fixture needs a free string slot on another page.');
+
+        // Release the old row BEFORE claiming the new one:
+        // `ux_slot_assignments_field_live` (ADR 0017) permits at most one
+        // live slot per field, so the other order trips errno 1062. Same
+        // ordering constraint `LiveSlotTombstoner` works around.
+        $this->pdo->prepare(
+            'UPDATE stardust_slot_assignments'
+            . " SET field_id = NULL, status = 'free', updated_at = UTC_TIMESTAMP()"
+            . ' WHERE id = ?'
+        )->execute([(int) $current['id']]);
+
+        $this->pdo->prepare(
+            'UPDATE stardust_slot_assignments'
+            . " SET field_id = ?, status = 'assigned', updated_at = UTC_TIMESTAMP()"
+            . ' WHERE id = ?'
+        )->execute([$fieldId, (int) $row['id']]);
     }
 
     private function bindSlot(int $pageId, string $slotColumn, int $fieldId, string $status): void

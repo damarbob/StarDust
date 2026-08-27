@@ -56,7 +56,9 @@ The retype-side guard sits inside `RetypeInitiator::runTuple()`, **not** on the 
 
 ## `insertOrReset()`, not `insert()`
 
-Nothing deletes a *rename* checkpoint, and `ux_backfill_job_name` is UNIQUE, so a plain INSERT makes the *second* lifecycle for a field throw a raw `PDOException` once the first completes — `existsRunningForField()` returns false for a `completed` row and offers no protection. `RetypeCheckpointRepository::insert()` has that defect today, which is why `compactModel()`'s "safe to re-run" claim does not hold for an already-relocated field. This repository uses `INSERT … ON DUPLICATE KEY UPDATE` and does not inherit it. Fixing the retype side is tracked separately.
+Nothing deletes a *rename* checkpoint, and `ux_backfill_job_name` is UNIQUE, so a plain INSERT makes the *second* lifecycle for a field throw a raw `PDOException` once the first completes — `existsRunningForField()` returns false for a `completed` row and offers no protection. This repository uses `INSERT … ON DUPLICATE KEY UPDATE` and does not have that defect.
+
+**Update, 2026-08-27.** `RetypeCheckpointRepository` was the last holdout and has now been converted too, so all four `backfill_checkpoints` namespaces upsert. Its version is *not* a copy of this one: it also resets `source_declared_type`, a column no other namespace has, and it needed a `FOR UPDATE OF f` row lock in `RetypeInitiator` that this initiator does not take — see `src/Retype/CLAUDE.md`. A retype's lost race mis-coerces stored data; a rename's resets a cursor.
 
 **Correction, 2026-08-24.** This section used to open "Nothing in the engine ever deletes from `backfill_checkpoints`". That is no longer true: ADR 0037's `DeleteCheckpointRepository` deletes terminal rename/retype rows at deletion initiation, and deletes its own row on the purge's final chunk (`src/Delete/CLAUDE.md`). The conclusion is unaffected — a rename checkpoint is still only ever cleared by a *field deletion*, which refuses to start while a rename is running, so the upsert remains necessary.
 

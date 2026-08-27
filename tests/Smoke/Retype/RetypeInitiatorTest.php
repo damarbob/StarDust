@@ -161,6 +161,95 @@ final class RetypeInitiatorTest extends Phase6bTestCase
         }
     }
 
+    /**
+     * A field must not be a one-way door.
+     *
+     * `ux_backfill_job_name` is UNIQUE and nothing removes a retype
+     * checkpoint, so before `insertOrReset()` the *second*
+     * filterable-target lifecycle for a field died on a raw
+     * `PDOException` (errno 1062) once the first had completed —
+     * `existsRunningForField()` reports `false` for a terminal row and
+     * offered no protection. Reachable from three plain facade calls
+     * with no compaction involved, which is the shape reproduced here.
+     *
+     * Sibling of
+     * {@see \StarDust\Tests\Smoke\Rename\RenameInitiatorTest::testASecondRenameSucceedsAfterTheFirstCompletes}.
+     */
+    public function testASecondFilterableLifecycleSucceedsAfterTheFirstCompletes(): void
+    {
+        // Two indexed string slots: the first promotion takes one and
+        // the demotion tombstones rather than frees it, so the second
+        // promotion needs another.
+        $this->provisionPage(['i_str_01', 'i_str_02']);
+        $modelId = $this->createModel(1);
+        $fieldId = $this->createField($modelId, 'string', false, 'beta');
+        $this->seedEntry(1, $modelId, ['beta' => 'beta-value']);
+
+        $initiator = $this->makeRetypeInitiator();
+
+        $initiator->initiate(tenantId: 1, fieldId: $fieldId, newDeclaredType: null, newIsFilterable: true);
+        $this->makeRetypeReconciler()->tick();
+
+        $first = $this->fetchCheckpointForField($fieldId);
+        self::assertNotNull($first);
+        self::assertSame('completed', $first['status']);
+        self::assertGreaterThan(0, $first['last_processed_id'], 'The first drain must have moved the cursor.');
+
+        // ADR 0034: a non-filterable target has nothing to backfill, so
+        // the demotion writes no checkpoint and the terminal row stands.
+        $initiator->initiate(tenantId: 1, fieldId: $fieldId, newDeclaredType: null, newIsFilterable: false);
+        self::assertSame('completed', $this->fetchCheckpointForField($fieldId)['status']);
+
+        $initiator->initiate(tenantId: 1, fieldId: $fieldId, newDeclaredType: null, newIsFilterable: true);
+
+        $second = $this->fetchCheckpointForField($fieldId);
+        self::assertNotNull($second);
+        self::assertSame('running', $second['status'], 'The terminal row must be reset, not collided with.');
+        self::assertSame(0, $second['last_processed_id'], 'Cursor must restart.');
+        self::assertNull($second['completed_at'], 'The previous completion must be cleared.');
+        self::assertNotNull($this->fetchLiveSlotForField($fieldId), 'The second promotion must hold a slot.');
+    }
+
+    /**
+     * The one assertion that fails if the upsert omits
+     * `source_declared_type = VALUES(source_declared_type)`.
+     *
+     * No sibling checkpoint repository has that column, so porting their
+     * `ON DUPLICATE KEY UPDATE` verbatim leaves the reset row carrying
+     * the *first* lifecycle's source type. `RetypeBackfillWorkSource`
+     * reads it to pick the ADR 0024 matrix cell, so the second backfill
+     * would coerce `int → string` values as though they were still
+     * `string → int` — silently, with no event and no exception.
+     */
+    public function testResetCheckpointCarriesTheNewSourceDeclaredType(): void
+    {
+        // Indexed columns for both families, twice over for strings:
+        // ADR 0016 commitment 1 means each replacement reservation
+        // demands an indexed slot of the target family, and the vacated
+        // ones are tombstoned rather than freed.
+        $this->provisionPage(['i_str_01', 'i_str_02', 'i_int_01']);
+        $modelId = $this->createModel(1);
+        $fieldId = $this->createField($modelId, 'string', true, 'value');
+        $this->reserveSlotFor($fieldId);
+        $this->seedEntry(1, $modelId, ['value' => '42']);
+
+        $initiator = $this->makeRetypeInitiator();
+
+        $initiator->initiate(tenantId: 1, fieldId: $fieldId, newDeclaredType: 'int', newIsFilterable: null);
+        self::assertSame('string', $this->fetchCheckpointForField($fieldId)['source_declared_type']);
+
+        $this->makeRetypeReconciler()->tick();
+        self::assertSame('completed', $this->fetchCheckpointForField($fieldId)['status']);
+
+        $initiator->initiate(tenantId: 1, fieldId: $fieldId, newDeclaredType: 'string', newIsFilterable: null);
+
+        self::assertSame(
+            'int',
+            $this->fetchCheckpointForField($fieldId)['source_declared_type'],
+            'The reset row must carry the second lifecycle\'s source type, not the first\'s.',
+        );
+    }
+
     public function testInitiationForUnknownFieldThrowsFieldNotFound(): void
     {
         $this->expectException(FieldNotFoundException::class);
