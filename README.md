@@ -523,6 +523,19 @@ if ($job?->status === 'failed') {
     echo "failed ({$job->failedReason}); resume from " . ($job->entriesWritten ?? 0);
 }
 
+// chunkManifest enumerates the chunks the job has processed, in order:
+// each record carries its size, its outcome, and the range of entry ids
+// it wrote. This is the same per-chunk detail a synchronous bulkWrite()
+// returns, so crossing the size threshold does not cost you visibility.
+// A failed job ends with one 'failed' record naming the chunk that
+// broke; its id range is null, because that chunk was rolled back.
+foreach ($job?->chunkManifest ?? [] as $chunk) {
+    echo "chunk {$chunk->index}: {$chunk->outcome}, {$chunk->size} entries";
+    if ($chunk->entryIdFirst !== null) {
+        echo " (ids {$chunk->entryIdFirst}-{$chunk->entryIdLast})";
+    }
+}
+
 // Build payloads from JSON / arrays instead of the typed constructor —
 // handy when entries arrive off a wire (CMS, HTTP, queue). The envelope
 // is {tenantId, modelId, fields} (camelCase). These are *convergent*

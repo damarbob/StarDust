@@ -113,6 +113,123 @@ final class ImportJobAbandonedClaimTest extends Phase6bTestCase
         }
     }
 
+    /**
+     * A re-claim APPENDS to the prior worker's per-chunk records rather
+     * than restarting the list, and its `index` continues from the
+     * checkpoint's chunk count.
+     *
+     * The committed chunks those records describe are durable no matter
+     * which worker wrote them, so dropping them on re-claim would make
+     * an abandoned job's manifest permanently less complete than an
+     * uninterrupted one's.
+     */
+    public function testResumeAppendsToPriorWorkersChunkRecords(): void
+    {
+        [$modelId, , , $fieldName] = $this->setupModelWithReservedField(1, 'string');
+
+        $dir = $this->makeDir();
+        try {
+            $entries = [];
+            for ($i = 0; $i < 5; $i++) {
+                $entries[] = ['tenant_id' => 1, 'model_id' => $modelId, 'fields' => [$fieldName => 'v' . $i]];
+            }
+
+            $priorIds = [
+                $this->seedEntry(1, $modelId, $entries[0]['fields']),
+                $this->seedEntry(1, $modelId, $entries[1]['fields']),
+            ];
+
+            [$jobId] = $this->writeProcessingImportJob(
+                tenantId: 1,
+                entries: $entries,
+                heartbeatAgoSeconds: 60,
+                manifest: [
+                    'chunks'          => 1,
+                    'entries_written' => 2,
+                    'chunk_manifest'  => [[
+                        'index'          => 1,
+                        'size'           => 2,
+                        'outcome'        => 'committed',
+                        'entry_id_first' => $priorIds[0],
+                        'entry_id_last'  => $priorIds[1],
+                    ]],
+                ],
+                artifactDir: $dir,
+            );
+
+            $source = $this->makeImportJobWorkSource(artifactDir: $dir, leaseTimeoutSeconds: 30, chunkSize: 2);
+            $source->tickOne('corr-resume-records');
+
+            $job = $this->fetchJob($jobId);
+            self::assertSame('completed', $job['status']);
+            $manifest = json_decode((string) $job['manifest'], true, flags: JSON_THROW_ON_ERROR);
+
+            // 2 already committed + 3 remaining at 2/chunk => chunks 2 and 3.
+            $records = $manifest['chunk_manifest'];
+            self::assertCount(3, $records);
+            self::assertSame([1, 2, 3], array_column($records, 'index'));
+            self::assertSame([2, 2, 1], array_column($records, 'size'));
+
+            // The prior worker's record survives byte-for-byte.
+            self::assertSame($priorIds[0], $records[0]['entry_id_first']);
+            self::assertSame($priorIds[1], $records[0]['entry_id_last']);
+        } finally {
+            $this->cleanupDir($dir);
+        }
+    }
+
+    /**
+     * A job carrying a pre-ADR-0040 manifest — counters only, no
+     * `chunk_manifest` key — resumes correctly and simply has no records
+     * for the chunks its prior worker committed.
+     *
+     * This is the shape every in-flight job has across the upgrade, so
+     * the decoder tolerating it is a deployment requirement, not a
+     * nicety.
+     */
+    public function testResumeToleratesAPreUpgradeManifest(): void
+    {
+        [$modelId, , , $fieldName] = $this->setupModelWithReservedField(1, 'string');
+
+        $dir = $this->makeDir();
+        try {
+            $entries = [];
+            for ($i = 0; $i < 4; $i++) {
+                $entries[] = ['tenant_id' => 1, 'model_id' => $modelId, 'fields' => [$fieldName => 'v' . $i]];
+            }
+
+            $this->seedEntry(1, $modelId, $entries[0]['fields']);
+            $this->seedEntry(1, $modelId, $entries[1]['fields']);
+
+            [$jobId] = $this->writeProcessingImportJob(
+                tenantId: 1,
+                entries: $entries,
+                heartbeatAgoSeconds: 60,
+                // Exactly what a pre-0040 worker wrote.
+                manifest: ['chunks' => 1, 'entries_written' => 2],
+                artifactDir: $dir,
+            );
+
+            $source = $this->makeImportJobWorkSource(artifactDir: $dir, leaseTimeoutSeconds: 30, chunkSize: 2);
+            $source->tickOne('corr-resume-legacy');
+
+            $job = $this->fetchJob($jobId);
+            self::assertSame('completed', $job['status']);
+            $manifest = json_decode((string) $job['manifest'], true, flags: JSON_THROW_ON_ERROR);
+
+            // The resume itself is unaffected: no duplicates, right total.
+            self::assertSame(4, $manifest['entries_written']);
+            self::assertSame(4, $this->countEntries(1, $modelId));
+
+            // Only the chunk this worker ran has a record; the prior
+            // one's is absent because it was never written.
+            self::assertCount(1, $manifest['chunk_manifest']);
+            self::assertSame(2, $manifest['chunk_manifest'][0]['index']);
+        } finally {
+            $this->cleanupDir($dir);
+        }
+    }
+
     public function testFreshProcessingJobNotReclaimed(): void
     {
         [$modelId, , , $fieldName] = $this->setupModelWithReservedField(1, 'string');

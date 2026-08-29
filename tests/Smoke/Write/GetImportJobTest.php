@@ -10,6 +10,7 @@ use StarDust\Exception\InvalidTenantIdException;
 use StarDust\Reconciler\TickOutcome;
 use StarDust\Tests\Smoke\Phase5TestCase;
 use StarDust\Write\BulkIngestSubmitter;
+use StarDust\Write\ImportChunkRecord;
 
 /**
  * `getImportJob()` tenant-isolation + hydration contract — the
@@ -128,6 +129,25 @@ final class GetImportJobTest extends Phase5TestCase
             // Stamped on the terminal transition, not only while a
             // worker holds the lease.
             self::assertNotNull($after->heartbeatAt);
+
+            // ADR 0011 §26 / ADR 0040: the per-chunk enumeration, hoisted
+            // into typed records. Before the drain there is nothing to
+            // report; after it, one record per chunk.
+            self::assertSame([], $before->chunkManifest);
+            self::assertCount(1, $after->chunkManifest);
+            $record = $after->chunkManifest[0];
+            self::assertSame(1, $record->index);
+            self::assertSame(3, $record->size);
+            self::assertSame(ImportChunkRecord::OUTCOME_COMMITTED, $record->outcome);
+            self::assertNull($record->failureReason);
+
+            // The range is asserted against the ids entry_data actually
+            // assigned, so the record is checked against reality.
+            $ids = $this->pdo->query(
+                'SELECT id FROM entry_data WHERE model_id = ' . $modelId . ' ORDER BY id'
+            )->fetchAll(\PDO::FETCH_COLUMN);
+            self::assertSame((int) $ids[0], $record->entryIdFirst);
+            self::assertSame((int) $ids[2], $record->entryIdLast);
         } finally {
             foreach (glob($artifactDir . DIRECTORY_SEPARATOR . '*') ?: [] as $f) {
                 @unlink($f);

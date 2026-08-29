@@ -86,9 +86,22 @@ Each window's transaction writes the running `manifest` **and** `heartbeat_at` v
 
 This is reliable because `manifest.entries_written` strictly increases, so a matched row is always *changed* — `rowCount()===0` can only mean an identity mismatch, never a no-op update.
 
+### The manifest (ADR 0011 §26, shaped by ADR 0040)
+
+`{chunks, entries_written}` is the resume checkpoint above. `chunk_manifest` is the per-chunk enumeration §26 requires: one record per chunk carrying `index`, `size`, `outcome`, and the chunk's `entry_id_first` / `entry_id_last`. The write path already had the ids — `writeWithinTransaction()` returns an `EntryWriteResult` — so the records cost no extra query.
+
+Four rules, each of which a plausible refactor would get wrong:
+
+- **`rolled_back` never appears here.** That outcome belongs to `BulkIngestor`, which skips a failed chunk and continues; on this path the first failure is terminal for the job. Do not "restore consistency" by making the async path continue — ADR 0011 §38's partial-progress-plus-boundary is the designed behaviour.
+- **A failure appends, and never moves the counters.** `chunks` / `entries_written` are the boundary a consumer replays from.
+- **`malformed_json` writes no manifest at all**, and neither does a failure on the *first* chunk — there the counters are omitted rather than written as `0`, because `getImportJob()` reads an absent key as `null` and `ImportJob` documents `null` ("nothing committed") as distinct from `0` ("ran, wrote nothing").
+- **Records are appended to a local copy and assigned back only after `commit()`**, which is why the lock-retry loop rewinds `$entriesWritten` but not the record list. A retried window cannot have grown it.
+
+**Cost, measured on MySQL 8.0.13 (2026-08-28) against the real work source:** ~95 bytes per record, so the manifest is `95 × chunks` bytes and the checkpoint rewrites all of it once per chunk — total bytes written grow as the square of the chunk count (200 chunks → 19 KB manifest, 1.9 MB rewritten; 400 → 38 KB, 7.5 MB). At the default `reconcilerChunkSize` of 500 that is ~95 KB per transaction even at a million entities, against the 500 `entry_data` rows the same transaction writes. It becomes material in the low tens of thousands of chunks; ADR 0040 records the `stardust_import_chunks` table as the fix if a deployment ever gets there.
+
 ### Terminal states
 
-`completed` with a manifest of `{chunks, entries_written}`, or `failed` with `failed_reason` (`malformed_json` for artifact failures, `entry_write_failed` for per-entry failures) plus a DLQ row.
+`completed` with the manifest above, or `failed` with `failed_reason` (`malformed_json` for artifact failures, `entry_write_failed` for per-entry failures) plus a DLQ row.
 
 ## DLQ (ADR 0018)
 

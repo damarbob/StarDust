@@ -229,6 +229,7 @@ final class BulkIngestSubmitter
             heartbeatAt: $this->parseDateTime($row['heartbeat_at']),
             createdAt: $this->parseDateTime($row['created_at']) ?? new DateTimeImmutable('now', new DateTimeZone('UTC')),
             completedAt: $this->parseDateTime($row['completed_at']),
+            chunkManifest: $this->decodeChunkManifest($row['manifest']),
         );
     }
 
@@ -266,6 +267,64 @@ final class BulkIngestSubmitter
             is_numeric($chunks) ? (int) $chunks : null,
             is_numeric($written) ? (int) $written : null,
         ];
+    }
+
+    /**
+     * Hoists the manifest's `chunk_manifest` array into typed records
+     * (ADR 0011 §26 / ADR 0040). Returns `[]` for a NULL manifest, for
+     * one written before ADR 0040, and for any element that is not a
+     * usable record — a partial list is more useful to a consumer
+     * polling a running job than an exception is.
+     *
+     * `$raw` is `mixed` deliberately: it is a PDO column value, so the
+     * runtime really can hand back something other than a string, and
+     * this method's job is to defend against exactly that.
+     *
+     * @return list<ImportChunkRecord>
+     */
+    private function decodeChunkManifest(mixed $raw): array
+    {
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $rawRecords = $decoded['chunk_manifest'] ?? null;
+        if (!is_array($rawRecords)) {
+            return [];
+        }
+
+        $records = [];
+        foreach ($rawRecords as $record) {
+            if (!is_array($record)) {
+                continue;
+            }
+
+            $index   = $record['index'] ?? null;
+            $size    = $record['size'] ?? null;
+            $outcome = $record['outcome'] ?? null;
+            if (!is_numeric($index) || !is_numeric($size) || !is_string($outcome)) {
+                continue;
+            }
+
+            $first  = $record['entry_id_first'] ?? null;
+            $last   = $record['entry_id_last'] ?? null;
+            $reason = $record['failure_reason'] ?? null;
+
+            $records[] = new ImportChunkRecord(
+                index: (int) $index,
+                size: (int) $size,
+                outcome: $outcome,
+                entryIdFirst: is_numeric($first) ? (int) $first : null,
+                entryIdLast: is_numeric($last) ? (int) $last : null,
+                failureReason: is_string($reason) ? $reason : null,
+            );
+        }
+
+        return $records;
     }
 
     private function parseDateTime(mixed $raw): ?DateTimeImmutable

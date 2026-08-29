@@ -14,6 +14,7 @@ use StarDust\Exception\ImportJobArtifactException;
 use StarDust\Support\UuidV4;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriter;
+use StarDust\Write\ImportChunkRecord;
 use Throwable;
 use PDOException;
 use StarDust\Support\RetryableLockFailure;
@@ -50,15 +51,28 @@ use StarDust\Support\RetryableLockFailure;
  *     the worker rolls back the chunk, emits `lease_lost`, and stops
  *     WITHOUT marking the row failed — the re-claimer owns terminal state.
  *
+ * Manifest (ADR 0011 §26, shaped by ADR 0040):
+ *   - `{chunks, entries_written}` is the resume checkpoint and is read
+ *     arithmetically by the abandoned-claim path above.
+ *   - `chunk_manifest` is the per-chunk record list §26 requires:
+ *     one `committed` record per chunk carrying its entity ID range,
+ *     plus at most one terminal `failed` record. `rolled_back` never
+ *     appears here — that outcome belongs to {@see \StarDust\Write\BulkIngestor},
+ *     which skips a failed chunk and continues, whereas the first
+ *     failure on this path is terminal for the job.
+ *
  * Completion:
  *   - On success: `status='completed'`, `manifest` populated with
- *     per-chunk counts, `completed_at=NOW()`.
+ *     per-chunk counts and records, `completed_at=NOW()`.
  *   - On artifact failure: `status='failed'`,
- *     `failed_reason='malformed_json'`, DLQ row inserted.
+ *     `failed_reason='malformed_json'`, DLQ row inserted, and the
+ *     manifest left NULL — §26 scopes it to jobs that produced a chunk,
+ *     and this fails before the first window opens.
  *   - On per-entry failure: the whole chunk rolls back; the job moves
- *     to `failed` with `failed_reason='entry_write_failed'` and a DLQ
- *     row is inserted. Partial completion is not supported — the
- *     manifest reports the boundary so an operator can replay.
+ *     to `failed` with `failed_reason='entry_write_failed'`, a `failed`
+ *     record is appended, and a DLQ row is inserted. Partial completion
+ *     is not supported — the manifest reports the boundary so an
+ *     operator can replay.
  */
 final class ImportJobWorkSource implements ReconcilerWorkSource
 {
@@ -126,6 +140,11 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         $checkpoint = $this->decodeManifest($job['manifest'] ?? null);
         $resumeOffset = $checkpoint['entries_written'];
         $priorChunks = $checkpoint['chunks'];
+        // The prior worker's per-chunk records (ADR 0011 §26 / ADR 0040).
+        // Carried forward so a re-claim appends to the manifest rather
+        // than restarting it — the committed chunks it describes are
+        // durable regardless of which worker wrote them.
+        $priorRecords = $checkpoint['chunk_manifest'];
 
         $this->logger->info('import_job chunk claimed', [
             'event'          => 'chunk_claimed',
@@ -159,6 +178,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             workerIdentity: $workerIdentity,
             resumeOffset: $resumeOffset,
             priorChunks: $priorChunks,
+            priorRecords: $priorRecords,
         );
 
         if ($manifest instanceof TickOutcome) {
@@ -296,25 +316,60 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     }
 
     /**
-     * Decodes the `{chunks, entries_written}` checkpoint manifest. A
-     * NULL or malformed manifest yields the zero checkpoint (start from
-     * the top).
+     * Decodes the manifest into the resume checkpoint plus the
+     * per-chunk records accumulated so far. A NULL or malformed
+     * manifest yields the zero checkpoint (start from the top) with no
+     * records.
      *
-     * @return array{chunks: int, entries_written: int}
+     * `chunk_manifest` is absent from any manifest written before ADR
+     * 0040 shipped, and from every `{chunks, entries_written}` row an
+     * in-flight job carries across the upgrade. Such a job resumes
+     * correctly and simply has no records for the chunks its prior
+     * worker committed — the counters are what the resume depends on,
+     * and they are untouched.
+     *
+     * @return array{chunks: int, entries_written: int, chunk_manifest: list<array<string, mixed>>}
      */
     private function decodeManifest(mixed $raw): array
     {
+        $zero = ['chunks' => 0, 'entries_written' => 0, 'chunk_manifest' => []];
+
         if (!is_string($raw) || $raw === '') {
-            return ['chunks' => 0, 'entries_written' => 0];
+            return $zero;
         }
         $decoded = json_decode($raw, true);
         if (!is_array($decoded)) {
-            return ['chunks' => 0, 'entries_written' => 0];
+            return $zero;
         }
         return [
             'chunks'          => isset($decoded['chunks']) ? (int) $decoded['chunks'] : 0,
             'entries_written' => isset($decoded['entries_written']) ? (int) $decoded['entries_written'] : 0,
+            'chunk_manifest'  => $this->decodeChunkRecords($decoded['chunk_manifest'] ?? null),
         ];
+    }
+
+    /**
+     * Normalises the stored `chunk_manifest` array. Every element is
+     * re-encoded verbatim into the next checkpoint, so this only has to
+     * guarantee it is a list of arrays — anything else is dropped
+     * rather than propagated into a manifest a consumer will read.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function decodeChunkRecords(mixed $raw): array
+    {
+        if (!is_array($raw) || !array_is_list($raw)) {
+            return [];
+        }
+
+        $records = [];
+        foreach ($raw as $record) {
+            if (is_array($record)) {
+                $records[] = $record;
+            }
+        }
+
+        return $records;
     }
 
     /**
@@ -387,7 +442,8 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
      *     `manifest.entries_written`.
      *
      * @param array{tenant_id: int, entries: list<array{tenant_id: int, model_id: int, fields?: array<string, mixed>}>} $payload
-     * @return array{chunks: int, entries_written: int}|TickOutcome|null
+     * @param list<array<string, mixed>> $priorRecords
+     * @return array{chunks: int, entries_written: int, chunk_manifest: list<array<string, mixed>>}|TickOutcome|null
      */
     private function processEntries(
         int $jobId,
@@ -397,6 +453,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         string $workerIdentity,
         int $resumeOffset,
         int $priorChunks,
+        array $priorRecords,
     ): array|TickOutcome|null {
         $entries = $payload['entries'];
         $totalEntries = count($entries);
@@ -405,6 +462,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         // since the prior worker (entries are position-indexed).
         $entriesWritten = $resumeOffset;
         $chunkCount = $priorChunks;
+        $records = $priorRecords;
 
         for ($offset = $resumeOffset; $offset < $totalEntries; $offset += $this->chunkSize) {
             // Apply inter-chunk delay BEFORE every chunk except the
@@ -426,6 +484,10 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             // `$windowStart` is what makes a retry safe — the counter is
             // incremented per entry inside the transaction, so a rolled
             // back attempt must rewind it before the next one.
+            //
+            // `$records` needs no such rewind: writeWindow() appends to a
+            // local copy and only assigns it back *after* commit()
+            // returns, so a rolled back attempt cannot have grown it.
             $windowStart = $entriesWritten;
 
             for ($attempt = 1; ; $attempt++) {
@@ -439,6 +501,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
                     chunkCount: $chunkCount,
                     entriesWritten: $entriesWritten,
                     attempt: $attempt,
+                    records: $records,
                 );
 
                 if ($windowOutcome !== self::WINDOW_RETRY) {
@@ -453,11 +516,15 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             }
         }
 
-        return ['chunks' => $chunkCount, 'entries_written' => $entriesWritten];
+        return [
+            'chunks'         => $chunkCount,
+            'entries_written' => $entriesWritten,
+            'chunk_manifest' => $records,
+        ];
     }
 
     /**
-     * @param array{chunks: int, entries_written: int} $manifest
+     * @param array{chunks: int, entries_written: int, chunk_manifest: list<array<string, mixed>>} $manifest
      */
     private function completeJob(int $jobId, array $manifest, string $chunkCorrelationId): void
     {
@@ -479,6 +546,11 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             'job_id'          => $jobId,
             'chunks'          => $manifest['chunks'],
             'entries_written' => $manifest['entries_written'],
+            // A context field on an existing event, not a new event
+            // name — ADR 0020's vocabulary is unchanged. It is below
+            // `chunks` when a job resumed across the ADR 0040 upgrade
+            // and its prior worker left no records.
+            'chunk_records'   => count($manifest['chunk_manifest']),
         ]);
     }
 
@@ -496,7 +568,13 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
      * *inside* the transaction, so a caller retrying this method must
      * rewind it to the window's starting value first.
      *
+     * `$records` is also by reference but needs no such rewind: the
+     * appended list is built locally and assigned back only *after*
+     * `commit()` returns, so a rolled back attempt leaves the caller's
+     * copy untouched.
+     *
      * @param list<array{tenant_id: int, model_id: int, fields?: array<string, mixed>}> $chunk
+     * @param list<array<string, mixed>> $records
      */
     private function writeWindow(
         array $chunk,
@@ -507,17 +585,36 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         int $chunkCount,
         int &$entriesWritten,
         int $attempt,
+        array &$records,
     ): string {
         $this->pdo->beginTransaction();
         try {
+            $entryIdFirst = null;
+            $entryIdLast  = null;
+
             foreach ($chunk as $entry) {
-                $this->entryWriter->writeWithinTransaction(new EntryPayload(
+                $result = $this->entryWriter->writeWithinTransaction(new EntryPayload(
                     tenantId: (int) $entry['tenant_id'],
                     modelId: (int) $entry['model_id'],
                     fields: (array) ($entry['fields'] ?? []),
                 ));
+                // ADR 0011 §26's "entity ID range". The write already
+                // returns the id; this only stops discarding it, so the
+                // record costs no extra query.
+                $entryIdFirst ??= $result->entryId;
+                $entryIdLast    = $result->entryId;
                 $entriesWritten++;
             }
+
+            // Append to a LOCAL copy — see the docblock. `$records` is
+            // only advanced past the commit below.
+            $appendedRecords = [...$records, [
+                'index'          => $chunkCount,
+                'size'           => count($chunk),
+                'outcome'        => ImportChunkRecord::OUTCOME_COMMITTED,
+                'entry_id_first' => $entryIdFirst,
+                'entry_id_last'  => $entryIdLast,
+            ]];
 
             // Checkpoint the running manifest + heartbeat in the same
             // transaction as the chunk's writes. The
@@ -525,9 +622,16 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             // detector: 0 rows matched ⇒ a re-claimer overwrote our
             // identity. entries_written strictly increases, so a matched
             // row is always *changed* — rowCount()===0 can only mean the
-            // identity no longer matches, never a no-op update.
+            // identity no longer matches, never a no-op update. (The
+            // appended record makes the row differ too, but the counter
+            // is what the guarantee rests on: it is monotonic by
+            // construction, while a record's contents are not.)
             $manifest = json_encode(
-                ['chunks' => $chunkCount, 'entries_written' => $entriesWritten],
+                [
+                    'chunks'          => $chunkCount,
+                    'entries_written' => $entriesWritten,
+                    'chunk_manifest'  => $appendedRecords,
+                ],
                 JSON_THROW_ON_ERROR,
             );
             $checkpoint = $this->pdo->prepare(
@@ -555,6 +659,9 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             }
 
             $this->pdo->commit();
+
+            // Past the commit, so the record now describes durable rows.
+            $records = $appendedRecords;
 
             return self::WINDOW_COMMITTED;
         } catch (Throwable $e) {
@@ -602,27 +709,91 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
                 failedReason: 'entry_write_failed',
                 chunkCorrelationId: $chunkCorrelationId,
                 errorMessage: $e->getMessage(),
+                // The terminal record. Its id range is null because the
+                // window rolled back above, so the chunk owns no
+                // `entry_data` rows and the ids it would have taken were
+                // never durable.
+                failedRecord: [
+                    'index'          => $chunkCount,
+                    'size'           => count($chunk),
+                    'outcome'        => ImportChunkRecord::OUTCOME_FAILED,
+                    'entry_id_first' => null,
+                    'entry_id_last'  => null,
+                    'failure_reason' => 'entry_write_failed',
+                ],
             );
 
             return self::WINDOW_FAILED;
         }
     }
 
+    /**
+     * `$failedRecord` is the terminal chunk record to append, or null
+     * when the job failed before producing any chunk at all.
+     *
+     * **The `malformed_json` path passes null, and must.** ADR 0011 §26
+     * scopes the manifest to "jobs that have produced any chunks", and
+     * an artifact failure trips before the first window opens — so the
+     * column stays NULL and `getImportJob()` keeps reporting `null`
+     * rather than `0`, a distinction `ImportJob` documents as
+     * load-bearing.
+     *
+     * The append never touches `chunks` or `entries_written`: they are
+     * the durable boundary a consumer resumes from, and a failure must
+     * not move it.
+     *
+     * @param array<string, mixed>|null $failedRecord
+     */
     private function failJob(
         int $jobId,
         int $tenantId,
         string $failedReason,
         string $chunkCorrelationId,
         string $errorMessage,
+        ?array $failedRecord = null,
     ): void {
         $now = $this->utcNow();
 
-        $stmt = $this->pdo->prepare(
-            'UPDATE stardust_import_jobs'
-            . " SET status = 'failed', failed_reason = ?, completed_at = ?, heartbeat_at = ?"
-            . ' WHERE id = ?'
-        );
-        $stmt->execute([$failedReason, $now, $now, $jobId]);
+        if ($failedRecord === null) {
+            $stmt = $this->pdo->prepare(
+                'UPDATE stardust_import_jobs'
+                . " SET status = 'failed', failed_reason = ?, completed_at = ?, heartbeat_at = ?"
+                . ' WHERE id = ?'
+            );
+            $stmt->execute([$failedReason, $now, $now, $jobId]);
+        } else {
+            // Re-read rather than carry the manifest down: the window
+            // that just rolled back never advanced the caller's copy,
+            // and the committed counters live only in the row.
+            $job = $this->loadJob($jobId);
+            $checkpoint = $this->decodeManifest($job['manifest'] ?? null);
+            $records = [...$checkpoint['chunk_manifest'], $failedRecord];
+
+            // A manifest is only ever written after a chunk commits, so
+            // `chunks >= 1` iff something is durable. When the FIRST
+            // chunk is the one that failed, the counters are omitted
+            // entirely rather than written as 0 — `getImportJob()` reads
+            // an absent key as `null`, and `null` ("nothing committed")
+            // versus `0` ("ran, wrote nothing") is the distinction
+            // `ImportJob` documents as load-bearing.
+            $payload = $checkpoint['chunks'] > 0
+                ? [
+                    'chunks'          => $checkpoint['chunks'],
+                    'entries_written' => $checkpoint['entries_written'],
+                    'chunk_manifest'  => $records,
+                ]
+                : ['chunk_manifest' => $records];
+
+            $manifest = json_encode($payload, JSON_THROW_ON_ERROR);
+
+            $stmt = $this->pdo->prepare(
+                'UPDATE stardust_import_jobs'
+                . " SET status = 'failed', failed_reason = ?, manifest = ?,"
+                . '     completed_at = ?, heartbeat_at = ?'
+                . ' WHERE id = ?'
+            );
+            $stmt->execute([$failedReason, $manifest, $now, $now, $jobId]);
+        }
 
         $this->dlqWriter->quarantine(new DlqEntry(
             source: 'bulk_import',

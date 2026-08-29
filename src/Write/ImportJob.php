@@ -13,13 +13,15 @@ use DateTimeImmutable;
  *
  * All `DateTimeImmutable` fields are in UTC.
  *
- * `chunks` and `entriesWritten` are hoisted out of the stored
- * `manifest` JSON so consumers see typed fields rather than an
- * untyped array. The manifest is written only by the Reconciler's
- * import work source, in a closed `{chunks, entries_written}` shape a
- * consumer never supplies, so — unlike an export's consumer-supplied
- * `filter` — there is nothing to preserve verbatim. `entriesWritten`
- * against `entryCount` is the progress fraction.
+ * `chunks`, `entriesWritten` and `chunkManifest` are hoisted out of
+ * the stored `manifest` JSON so consumers see typed fields rather than
+ * an untyped array. The manifest is written only by the Reconciler's
+ * import work source, in a closed shape a consumer never supplies, so
+ * — unlike an export's consumer-supplied `filter` — there is nothing
+ * to preserve verbatim. `entriesWritten` against `entryCount` is the
+ * progress fraction; `chunkManifest` is the per-chunk enumeration ADR
+ * 0011 §26 requires, and is the async counterpart of the
+ * {@see BulkChunkResult} list a synchronous `bulkWrite()` returns.
  *
  * Three things differ from the export DTO in ways that break an
  * intuition carried over from it:
@@ -65,6 +67,15 @@ final class ImportJob
         public readonly ?DateTimeImmutable $heartbeatAt,
         public readonly DateTimeImmutable $createdAt,
         public readonly ?DateTimeImmutable $completedAt,
+        /**
+         * Per-chunk records (ADR 0011 §26 / ADR 0040), oldest first.
+         * Empty until the first chunk commits, and empty for a job that
+         * resumed across the ADR 0040 upgrade whose prior worker wrote
+         * only the counters.
+         *
+         * @var list<ImportChunkRecord>
+         */
+        public readonly array $chunkManifest = [],
     ) {
     }
 }
