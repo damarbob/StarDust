@@ -139,6 +139,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 - Are tied to **MariaDB or MySQL ≤ 5.7** — both are actively rejected (see [Requirements](#requirements)).
 - Need **strong read-after-write consistency on filters immediately after a retype or filterability promotion.** The field is served from the JSON payload (and is not filterable) until its backfill completes.
 - Need **full-text, fuzzy, or substring search** out of the box. The default MySQL driver ships exact-match, comparison, range, set-membership, and *anchored*-prefix (`LIKE 'x%'`) operators — but no substring/suffix matching, no fuzzy matching, and no relevance ranking. Fuzzy/full-text is a capability you'd supply via a custom driver.
+- Need **page numbers, jump-to-page navigation, or a total result count.** Reads are cursor-paginated and forward-sequential: every page hands you an opaque cursor for the next one, and the absence of a cursor means you have reached the end. There is no offset parameter and no total count, and that is deliberate rather than pending — both require the database to read the entire matching set, so a query that is quick today would slow down purely because the tenant grew. Infinite scroll and a Next button work naturally; a Back button means holding on to the cursors you have already used, and "Page 7 of 214" or a deep link to an arbitrary page cannot be served at all. A driver backed by an external search service can maintain its own index and supply them.
 
 ---
 
