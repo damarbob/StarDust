@@ -47,9 +47,17 @@ final class StubDriverInjectionTest extends TestCase
 
     public function testStubCapabilitiesAreReadable(): void
     {
-        $stub = new RecordingStubDriver(supported: ['eq', 'in'], filterableOk: true);
+        $stub = new RecordingStubDriver(
+            supported:    ['eq', 'in'],
+            filterableOk: true,
+            sortableOk:   false,
+        );
         self::assertSame(['eq', 'in'], $stub->supportedOperators());
         self::assertTrue($stub->supportsFilterOn(123));
+        // Deliberately the opposite of supportsFilterOn(): the two are
+        // separate capabilities, and a driver answering them differently
+        // must remain expressible.
+        self::assertFalse($stub->supportsSortOn(123));
         self::assertFalse($stub->supportsFuzzySearch());
         self::assertSame(ConsistencyModel::EVENTUAL, $stub->consistencyModel());
     }
@@ -70,6 +78,10 @@ final class RecordingStubDriver implements EntrySearchInterface
     public function __construct(
         private readonly array $supported,
         private readonly bool $filterableOk,
+        // Defaulted so the interface's growth does not churn every
+        // construction site, but declared separately from $filterableOk
+        // because ADR 0022 lets a driver answer the two differently.
+        private readonly bool $sortableOk = true,
     ) {
     }
 
@@ -97,6 +109,11 @@ final class RecordingStubDriver implements EntrySearchInterface
     public function supportsFilterOn(int $fieldId): bool
     {
         return $this->filterableOk;
+    }
+
+    public function supportsSortOn(int $fieldId): bool
+    {
+        return $this->sortableOk;
     }
 
     public function supportsFuzzySearch(): bool

@@ -65,6 +65,22 @@ interface EntrySearchInterface
     public function supportsFilterOn(int $fieldId): bool;
 
     /**
+     * Whether this driver can order results by the given field id.
+     *
+     * Asked once per request, not per leaf — a read carries at most one
+     * sort key. Separate from {@see supportsFilterOn()} because the two
+     * answers need not agree: they coincide on the MySQL driver, where
+     * both reduce to "the field has a live indexed slot", but an
+     * external engine may index a field for matching without keeping it
+     * orderable, or the reverse.
+     *
+     * Intrinsic sort targets (`entry_data.id`, `entry_data.created_at`)
+     * never reach this method — they are columns of the core table
+     * rather than fields, so no driver may decline them.
+     */
+    public function supportsSortOn(int $fieldId): bool;
+
+    /**
      * Whether this driver implements fuzzy / approximate matching.
      * The MySQL native driver returns `false`.
      */

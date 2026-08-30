@@ -16,6 +16,7 @@ use StarDust\Search\Mysql\SqlFilterCompiler;
 use StarDust\Search\PreFlight\CapabilityChecker;
 use StarDust\Search\PreFlight\FieldRefResolver;
 use StarDust\Search\PreFlight\PreFlightPipeline;
+use StarDust\Search\PreFlight\SortValidator;
 use StarDust\Search\PreFlight\ValueTypeValidator;
 use StarDust\Search\SearchService;
 
@@ -70,6 +71,7 @@ abstract class Phase8TestCase extends Phase7TestCase
                 fieldRefResolver:   new FieldRefResolver($logger),
                 capabilityChecker:  new CapabilityChecker($logger),
                 valueTypeValidator: new ValueTypeValidator($logger, $limits),
+                sortValidator:      new SortValidator($logger),
             ),
             logger:    $logger,
             clock:     new SystemClock(),

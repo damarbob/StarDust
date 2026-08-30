@@ -69,6 +69,7 @@ use StarDust\Search\Mysql\MysqlNativeDriver;
 use StarDust\Search\PreFlight\CapabilityChecker;
 use StarDust\Search\PreFlight\FieldRefResolver;
 use StarDust\Search\PreFlight\PreFlightPipeline;
+use StarDust\Search\PreFlight\SortValidator;
 use StarDust\Search\PreFlight\ValueTypeValidator;
 use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchResult;
@@ -973,6 +974,7 @@ final class StarDust
                 fieldRefResolver:   new FieldRefResolver($this->config->logger),
                 capabilityChecker:  new CapabilityChecker($this->config->logger),
                 valueTypeValidator: new ValueTypeValidator($this->config->logger, $this->config->queryFilterLimits),
+                sortValidator:      new SortValidator($this->config->logger),
             ),
             logger:    $this->config->logger,
             clock:     $this->config->clock,

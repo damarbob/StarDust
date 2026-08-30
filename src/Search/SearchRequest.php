@@ -7,6 +7,7 @@ namespace StarDust\Search;
 use StarDust\Exception\PageSizeOutOfRangeException;
 use StarDust\Filter\Ast\FilterNode;
 use StarDust\Read\Cursor;
+use StarDust\Read\SortSpec;
 
 /**
  * Phase 8 driver-facing read request.
@@ -41,6 +42,7 @@ final class SearchRequest
         public readonly int $pageSize = self::DEFAULT_PAGE_SIZE,
         public readonly ?Cursor $cursor = null,
         public readonly string $correlationId = '',
+        public readonly ?SortSpec $sort = null,
     ) {
         if ($pageSize < self::MIN_PAGE_SIZE || $pageSize > self::MAX_PAGE_SIZE) {
             throw new PageSizeOutOfRangeException(
@@ -60,6 +62,7 @@ final class SearchRequest
             pageSize:      $this->pageSize,
             cursor:        $this->cursor,
             correlationId: $correlationId,
+            sort:          $this->sort,
         );
     }
 
@@ -73,6 +76,7 @@ final class SearchRequest
             pageSize:      $this->pageSize,
             cursor:        $this->cursor,
             correlationId: $this->correlationId,
+            sort:          $this->sort,
         );
     }
 
@@ -89,6 +93,7 @@ final class SearchRequest
                 : array_values($query->selectFields),
             pageSize:     $query->pageSize,
             cursor:       $query->cursor,
+            sort:         $query->sort,
         );
     }
 }

@@ -13,6 +13,7 @@ use StarDust\Search\Mysql\MysqlNativeDriver;
 use StarDust\Search\PreFlight\CapabilityChecker;
 use StarDust\Search\PreFlight\FieldRefResolver;
 use StarDust\Search\PreFlight\PreFlightPipeline;
+use StarDust\Search\PreFlight\SortValidator;
 use StarDust\Search\PreFlight\ValueTypeValidator;
 use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchService;
@@ -57,6 +58,7 @@ final class EntryReader
             fieldRefResolver:   new FieldRefResolver($this->logger),
             capabilityChecker:  new CapabilityChecker($this->logger),
             valueTypeValidator: new ValueTypeValidator($this->logger),
+            sortValidator:      new SortValidator($this->logger),
         );
         $this->service = new SearchService(
             driver:    $this->driver,

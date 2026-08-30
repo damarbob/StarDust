@@ -67,6 +67,37 @@ abstract class ReadPathTestCase extends WritePathTestCase
         return [$modelId, $fieldId, $pageId, $fieldName];
     }
 
+    /**
+     * Provision one model carrying a filterable, slot-backed field of
+     * every slot family, so a sort test can cover all four without
+     * rebuilding the fixture per type.
+     *
+     * All four slots land on a single page, which matters: it is the
+     * shape in which a sort can reuse a page the filter already joined,
+     * and the one the compiler's alias-reuse branch is written for.
+     *
+     * Returns `[modelId, ['string' => name, 'int' => name, …]]`.
+     *
+     * @return array{0: int, 1: array<string, string>}
+     */
+    protected function setupSortableModel(int $tenantId = 1): array
+    {
+        $this->provisionPage(['i_str_01', 'i_int_01', 'i_num_01', 'i_dt_01']);
+        $modelId = $this->createModel($tenantId);
+
+        $names = [
+            'string'   => 'title',
+            'int'      => 'rank',
+            'numeric'  => 'price',
+            'datetime' => 'due_at',
+        ];
+        foreach ($names as $declaredType => $name) {
+            $this->reserveSlotFor($this->createField($modelId, $declaredType, true, $name));
+        }
+
+        return [$modelId, $names];
+    }
+
     protected function reader(?\Psr\Log\LoggerInterface $logger = null): EntryReader
     {
         return new EntryReader(

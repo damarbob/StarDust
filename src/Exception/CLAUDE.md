@@ -17,7 +17,12 @@ All typed errors extend `RuntimeException`.
 - `UnknownFieldException` — filter references a field not in `stardust_fields`.
 - `FieldNotFilterableException` — filter target has `is_filterable = false`.
 - `FieldNotIndexedException` — filter target's slot is `backfilling` / `tombstoned` / unmapped; three states uniformly rejected per ADR 0004.
-- `InvalidCursorException` — opaque cursor failed structural decode.
+- `FieldNotSortableException` (ADR 0041) — the **sort** target is a known field the active driver will not order by. The sort half of ADR 0004's "reject filters *and sorts*" clause, which had been unenforceable since that ADR was accepted because there was no sort parameter to reject.
+
+  > **Not a reuse of `FieldNotFilterableException`, and not of `FieldNotIndexedException` either.** The first rejects a *filter* on such a field, this one a *sort* — the two coincide on the MySQL driver and need not on any other, since `supportsFilterOn()` and `supportsSortOn()` are separate ADR 0022 capabilities. The second names a *slot-status* fact, while this one reports a *driver-capability* answer and so cannot be keyed to a status at all.
+
+  A sort naming a field with no registry row raises `UnknownFieldException` instead — the identical fact a filter reports, which did not earn a second class.
+- `InvalidCursorException` — opaque cursor failed structural decode, **or (ADR 0041) was issued for a different sort key or direction**. The two share a class because they share a caller response: restart pagination from the first page.
 - `PageSizeOutOfRangeException` — page size outside `[1, 1000]`.
 
 ## Phase 5 — daemons

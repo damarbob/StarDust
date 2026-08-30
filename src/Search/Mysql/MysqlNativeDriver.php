@@ -104,6 +104,7 @@ final class MysqlNativeDriver implements EntrySearchInterface
             selectFields: $request->selectFields,
             pageSize:     $request->pageSize,
             cursor:       $request->cursor,
+            sort:         $request->sort,
         );
 
         $this->lastCompileStrategy = $this->compiler->chooseStrategy($request->filter);
@@ -120,8 +121,13 @@ final class MysqlNativeDriver implements EntrySearchInterface
             $request->selectFields,
         );
 
+        // encodeFor(), not encode(): the token records which ordering it
+        // was issued under, so replaying it against a different sort is
+        // rejected instead of quietly walking a different sequence. A
+        // null sort still emits the v1 format, byte-identical to what an
+        // unsorted read produced before sorting existed.
         $nextCursor = $hasMore && $rowIds !== []
-            ? CursorCodec::encode(end($rowIds))
+            ? CursorCodec::encodeFor($request->sort, end($rowIds))
             : null;
 
         return new SearchResult(
@@ -225,6 +231,21 @@ final class MysqlNativeDriver implements EntrySearchInterface
             return false;
         }
         return $row['slot_status'] === 'assigned' || $row['slot_status'] === 'ready';
+    }
+
+    /**
+     * On MySQL, sortability and filterability reduce to the same fact —
+     * the field has a live indexed slot — so this delegates rather than
+     * duplicating the lookup.
+     *
+     * It is still a distinct method on the interface because the two
+     * answers coincide only *here*. An external engine may index a field
+     * for matching without keeping it orderable, and ADR 0022 places that
+     * judgement on the driver rather than in the shared pipeline.
+     */
+    public function supportsSortOn(int $fieldId): bool
+    {
+        return $this->supportsFilterOn($fieldId);
     }
 
     public function supportsFuzzySearch(): bool

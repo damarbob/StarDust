@@ -56,20 +56,38 @@ final class SearchService
 
         $startedAt = hrtime(true);
 
-        if ($request->filter !== null) {
+        // The snapshot is resolved when there is a filter OR a sort OR a
+        // cursor. The filter-only condition this replaces would have let
+        // a match-all sorted read skip pre-flight entirely — no field
+        // resolution, no capability check, and no cursor/sort agreement
+        // check — which is exactly the shape a "newest first" listing
+        // takes.
+        if ($request->filter !== null || $request->sort !== null || $request->cursor !== null) {
             $snapshot = $this->cache->snapshotForModel(
                 $request->modelId,
                 $request->tenantId,
                 $correlationId,
             );
-            $resolved = $this->preFlight->validate(
-                $request->filter,
+
+            if ($request->filter !== null) {
+                $resolved = $this->preFlight->validate(
+                    $request->filter,
+                    $snapshot,
+                    $this->driver,
+                    $request->tenantId,
+                    $correlationId,
+                );
+                $request = $request->withFilter($resolved);
+            }
+
+            $this->preFlight->validateSort(
+                $request->sort,
+                $request->cursor,
                 $snapshot,
                 $this->driver,
                 $request->tenantId,
                 $correlationId,
             );
-            $request = $request->withFilter($resolved);
         }
 
         $result = $this->driver->list($request);

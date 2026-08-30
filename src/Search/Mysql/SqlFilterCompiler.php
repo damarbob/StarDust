@@ -11,8 +11,12 @@ use StarDust\Filter\Ast\LeafNode;
 use StarDust\Filter\Ast\NotNode;
 use StarDust\Filter\Ast\OrNode;
 use StarDust\Filter\Operator;
+use StarDust\Read\CursorCodec;
 use StarDust\Read\EntryQuery;
 use StarDust\Read\SnapshotEntry;
+use StarDust\Read\SortDirection;
+use StarDust\Read\SortSpec;
+use StarDust\Read\SortTarget;
 
 /**
  * Phase 8 adaptive SQL compiler for the bounded probe (ADR 0005 Query 1).
@@ -46,53 +50,250 @@ final class SqlFilterCompiler
 {
     public function compile(?FilterNode $filter, EntryQuery $query, SnapshotEntry $snapshot): SqlFragment
     {
-        $bindings = [];
+        $strategy = $this->chooseStrategy($filter);
 
-        $joinsSql      = '';
-        $filterWhere   = '';
-        $strategy      = $this->chooseStrategy($filter);
+        /**
+         * Bindings are collected per SQL clause rather than in one flat
+         * list, then concatenated in clause order at the end. The old
+         * flat list plus a fixed four-element tail splice worked only
+         * while every query had exactly the same outer shape; a sort
+         * adds an anchor subquery in the FROM clause — ahead of every
+         * other binding — and makes the keyset clause variable-length.
+         *
+         * @var list<mixed> $filterBindings
+         */
+        $filterBindings = [];
+
+        $joinsSql    = '';
+        $filterWhere = '';
+        /** @var array<int, string> $aliasByPage */
+        $aliasByPage = [];
 
         if ($strategy === 'joins') {
             $leaves = $this->collectLeaves($filter);
-            [$joinsSql, $filterWhere] = $this->compileAsJoins($leaves, $snapshot, $bindings);
+            [$joinsSql, $filterWhere, $aliasByPage] = $this->compileAsJoins($leaves, $snapshot, $filterBindings);
         } else {
             // EXISTS strategy — $filter is guaranteed non-null because
             // chooseStrategy() never picks 'exists' on a null tree.
             assert($filter !== null);
-            $filterWhere = $this->compileAsExists($filter, $snapshot, $bindings);
+            $filterWhere = $this->compileAsExists($filter, $snapshot, $filterBindings);
+        }
+
+        $sort = $query->sort;
+
+        // The sort column must be reachable from the outer query, so a
+        // field sort joins its page whatever the strategy chose — you
+        // cannot ORDER BY a column that only exists inside an EXISTS
+        // subquery.
+        [$sortJoinSql, $sortExpression] = $this->compileSortTarget($sort, $snapshot, $aliasByPage);
+        $joinsSql = trim($joinsSql . ' ' . $sortJoinSql);
+
+        $anchorBindings = [];
+        $keysetBindings = [];
+        $anchorJoinSql  = '';
+        $keysetWhere    = '';
+
+        if ($query->cursor !== null) {
+            $anchorId = CursorCodec::decodePayload($query->cursor)->entryId;
+
+            if ($sortExpression === null) {
+                // Sorting by entry_data.id: the cursor *is* the sort
+                // value, so no anchor lookup is needed at all.
+                $keysetWhere      = 'entry_data.id ' . $this->directionOf($sort)->keysetOperator() . ' ?';
+                $keysetBindings[] = $anchorId;
+            } else {
+                [$anchorJoinSql, $anchorBindings] =
+                    $this->compileAnchorJoin($sort, $snapshot, $anchorId, $query->tenantId);
+                $keysetWhere      = $this->compileKeysetPredicate($sortExpression, $this->directionOf($sort));
+                $keysetBindings[] = $anchorId;
+            }
         }
 
         $whereClauses = [
             'entry_data.tenant_id = ?',
             'entry_data.model_id = ?',
             'entry_data.deleted_at IS NULL',
-            'entry_data.id > ?',
         ];
-        $bindings[] = $query->tenantId;
-        $bindings[] = $query->modelId;
-        $bindings[] = $this->cursorIdOf($query);
+        $outerBindings = [$query->tenantId, $query->modelId];
 
+        if ($keysetWhere !== '') {
+            $whereClauses[] = $keysetWhere;
+        }
         if ($filterWhere !== '') {
             $whereClauses[] = $filterWhere;
         }
 
-        $bindings[] = $query->pageSize + 1;
-
         $sql = 'SELECT entry_data.id FROM entry_data'
             . ($joinsSql === '' ? '' : ' ' . $joinsSql)
+            . ($anchorJoinSql === '' ? '' : ' ' . $anchorJoinSql)
             . ' WHERE ' . implode(' AND ', $whereClauses)
-            . ' ORDER BY entry_data.id ASC'
+            . ' ORDER BY ' . $this->compileOrderBy($sortExpression, $this->directionOf($sort))
             . ' LIMIT ?';
 
-        // Reorder bindings so they line up with the SQL string. The
-        // outer WHERE / LIMIT bindings were appended *after* the
-        // strategy bindings to keep the code linear, but the SQL string
-        // emits tenant/model/cursor BEFORE the filter clause and LIMIT
-        // AFTER. Splice the binding list into the right order.
         return new SqlFragment(
             sql:      $sql,
-            bindings: $this->reorderBindings($bindings, $strategy, $filterWhere !== ''),
+            // Clause order in the emitted SQL: FROM (anchor) → WHERE
+            // (tenant, model, keyset, filter) → LIMIT.
+            bindings: [
+                ...$anchorBindings,
+                ...$outerBindings,
+                ...$keysetBindings,
+                ...$filterBindings,
+                $query->pageSize + 1,
+            ],
         );
+    }
+
+    /**
+     * Resolves the sort target to an outer-query SQL expression, adding
+     * a join when the target lives on an extension page.
+     *
+     * Returns `[joinSql, expression]`. A `null` expression means "order
+     * by entry_data.id alone" — the default, and the one case needing
+     * neither a join nor an anchor lookup.
+     *
+     * @param array<int, string> $aliasByPage pages the filter already joined
+     * @return array{0:string, 1:?string}
+     */
+    private function compileSortTarget(
+        ?SortSpec $sort,
+        SnapshotEntry $snapshot,
+        array $aliasByPage,
+    ): array {
+        if ($sort === null || $sort->target === SortTarget::Id) {
+            return ['', null];
+        }
+        if ($sort->target === SortTarget::CreatedAt) {
+            return ['', 'entry_data.created_at'];
+        }
+
+        [$pageId, $slotColumn] = $this->resolvedSortSlot($sort, $snapshot);
+
+        // Reuse the filter's join when it already covers this page —
+        // adding a second join to the same table would multiply nothing
+        // but would cost a redundant lookup per row.
+        if (isset($aliasByPage[$pageId])) {
+            return ['', $aliasByPage[$pageId] . '.' . $slotColumn];
+        }
+
+        $table = $snapshot->pageTableNames[$pageId];
+        $alias = 'sp';
+        // LEFT, not INNER. The filter's joins are INNER because a filter
+        // demands a match; the sort's must not drop rows that simply have
+        // no row on this page — that would silently shrink the result set
+        // to "entries that happen to have a value for the sort field".
+        $join = "LEFT JOIN {$table} {$alias}"
+            . " ON {$alias}.entry_id = entry_data.id"
+            . " AND {$alias}.tenant_id = entry_data.tenant_id";
+
+        return [$join, "{$alias}.{$slotColumn}"];
+    }
+
+    /**
+     * Builds the one-row derived table holding the anchor row's sort
+     * value, so the keyset predicate can reference it three times
+     * without repeating the subquery or correlating per row.
+     *
+     * Written as `SELECT (SELECT …) AS av` rather than `SELECT … FROM …`
+     * deliberately: the inner form yields **zero** rows when the anchor
+     * has no row on that page, and a CROSS JOIN against zero rows
+     * annihilates the whole result set. The scalar-subquery form always
+     * yields exactly one row, NULL when there is nothing to find — which
+     * the predicate already handles as the NULL block.
+     *
+     * @return array{0:string, 1:list<mixed>}
+     */
+    private function compileAnchorJoin(
+        ?SortSpec $sort,
+        SnapshotEntry $snapshot,
+        int $anchorId,
+        int $tenantId,
+    ): array {
+        assert($sort !== null);
+
+        if ($sort->target === SortTarget::CreatedAt) {
+            $inner = 'SELECT created_at FROM entry_data WHERE id = ? AND tenant_id = ?';
+        } else {
+            [$pageId, $slotColumn] = $this->resolvedSortSlot($sort, $snapshot);
+            $table = $snapshot->pageTableNames[$pageId];
+            $inner = "SELECT {$slotColumn} FROM {$table} WHERE entry_id = ? AND tenant_id = ?";
+        }
+
+        return [
+            "CROSS JOIN (SELECT ({$inner}) AS av) sort_anchor",
+            [$anchorId, $tenantId],
+        ];
+    }
+
+    /**
+     * The keyset predicate for a non-id sort.
+     *
+     * Three branches, and every one of them is load-bearing because a
+     * slot column is nullable — a row whose value has not been mirrored
+     * into its slot (an ADR 0007 exhaustion fallback still awaiting the
+     * Reconciler) reads NULL here. MySQL sorts NULL first ascending and
+     * last descending, so the NULL block has to be walked in the right
+     * place rather than dropped: `col > NULL` is UNKNOWN, and a naive
+     * two-branch predicate silently loses every NULL row.
+     *
+     * `<=>` is the NULL-safe equality that makes the tiebreak branch work
+     * inside the NULL block itself.
+     */
+    private function compileKeysetPredicate(string $sortExpression, SortDirection $direction): string
+    {
+        $op = $direction->keysetOperator();
+
+        if ($direction === SortDirection::Asc) {
+            // NULLs first: from a NULL anchor, every non-NULL row is still ahead.
+            $leadingBlock = "(sort_anchor.av IS NULL AND {$sortExpression} IS NOT NULL)";
+        } else {
+            // NULLs last: from a non-NULL anchor, the NULL block is still ahead.
+            $leadingBlock = "(sort_anchor.av IS NOT NULL AND {$sortExpression} IS NULL)";
+        }
+
+        return '('
+            . $leadingBlock
+            . " OR (sort_anchor.av IS NOT NULL AND {$sortExpression} {$op} sort_anchor.av)"
+            . " OR ({$sortExpression} <=> sort_anchor.av AND entry_data.id {$op} ?)"
+            . ')';
+    }
+
+    private function compileOrderBy(?string $sortExpression, SortDirection $direction): string
+    {
+        $dir = $direction->sql();
+
+        // entry_data.id always trails in the same direction. It is the
+        // tiebreak that makes the ordering total, which is what makes the
+        // cursor stable — without it two rows sharing a sort value could
+        // swap between pages and be returned twice or never.
+        return $sortExpression === null
+            ? "entry_data.id {$dir}"
+            : "{$sortExpression} {$dir}, entry_data.id {$dir}";
+    }
+
+    private function directionOf(?SortSpec $sort): SortDirection
+    {
+        return $sort === null ? SortDirection::Asc : $sort->direction;
+    }
+
+    /**
+     * @return array{0:int, 1:string} [pageId, slotColumn]
+     */
+    private function resolvedSortSlot(SortSpec $sort, SnapshotEntry $snapshot): array
+    {
+        $fieldName  = $sort->fieldNameOrFail();
+        $descriptor = $snapshot->field($fieldName);
+
+        // Pre-flight resolved this field and the driver declared it
+        // sortable, so a miss here is engine state disagreeing with
+        // itself rather than a caller error.
+        if ($descriptor === null || $descriptor->pageId === null || $descriptor->slotColumn === null) {
+            throw new LogicException(
+                "SqlFilterCompiler reached sort field '{$fieldName}' with no resolved slot."
+            );
+        }
+
+        return [$descriptor->pageId, $descriptor->slotColumn];
     }
 
     public function chooseStrategy(?FilterNode $filter): string
@@ -148,7 +349,7 @@ final class SqlFilterCompiler
     /**
      * @param list<LeafNode> $leaves
      * @param list<mixed>    $bindings (in/out)
-     * @return array{0:string, 1:string} [joinsSql, predicatesSql]
+     * @return array{0:string, 1:string, 2:array<int, string>} [joinsSql, predicatesSql, aliasByPage]
      */
     private function compileAsJoins(array $leaves, SnapshotEntry $snapshot, array &$bindings): array
     {
@@ -176,7 +377,9 @@ final class SqlFilterCompiler
             $predicates[] = $this->compileLeafPredicate($leaf, $column, $bindings);
         }
 
-        return [implode(' ', $joins), implode(' AND ', $predicates)];
+        // The alias map is returned so a field sort can reuse a page the
+        // filter already joined instead of joining it twice.
+        return [implode(' ', $joins), implode(' AND ', $predicates), $aliasByPage];
     }
 
     /**
@@ -329,39 +532,5 @@ final class SqlFilterCompiler
         return [$d->pageId, $d->slotColumn];
     }
 
-    private function cursorIdOf(EntryQuery $query): int
-    {
-        if ($query->cursor === null) {
-            return 0;
-        }
-        return \StarDust\Read\CursorCodec::decode($query->cursor);
-    }
 
-    /**
-     * Reorders the accumulated binding list so it matches the SQL
-     * placeholder order: outer (tenant, model, cursor) → filter clause
-     * bindings → outer LIMIT. The strategy compilers append filter
-     * bindings first because they emit the WHERE fragment first, but
-     * the SQL string emits the outer clause first.
-     *
-     * @param list<mixed> $bindings
-     * @return list<mixed>
-     */
-    private function reorderBindings(array $bindings, string $strategy, bool $hasFilter): array
-    {
-        $total = count($bindings);
-        // Layout in $bindings as appended by compile():
-        //   [ ...filterBindings, tenantId, modelId, cursorId, pageSize+1 ]
-        // Need:
-        //   [ tenantId, modelId, cursorId, ...filterBindings, pageSize+1 ]
-        $tail = array_slice($bindings, $total - 4); // tenantId, modelId, cursorId, pageSize+1
-        $filterBindings = array_slice($bindings, 0, $total - 4);
-        return [
-            $tail[0], // tenantId
-            $tail[1], // modelId
-            $tail[2], // cursorId
-            ...$filterBindings,
-            $tail[3], // pageSize+1
-        ];
-    }
 }

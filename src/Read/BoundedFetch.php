@@ -101,8 +101,7 @@ final class BoundedFetch
             . ' FROM entry_data'
             . ($joins === [] ? '' : ' ' . implode(' ', $joins))
             . " WHERE entry_data.id IN ({$placeholders})"
-            . ' AND entry_data.tenant_id = ?'
-            . ' ORDER BY entry_data.id ASC';
+            . ' AND entry_data.tenant_id = ?';
 
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute([...$entryIds, $query->tenantId]);
@@ -111,9 +110,47 @@ final class BoundedFetch
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         return [
-            'rows' => $rows,
+            'rows' => $this->restoreProbeOrder($rows, $entryIds),
             'slotColumnByField' => $aliasByField,
         ];
+    }
+
+    /**
+     * Restores the page ordering the probe established.
+     *
+     * Query 2 selects by `id IN (…)`, which returns rows in whatever
+     * order InnoDB finds them — historically that was masked by an
+     * `ORDER BY entry_data.id ASC` here, which matched because the probe
+     * only ever ordered by id. Under any other sort that clause actively
+     * destroyed the ordering, re-sorting the page by id after the probe
+     * had chosen it by a slot column.
+     *
+     * Reordering in PHP against the probe's own id sequence is exact for
+     * every sort mode and removes a redundant database sort rather than
+     * adding one — the probe already decided the order, and this is the
+     * only place that has to agree with it.
+     *
+     * @param list<array<string,mixed>> $rows
+     * @param list<int>                 $entryIds in probe order
+     * @return list<array<string,mixed>>
+     */
+    private function restoreProbeOrder(array $rows, array $entryIds): array
+    {
+        /** @var array<int, array<string,mixed>> $byId */
+        $byId = [];
+        foreach ($rows as $row) {
+            $byId[(int) $row['id']] = $row;
+        }
+
+        $ordered = [];
+        foreach ($entryIds as $id) {
+            // A probed id with no row here would mean the row vanished
+            // between the two queries; skip rather than emit a null hole.
+            if (isset($byId[$id])) {
+                $ordered[] = $byId[$id];
+            }
+        }
+        return $ordered;
     }
 
     /**

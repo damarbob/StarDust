@@ -166,6 +166,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 
 **Not yet available:**
 
+- **Sorting accepts one key.** You can order by entry id, creation time, or a single indexed field. Ordering by two fields at once — "by status, then by name" — is not supported; a second key would need a different pagination protocol.
 - **Exports cannot be filtered.** An export always covers every non-deleted entry in the model. A `submitExport()` call carrying a non-empty `filter` is **rejected** with `ExportFilterNotSupportedException` rather than accepted and quietly ignored, so you find out at submission instead of discovering a full extract in the artifact. The argument is kept on the request DTO so filtering can be added later without a breaking signature change.
 
 The remaining build sequence toward the v0.3.0 GA contract is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
@@ -658,7 +659,38 @@ $entry = $engine->get(tenantId: 42, entryId: $someEntryId);
 // $entry?->id, $entry?->fields, $entry?->createdAt
 ```
 
-Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This preserves write-availability on the read side: a field that lacks an indexed slot still surfaces, just without filter / sort capability. The read path emits NDJSON events `search_request` and `pre_flight_rejected`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
+Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This preserves write-availability on the read side: a field that lacks an indexed slot still surfaces, just without filter or sort capability. The read path emits NDJSON events `search_request` and `pre_flight_rejected`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
+
+### Sorting
+
+Reads are ordered by insertion order unless you say otherwise. Pass a `SortSpec` to order by an entry's creation, or by any field that currently has an indexed slot:
+
+```php
+use StarDust\Read\{EntryQuery, SortSpec, SortDirection};
+
+// Newest first — the common case, and the cheapest: it resolves to a
+// backward index scan, no sorting work at all.
+$page = $engine->read(new EntryQuery(
+    tenantId: 42,
+    modelId:  $modelId,
+    sort:     SortSpec::byId(SortDirection::Desc),
+));
+
+// By creation time, or by one of your own fields.
+SortSpec::byCreatedAt(SortDirection::Desc);
+SortSpec::byField('title');                        // ascending
+SortSpec::byField('price', SortDirection::Desc);
+```
+
+Sorting composes with filters and with cursor pagination — keep passing the `nextCursor` back as usual.
+
+Three things worth knowing:
+
+- **Only indexed fields are sortable.** A field must be declared filterable and hold a live slot, the same requirement filtering has. Sorting on anything else raises `FieldNotSortableException`, and on an unregistered name `UnknownFieldException`. `describeModel()` reports which fields qualify right now via `ModelDescription::indexedFields()`.
+- **Entries with no value for the sort field sort first ascending, last descending** — they are not dropped from the page.
+- **A cursor belongs to the ordering that produced it.** Change the sort key or its direction and the old cursor is refused with `InvalidCursorException`; start again from the first page. This is a guard, not a limitation to work around — reusing it would silently walk a different sequence.
+
+Sorting by `id` or by creation time costs nothing extra. Sorting by one of your own fields makes the database order the whole matching set on each page, so it is measurably more expensive on large models — prefer the built-in orderings when either will do.
 
 ## Searching with the JSON wire format
 

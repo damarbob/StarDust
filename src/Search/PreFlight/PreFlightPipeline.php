@@ -23,6 +23,11 @@ use StarDust\Search\EntrySearchInterface;
  *
  * Returns a new AST root carrying the resolved field references so
  * downstream collaborators (compiler, executor) can skip the lookup.
+ *
+ * {@see validateSort()} is a fourth stage on a separate entry point
+ * rather than a fourth call inside {@see validate()}, because a sort is
+ * not part of the filter tree and must be checked even when there is no
+ * filter at all — a match-all read can still carry a sort and a cursor.
  */
 final class PreFlightPipeline
 {
@@ -30,6 +35,7 @@ final class PreFlightPipeline
         private readonly FieldRefResolver $fieldRefResolver,
         private readonly CapabilityChecker $capabilityChecker,
         private readonly ValueTypeValidator $valueTypeValidator,
+        private readonly SortValidator $sortValidator,
     ) {
     }
 
@@ -44,5 +50,28 @@ final class PreFlightPipeline
         $this->capabilityChecker->check($resolved, $driver, $tenantId, $correlationId);
         $this->valueTypeValidator->validate($resolved, $tenantId, $correlationId);
         return $resolved;
+    }
+
+    /**
+     * Validates the request's sort key and its cursor's agreement with
+     * that key. Safe to call with a `null` sort — the cursor check still
+     * runs, which is the point.
+     */
+    public function validateSort(
+        ?\StarDust\Read\SortSpec $sort,
+        ?\StarDust\Read\Cursor $cursor,
+        SnapshotEntry $snapshot,
+        EntrySearchInterface $driver,
+        int $tenantId,
+        string $correlationId,
+    ): void {
+        $this->sortValidator->validate(
+            $sort,
+            $cursor,
+            $snapshot,
+            $driver,
+            $tenantId,
+            $correlationId,
+        );
     }
 }

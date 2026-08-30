@@ -27,11 +27,12 @@ use StarDust\Filter\Ast\LeafNode;
  * per ADR 0021). Existing call sites that built a flat list can use
  * {@see fromFlatFilters()} to migrate.
  *
- * **Ordering** is fixed at `entry_data.id ASC`. ADR 0006 scopes the
- * cursor to a single integer (`entry_id`), which only supports stable
- * cursor pagination when that same key drives the sort. User-supplied
- * `ORDER BY` requires a compound-cursor protocol not pinned by any
- * current ADR.
+ * **Ordering** defaults to `entry_data.id ASC` — the fixed order every
+ * read had before `$sort` existed, which is why `null` is the default
+ * and why an unsorted caller sees no change, cursors included.
+ * See {@see SortSpec} for what a sort costs: the two intrinsic targets
+ * stay index-ordered, while a field sort filesorts over the filtered
+ * set.
  */
 final class EntryQuery
 {
@@ -54,6 +55,7 @@ final class EntryQuery
         public readonly ?array $selectFields = null,
         public readonly int $pageSize = self::DEFAULT_PAGE_SIZE,
         public readonly ?Cursor $cursor = null,
+        public readonly ?SortSpec $sort = null,
     ) {
     }
 
@@ -76,6 +78,7 @@ final class EntryQuery
         ?array $selectFields = null,
         int $pageSize = self::DEFAULT_PAGE_SIZE,
         ?Cursor $cursor = null,
+        ?SortSpec $sort = null,
     ): self {
         $filter = match (count($leaves)) {
             0       => null,
@@ -89,6 +92,7 @@ final class EntryQuery
             selectFields: $selectFields,
             pageSize:     $pageSize,
             cursor:       $cursor,
+            sort:         $sort,
         );
     }
 }

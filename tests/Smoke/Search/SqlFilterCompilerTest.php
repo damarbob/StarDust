@@ -78,11 +78,16 @@ final class SqlFilterCompilerTest extends TestCase
         self::assertSame('joins', $compiler->chooseStrategy(null));
         self::assertStringNotContainsString('INNER JOIN', $fragment->sql);
         self::assertStringNotContainsString('EXISTS', $fragment->sql);
-        // Outer shape: tenant_id, model_id, deleted_at, id > cursor, ORDER BY id ASC, LIMIT.
+        // Outer shape: tenant_id, model_id, deleted_at, ORDER BY id ASC, LIMIT.
         self::assertStringContainsString('entry_data.tenant_id = ?', $fragment->sql);
-        self::assertStringContainsString('entry_data.id > ?', $fragment->sql);
         self::assertStringContainsString('ORDER BY entry_data.id ASC', $fragment->sql);
-        self::assertSame([7, 1, 0, 11], $fragment->bindings);
+        // No cursor means no keyset clause at all. This used to emit
+        // `entry_data.id > ?` bound to 0 — a no-op predicate on every
+        // first page, and outright wrong once a descending sort exists,
+        // where the sentinel would have to be "greater than every id"
+        // rather than zero.
+        self::assertStringNotContainsString('entry_data.id > ?', $fragment->sql);
+        self::assertSame([7, 1, 11], $fragment->bindings);
     }
 
     public function testPureAndUsesJoinStrategyWithOneJoinPerDistinctPage(): void
@@ -111,7 +116,7 @@ final class SqlFilterCompilerTest extends TestCase
         self::assertStringNotContainsString('EXISTS', $fragment->sql);
         // Bindings layout: tenant=7, model=1, cursor=0, then 3 leaf
         // values in declaration order, then page_size+1=11.
-        self::assertSame([7, 1, 0, 'paid', 'open', 100, 11], $fragment->bindings);
+        self::assertSame([7, 1, 'paid', 'open', 100, 11], $fragment->bindings);
     }
 
     public function testOrTriggersExistsStrategy(): void
@@ -168,7 +173,7 @@ final class SqlFilterCompilerTest extends TestCase
 
         self::assertStringContainsString('p0.i_str_01 IN (?,?,?)', $fragment->sql);
         // tenant, model, cursor, three IN values, page_size+1
-        self::assertSame([7, 1, 0, 'a', 'b', 'c', 11], $fragment->bindings);
+        self::assertSame([7, 1, 'a', 'b', 'c', 11], $fragment->bindings);
     }
 
     public function testPrefixEscapesLikeMetacharacters(): void
@@ -179,6 +184,6 @@ final class SqlFilterCompilerTest extends TestCase
 
         self::assertStringContainsString('LIKE ? ESCAPE', $fragment->sql);
         // % → \%, _ → \_, \ → \\, then append '%' for prefix match.
-        self::assertSame('50\\%\\_off\\\\%', $fragment->bindings[3]);
+        self::assertSame('50\\%\\_off\\\\%', $fragment->bindings[2]);
     }
 }
