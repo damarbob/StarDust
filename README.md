@@ -61,6 +61,7 @@ StarDust ships as a **framework-neutral Composer library** with zero runtime fra
 - [Custom search drivers](#custom-search-drivers)
 - [Changing a field's type or filterability](#changing-a-fields-type-or-filterability)
 - [Async exports](#async-exports)
+- [Slot maintenance](#slot-maintenance)
 - [Errors](#errors)
 - [CLI](#cli)
 - [Testing](#testing)
@@ -154,8 +155,8 @@ Four background daemons keep the slot machinery healthy. They never talk to each
 - **Writes** — single-entry, synchronous chunked bulk (≤ 1 000 per call), and async submission for larger batches. Writes stay available even when slot capacity is exhausted: the value still lands in the JSON payload and is queued for backfill.
 - **Entry updates and deletes** — `updateEntry()` replaces an entry's fields wholesale, rewriting both the JSON payload and the indexed slot columns, and clearing the slot of any field the new payload omits so a filter can never match a stale value. `deleteEntry()` soft-deletes: one timestamp, after which the entry is gone from reads, filters, point-reads, and exports alike.
 - **Reads** — cursor-paginated, two-query bounded read; tenant-isolated SQL on every `WHERE` and `JOIN`; an in-process schema-version cache.
-- **Search** — a unified `search()` surface; JSON wire format decoded into a closed filter AST (twelve operators, full AND/OR/NOT); three-stage pre-flight validation; a swappable driver (MySQL-native default keeps pure-AND filters on indexed joins and switches to `EXISTS` subqueries for OR/NOT — inject your own to delegate to an external search service).
-- **Background daemons** (all runnable via `bin/stardust`): the **Watcher** keeps slot capacity provisioned and indexes each new page for the fields currently waiting on one, the **Reconciler** drains the sync queue / async imports / retype backfills / rename rewrites / field-deletion purges (claiming a slot for any filterable field still waiting on one, with a dead-letter queue and operator replay, and auto-recovery of import jobs abandoned by a crashed worker — resumed from the last committed checkpoint), the **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
+- **Search** — a unified `search()` surface; JSON wire format decoded into a closed filter AST (twelve operators, full AND/OR/NOT); three-stage pre-flight validation on the filter tree (field resolution, capability, value type) plus a fourth stage that validates the sort key and cursor agreement; a swappable driver (MySQL-native default keeps pure-AND filters on indexed joins and switches to `EXISTS` subqueries for OR/NOT — inject your own to delegate to an external search service).
+- **Background daemons** (all runnable via `bin/stardust`): the **Watcher** keeps slot capacity provisioned and indexes each new page for the fields currently waiting on one, the **Reconciler** drains six work sources (sync queue, async imports, retype backfills, rename rewrites, field-deletion purges, and model-deletion purges), claiming a slot for any filterable field still waiting on one, with a dead-letter queue and operator replay, and auto-recovery of import jobs abandoned by a crashed worker — resumed from the last committed checkpoint — the **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
 - **Field lifecycle** — online field retype, and filterability promotion and demotion, through a type-coercion matrix, with JSON-payload fallback throughout the backfill window. Demotion is registry-only and takes effect immediately: the slot is tombstoned for the Liberator to reclaim, and reads fall straight back to the payload.
 - **Model rename** — `renameModel()` is immediate and complete when it returns: a model's name is a label, not an identity, so entries, slots, filters and exports all keep working untouched and there is no background catch-up to wait for. One caveat: `schemaBuilder()`'s `createModel()` / `defineModel()` find a model by name, so a setup or seed script still using the old name will create a **second** model rather than finding the renamed one — update those scripts in step with the rename.
 - **Online field rename** — `renameField()` returns as soon as the registry is updated, and the stored data catches up in the background. Because each entry's JSON payload is keyed by field name, a rename rewrites every entry in the model, so it needs a running Reconciler to finish. Nothing breaks while it runs: reads return the value under the new name for every entry, migrated or not; a client still sending the old name keeps working, because inbound writes are rewritten to the new name before they are stored; and filters on the new name work from the moment the call returns, since a rename never disturbs the index. Filters using the *old* name are rejected outright rather than silently returning nothing. A field being renamed cannot be retyped, promoted, demoted, or compacted until the rewrite finishes.
@@ -429,7 +430,7 @@ $company?->indexedFields();
 
 Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
-Phases 5, 6a, and 7 add twenty-nine optional `Config` parameters for daemon tuning:
+Phases 5, 6a, 7, and ADR 0038 add thirty-six optional `Config` parameters for daemon tuning:
 
 ```php
 $engine = new StarDust(new Config(
@@ -467,6 +468,10 @@ $engine = new StarDust(new Config(
     chroniclerDbDisconnectBackoffSeconds:[1, 4, 16],// fixed backoff schedule
     pdoConnector:                        null,      // reconnect factory for mid-export DB drops (CLI wires one automatically)
     spreadExcessPageThreshold:           2,         // avoidable pages before a model is flagged as over-spread
+    modelPurgeChunkSize:                 200,       // entry_data deletes per model-purge transaction (own knob — see below)
+    modelPurgeLockRetryBudget:           3,         // consecutive 1205/1213 retries before the purge rethrows
+    reconcilerLockRetryBudget:           3,         // consecutive 1205/1213 retries on the other five work sources
+    reconcilerLockRetryDelayMicros:      0,         // pace between those retries (0 = no pacing)
 ));
 ```
 
@@ -659,7 +664,7 @@ $entry = $engine->get(tenantId: 42, entryId: $someEntryId);
 // $entry?->id, $entry?->fields, $entry?->createdAt
 ```
 
-Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This preserves write-availability on the read side: a field that lacks an indexed slot still surfaces, just without filter or sort capability. The read path emits NDJSON events `search_request` and `pre_flight_rejected`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
+Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This preserves write-availability on the read side: a field that lacks an indexed slot still surfaces, just without filter or sort capability. The read path emits NDJSON events `search_request`, `pre_flight_rejected`, and `capability_unsupported`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
 
 ### Sorting
 
@@ -746,7 +751,7 @@ $engine = new StarDust(new Config(
 ));
 ```
 
-Drivers declare which operators they service (`supportedOperators()`), per-field filterability (`supportsFilterOn()`), and their consistency model (`consistencyModel(): 'strong' | 'eventual'`). The pre-flight pipeline rejects unsupported requests before the driver is invoked. Writes always go to MySQL — drivers are read-only.
+A driver implements seven methods: `list()` and `get()` do the actual read work; `supportedOperators()`, `supportsFilterOn(int $fieldId)`, and `supportsSortOn(int $fieldId)` (ADR 0041 — the one breaking addition to this interface in the v0.3.0 build) declare per-request and per-field capability; `supportsFuzzySearch()` and `consistencyModel(): 'strong' | 'eventual'` are static self-description the pre-flight pipeline and callers can inspect. The pre-flight pipeline rejects unsupported requests — including an unsortable field — before the driver is invoked. Writes always go to MySQL — drivers are read-only.
 
 ## Changing a field's type or filterability
 
@@ -793,6 +798,26 @@ $engine->demoteFieldFromFilterable(
 Only filterable fields occupy slots, so only a filterable field has anything to backfill. Retyping a field that is not filterable — or demoting one back to non-filterable — is a registry-only change: the metadata updates, any slot the field held is released, and the operation is complete when the call returns. There is no backfill window and nothing for the Reconciler to do, because the JSON payload was already the authoritative copy. A demoted field keeps reading correctly and immediately stops being a valid filter target.
 
 Retypes between numeric / int and datetime are categorically rejected at registry-write time (`IncompatibleRetypeException`) — epoch interpretation is a caller policy, not engine behaviour; bridge through a `string` intermediate field if you need it. Initiating a second retype for the same field while one is already running throws `RetypeInProgressException`. The Reconciler picks up `running` retype checkpoints on every tick (alongside `stardust_sync_queue` and `stardust_import_jobs`); when the partition is exhausted it promotes the slot to `ready`, bumps `stardust_schema_version`, emits `promote_to_ready`, and triggers two one-shot advisory samples — `cardinality_sampled` for the new slot, and `spread_sampled` for the model, since a retype can move a field onto a page its model did not previously occupy.
+
+### Renaming a field or model
+
+```php
+// Rename a model. Immediate and complete when it returns — a model
+// name is a label, not an identity, so entries, slots, filters and
+// exports all keep working untouched and there is no background
+// catch-up to wait for. Throws ModelNameConflictException on a
+// collision with another model in the same tenant.
+$engine->renameModel(tenantId: 42, modelId: $modelId, newName: 'organization');
+
+// Rename a field. Returns as soon as the registry is updated; the
+// stored data catches up in the background and NEEDS A RUNNING
+// RECONCILER. Because entry_data.fields is keyed by field name, this
+// rewrites every entry in the model — not a registry-only change like
+// promote/demote above.
+$engine->renameField(tenantId: 42, fieldId: $fieldId, newName: 'company_size');
+```
+
+Nothing breaks while a field rename runs: reads return the value under the new name for every entry, migrated or not; a client still sending the old name keeps working, because inbound writes are rewritten to the new name before they are stored; and filters on the new name work from the moment the call returns, since a rename never disturbs the index. Filters using the *old* name are rejected outright (`UnknownFieldException`) rather than silently returning nothing, and the new name is not available for reuse elsewhere until the rewrite finishes (`FieldNameConflictException`). A field being renamed cannot be retyped, promoted, demoted, deleted, or compacted until the rewrite finishes.
 
 ### Removing a field
 
@@ -880,6 +905,40 @@ The Chronicler claims one job per tick — pending first (per-tenant round-robin
 
 ---
 
+## Slot maintenance
+
+`spread:report` and `compact:model` (below, under [CLI](#cli)) are convenience wrappers over public PHP entry points — call them directly for a settings dashboard or an automated maintenance job:
+
+```php
+use StarDust\Exception\RetypeInProgressException;
+
+// Read-only, registry-only, safe against production at any time.
+// One SpreadSample per (tenant, model) that has a live filterable slot.
+foreach ($engine->spreadSampler()->report(tenantId: 42) as $sample) {
+    // $sample->pagesOccupied, $sample->theoreticalMinPages, $sample->excessPages()
+    if ($sample->excessPages() > 0) {
+        echo "model {$sample->modelId}: {$sample->excessPages()} avoidable page(s)\n";
+    }
+}
+
+// Plan without mutating anything.
+$plan = $engine->compactModel(tenantId: 42, modelId: $modelId, dryRun: true);
+// $plan->relocationCount(), $plan->pagesAfter(), $plan->excessPagesRemoved(), $plan->isNoop()
+
+// Long-running and operator-initiated: moves one field at a time and
+// blocks until a running Reconciler drains each relocation. Never call
+// this from a request path.
+try {
+    $plan = $engine->compactModel(tenantId: 42, modelId: $modelId);
+} catch (RetypeInProgressException $e) {
+    // Refused — dry run included — while any field of the model is
+    // still being retyped, promoted, demoted or relocated. Wait for
+    // the Reconciler and re-run; spread:report stays available.
+}
+```
+
+---
+
 ## Errors
 
 All typed errors extend `RuntimeException`. They live under `StarDust\Exception\`, except `QueryFilterValidationException`, which is under `StarDust\Filter\`.
@@ -890,16 +949,21 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `PayloadTooLargeException` | A synchronous `bulkWrite()` exceeds 1 000 entities — use `submitBulkWrite()` instead. |
 | `UncoercibleSlotValueException` | A first-write payload value cannot be coerced to its slot's declared type (the write path is fail-fast). |
 | `MalformedEntryPayloadException` | An array/JSON entry envelope passed to `EntryPayload::fromArray()` / `fromJson()` / `listFrom*()` is structurally invalid — missing or mistyped `tenantId`/`modelId`/`fields`, a non-map `fields`, unparseable JSON, or a wrong root. Carries the offending `$key`. |
-| `UnknownFieldException` | A filter references a field absent from `stardust_fields`. |
+| `UnknownFieldException` | A filter or sort references a field absent from `stardust_fields`. |
 | `FieldNotFilterableException` | A filter targets a field the active driver reports as non-filterable (for the default MySQL driver, `is_filterable = false`). |
 | `FieldNotIndexedException` | A filter targets a field whose slot is `backfilling`, `tombstoned`, or unmapped. |
+| `FieldNotSortableException` | A `SortSpec` names a field that isn't currently indexed — the same requirement filtering has. `describeModel()`'s `indexedFields()` reports which fields qualify right now. |
 | `PageSizeOutOfRangeException` | `pageSize` is outside `[1, 1000]`. |
-| `InvalidCursorException` | An opaque cursor fails its structural decode. |
+| `InvalidCursorException` | An opaque cursor fails its structural decode, or is reused after its sort key or direction changed. |
 | `QueryFilterValidationException` | A JSON wire-format filter fails decode or pre-flight (see below). |
 | `IncompatibleRetypeException` | A retype crosses a categorically rejected pair (`int ↔ datetime`, `numeric ↔ datetime`). |
 | `RetypeInProgressException` | A retype is initiated for a field that already has one running — or a model is compacted while any of its fields is still being retyped, promoted, demoted or relocated. Wait for the Reconciler and retry. |
-| `FieldNotFoundException` | `retypeField()` / `promoteFieldToFilterable()` / `renameField()` receive a field id that doesn't exist for the tenant. Note `deleteField()` returns `false` instead. |
+| `FieldNotFoundException` | `retypeField()` / `promoteFieldToFilterable()` / `demoteFieldFromFilterable()` / `renameField()` receive a field id that doesn't exist for the tenant. Note `deleteField()` returns `false` instead. |
 | `NonFilterableFieldSlotException` | A slot reservation was attempted for a non-filterable field. Such fields live in the JSON payload only and never occupy a slot, so this signals a caller bug rather than a capacity problem — distinct from `FieldNotFilterableException`, which rejects a *query* that filters on one. |
+| `EntryNotFoundException` | `updateEntry()` targets an entry that doesn't exist, belongs to another tenant, or is already deleted — silently discarding the update would lose data the caller believed it had written. |
+| `RenameInProgressException` | Something targeted a field whose rename has started but whose background rewrite has not finished — a retype, deletion, or (for the model it belongs to) a model deletion. Wait for the Reconciler. |
+| `FieldNameConflictException` | `renameField()` would collide with another field's name on the same model. |
+| `CompactionCapacityException` | `compactModel()` (or a `retypeField()` reservation it triggers) cannot find enough free capacity on the target page set to complete a relocation. |
 | `ExportJobActiveCapExceededException` | A tenant is already at its active-export cap (carries `$tenantId`, `$activeCount`, `$cap`). |
 | `ExportFilterNotSupportedException` | `submitExport()` was given a non-empty `filter`; exports cover the whole model (carries `$tenantId`, `$modelId`, `$filterKeys`). |
 | `ModelNotFoundException` | A model-level call named a `modelId` that does not exist for the caller's tenant (missing and cross-tenant are indistinguishable by design). |
