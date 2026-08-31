@@ -38,6 +38,8 @@ docker compose logs init
 
 Want to tinker? [`docker/seed.php`](docker/seed.php) is the whole flow — define a model, make fields filterable, write entries, query — as readable, copy-pasteable example code.
 
+Some StarDust behaviour only makes sense as a sequence in time, and [`examples/`](examples/) covers that: small scripts that seed their own data, narrate themselves in the terminal, and clean up after. Start with [`examples/01-field-lifecycle.php`](examples/01-field-lifecycle.php), which answers the question that trips up nearly everyone — why a field you just marked filterable still cannot be filtered, and what has to happen before it can.
+
 > **Heads up — this is a v0.3.0 pre-release.** `main` and the `0.3.x` tags are a breaking architectural migration (**Vertical Schema Partitioning**) away from the legacy 0.2.x line, motivated by scalability limits and OOM vulnerabilities in the old Virtual Column design. If you need something production-ready today, stay on `^0.2.0-alpha.x` — critical 0.2.x fixes land on the `support/v0.2` branch. Otherwise, read on; the honest caveats live in [Is StarDust a fit?](#is-stardust-a-fit) and [Status](#status), not buried in the fine print.
 
 StarDust ships as a **framework-neutral Composer library** with zero runtime framework dependencies — only the `psr/log` and `psr/clock` interfaces. Framework adapters (CodeIgniter 4 first) are opt-in companion packages, never core requirements.
