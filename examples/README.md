@@ -19,17 +19,42 @@ the one from the repo's Compose file:
 
 ```bash
 docker compose up mysql -d
+```
 
+Then give the scripts three variables, either in a git-ignored `.env` at
+the repo root:
+
+```bash
+STARDUST_DSN=mysql:host=127.0.0.1;port=3307;dbname=stardust
+STARDUST_USER=root
+STARDUST_PASS=root
+```
+
+...or as exports, which take precedence over the file:
+
+```bash
 export STARDUST_DSN='mysql:host=127.0.0.1;port=3307;dbname=stardust'
 export STARDUST_USER=root
 export STARDUST_PASS=root
+```
 
+Either way:
+
+```bash
 php examples/01-field-lifecycle.php
 ```
 
 Same three variables as `bin/stardust`, so a shell already set up for
-the CLI needs nothing further. MariaDB will not work — the engine
-detects it and refuses to boot.
+the CLI needs nothing further. Note that the `.env` shortcut is the
+examples' own convenience — `bin/stardust` reads the process
+environment only, and StarDust itself has no dotenv dependency.
+
+**Point them at a database of their own.** These scripts seed thousands
+of rows and call `deleteModel()`, which physically deletes `entry_data`
+rows with no undo. Do not aim them at the smoke suite's database, or at
+anything you would miss.
+
+MariaDB will not work — the engine detects it and refuses to boot.
 
 The scripts tick the daemons **in-process**, so you do not need to start
 any. That is a teaching device, not how you would deploy: in production
