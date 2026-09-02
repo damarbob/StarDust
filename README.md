@@ -432,7 +432,7 @@ $company?->indexedFields();
 
 Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
-Phases 5, 6a, 7, and ADR 0038 add thirty-six optional `Config` parameters for daemon tuning:
+Phases 5, 6a, 7, and model deletion add thirty-six optional `Config` parameters for daemon tuning:
 
 ```php
 $engine = new StarDust(new Config(
@@ -753,7 +753,7 @@ $engine = new StarDust(new Config(
 ));
 ```
 
-A driver implements seven methods: `list()` and `get()` do the actual read work; `supportedOperators()`, `supportsFilterOn(int $fieldId)`, and `supportsSortOn(int $fieldId)` (ADR 0041 — the one breaking addition to this interface in the v0.3.0 build) declare per-request and per-field capability; `supportsFuzzySearch()` and `consistencyModel(): 'strong' | 'eventual'` are static self-description the pre-flight pipeline and callers can inspect. The pre-flight pipeline rejects unsupported requests — including an unsortable field — before the driver is invoked. Writes always go to MySQL — drivers are read-only.
+A driver implements seven methods: `list()` and `get()` do the actual read work; `supportedOperators()`, `supportsFilterOn(int $fieldId)`, and `supportsSortOn(int $fieldId)` (the one breaking addition to this interface in the v0.3.0 build) declare per-request and per-field capability; `supportsFuzzySearch()` and `consistencyModel(): 'strong' | 'eventual'` are static self-description the pre-flight pipeline and callers can inspect. The pre-flight pipeline rejects unsupported requests — including an unsortable field — before the driver is invoked. Writes always go to MySQL — drivers are read-only.
 
 ## Changing a field's type or filterability
 
