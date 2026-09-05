@@ -8,12 +8,10 @@ use InvalidArgumentException;
 use PDO;
 use PDOException;
 use PHPUnit\Framework\TestCase;
-use Psr\Log\NullLogger;
 use StarDust\Bootstrap\Bootstrapper;
-use StarDust\Clock\SystemClock;
 use StarDust\Page\EmptyTableGuard;
-use StarDust\Page\PageProvisioner;
 use StarDust\Page\PopulatedPageDDLException;
+use StarDust\Tests\Smoke\Support\LegacyPage;
 
 /**
  * Phase 2 ADR 0012 guard smoke suite.
@@ -107,12 +105,10 @@ final class EmptyTableGuardTest extends TestCase
 
     private function provisionPage1(): void
     {
-        (new PageProvisioner(
-            pdo: $this->pdo,
-            clock: new SystemClock(),
-            logger: new NullLogger(),
-            provisionerIdentity: 'phpunit/0',
-        ))->provision();
+        // A legacy-shaped page: the guard is about page *rows*, not page
+        // width, and this keeps the fixture independent of whatever
+        // column set the provisioner currently emits.
+        LegacyPage::provision($this->pdo, 'phpunit/0');
     }
 
     public function testAssertEmptyAcceptsEmptyPage(): void

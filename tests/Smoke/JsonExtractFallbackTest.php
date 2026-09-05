@@ -69,7 +69,7 @@ final class JsonExtractFallbackTest extends ReadPathTestCase
         // selectFields requires the field to be registered, so we
         // create a field but DO NOT reserve a slot — its slot status
         // will be NULL (unmapped) which forces the JSON fallback.
-        $pageId = $this->provisionPage();
+        $pageId = $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $unmappedField = 'description';
         $this->createField($modelId, 'string', false, $unmappedField);

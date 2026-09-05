@@ -17,7 +17,7 @@ final class LiberatorOrderingTest extends Phase6aTestCase
     {
         // Three slots on one page, three different tombstoned_at
         // timestamps. The repository must surface them oldest-first.
-        $pageId = $this->provisionPage();
+        $pageId = $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
 
         $fieldA = $this->createField($modelId, 'string', true, 'a');

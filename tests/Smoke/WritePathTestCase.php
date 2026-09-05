@@ -12,6 +12,7 @@ use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Clock\SystemClock;
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
+use StarDust\Tests\Smoke\Support\LegacyPage;
 
 /**
  * Shared scaffolding for Phase 3 write-path smoke tests.
@@ -103,8 +104,7 @@ abstract class WritePathTestCase extends TestCase
     }
 
     /**
-     * Provision page 1 (no filterable slots) so str/int/num/dt slots
-     * are available for reservation in tests that want them.
+     * Provision a page indexing exactly the named slot columns.
      */
     protected function provisionPage(array $filterableSlots = []): int
     {
@@ -114,6 +114,20 @@ abstract class WritePathTestCase extends TestCase
             logger: new NullLogger(),
             provisionerIdentity: 'phpunit/0',
         ))->provision($filterableSlots);
+    }
+
+    /**
+     * Provision a pre-ADR-0043 page: all sixty slot columns, none of
+     * them indexed, sixty `free` inventory rows.
+     *
+     * Use it for any fixture whose subject is a slot the reserver takes
+     * without `requireIndexed`, or that needs free inventory the
+     * production path would never hand out. {@see LegacyPage} explains
+     * why the shape has to stay reachable.
+     */
+    protected function provisionLegacyPage(): int
+    {
+        return LegacyPage::provision($this->pdo, 'phpunit/0');
     }
 
     /**
@@ -219,7 +233,7 @@ abstract class WritePathTestCase extends TestCase
         int $tenantId = 1,
         string $declaredType = 'string',
     ): array {
-        $pageId = $this->provisionPage();
+        $pageId = $this->provisionLegacyPage();
         $modelId = $this->createModel($tenantId);
         $fieldName = 'field_' . bin2hex(random_bytes(4));
         $fieldId = $this->createField($modelId, $declaredType, true, $fieldName);

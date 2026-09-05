@@ -186,7 +186,7 @@ final class SyncQueueCapacityWaitTest extends Phase5TestCase
      */
     public function testUnindexedFreeCapacityDoesNotSatisfyTheReservation(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', true, 'needs_index');
 

@@ -23,7 +23,7 @@ final class PendingDemandReaderTest extends Phase6bTestCase
 
     public function testUnmappedFilterableFieldIsDemand(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $this->createField($modelId, 'string', true, 'wants_slot');
 
@@ -33,7 +33,7 @@ final class PendingDemandReaderTest extends Phase6bTestCase
     /** ADR 0034: a JSON-only field never wants a slot, so it is never demand. */
     public function testNonFilterableFieldIsNotDemand(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $this->createField($modelId, 'string', false, 'json_only');
 
@@ -42,7 +42,7 @@ final class PendingDemandReaderTest extends Phase6bTestCase
 
     public function testFieldWithLiveSlotIsNotDemand(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', true, 'satisfied');
         $this->reserveSlotFor($fieldId);
@@ -53,7 +53,7 @@ final class PendingDemandReaderTest extends Phase6bTestCase
     /** Tombstoned is not live, so the field is waiting again. */
     public function testTombstonedSlotDoesNotSuppressDemand(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', true, 'evicted');
         $this->reserveSlotFor($fieldId);
@@ -95,7 +95,7 @@ final class PendingDemandReaderTest extends Phase6bTestCase
 
     public function testDemandGroupsByFamilyAcrossAllFourDeclaredTypes(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $this->createField($modelId, 'string', true, 'a');
         $this->createField($modelId, 'int', true, 'b');
@@ -111,7 +111,7 @@ final class PendingDemandReaderTest extends Phase6bTestCase
 
     public function testNoFieldsAtAllIsEmptyDemand(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
 
         self::assertTrue($this->demandReader()->read()->isEmpty());
         self::assertSame(0, $this->demandReader()->read()->totalWaiters());

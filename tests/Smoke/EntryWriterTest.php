@@ -72,7 +72,7 @@ final class EntryWriterTest extends WritePathTestCase
         // no live slot exists for it. Filterability is what makes this
         // the ADR 0007 exhaustion case rather than the ADR 0034
         // JSON-only steady state.
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldName = 'orphan_field';
         $this->createField($modelId, 'string', true, $fieldName);
@@ -265,7 +265,7 @@ final class EntryWriterTest extends WritePathTestCase
     /** Exhaustion-fallback path emits both `entry_written` and `exhaustion_fallback`. */
     public function testExhaustionFallbackEmitsBothEvents(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldName = 'no_slot_field';
         // Filterable: only a filterable field lacking a slot triggers

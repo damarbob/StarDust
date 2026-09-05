@@ -88,7 +88,7 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
      */
     public function testStarvedFamilyProvisionsDespiteHealthyGlobalRatio(): void
     {
-        $this->provisionPage();                       // 60 free slots, none indexed
+        $this->provisionLegacyPage();                       // 60 free slots, none indexed
         $modelId = $this->createModel(1);
         $this->unmappedFilterableField($modelId, 'datetime');
 
@@ -197,7 +197,7 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
 
     public function testPollStartedReportsGlobalFiguresAsUsableWhenNothingIsWaiting(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
 
         $started = $this->record($this->tickAndReadLog(), 'poll_started');
 

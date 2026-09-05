@@ -61,7 +61,7 @@ final class PayloadSplitterFilterabilityTest extends WritePathTestCase
      */
     public function testNonFilterableSlotlessFieldDoesNotEnqueue(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $this->createField($modelId, 'string', false, 'note');
 
@@ -79,7 +79,7 @@ final class PayloadSplitterFilterabilityTest extends WritePathTestCase
     /** The ADR 0007 path must survive untouched for filterable fields. */
     public function testFilterableSlotlessFieldStillEnqueues(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $this->createField($modelId, 'string', true, 'wants_slot');
 
@@ -96,7 +96,7 @@ final class PayloadSplitterFilterabilityTest extends WritePathTestCase
     /** One payload, both kinds of slotless field: exactly one enqueue. */
     public function testMixedPayloadEnqueuesOnlyForTheFilterableField(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $this->createField($modelId, 'string', false, 'note');
         $this->createField($modelId, 'string', true, 'wants_slot');
@@ -139,7 +139,7 @@ final class PayloadSplitterFilterabilityTest extends WritePathTestCase
      */
     public function testGrandfatheredNonFilterableSlotIsNotWritten(): void
     {
-        $pageId = $this->provisionPage();
+        $pageId = $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', false, 'legacy');
         $this->forceGrandfatheredSlotFor($fieldId);

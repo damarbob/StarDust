@@ -13,6 +13,7 @@ use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotAssignment;
 use StarDust\Slot\SlotReserver;
+use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Watcher\SpreadSampler;
 
 /**
@@ -195,7 +196,7 @@ final class SlotAffinityTest extends TestCase
     public function testRequireIndexedOutranksAffinity(): void
     {
         $indexed   = $this->provisionPage(['i_str_01', 'i_str_02']);
-        $unindexed = $this->provisionPage();
+        $unindexed = $this->provisionLegacyPage();
         $modelId   = $this->createModel();
         $this->bindSlot($unindexed, 'i_str_01', $this->createField($modelId), 'assigned');
 
@@ -523,6 +524,12 @@ final class SlotAffinityTest extends TestCase
             logger: new NullLogger(),
             provisionerIdentity: 'phpunit/0',
         ))->provision($filterableSlots);
+    }
+
+    /** A pre-ADR-0043 page: sixty columns, none indexed. */
+    private function provisionLegacyPage(): int
+    {
+        return LegacyPage::provision($this->pdo, 'phpunit/0');
     }
 
     private function createModel(int $tenantId = 1): int
