@@ -66,7 +66,7 @@ immediately rather than in review. You do not need to memorise them.
 
 | Enforced by | What it protects |
 | :-- | :-- |
-| `Conventions/BootstrapperTableAllowlistTest` | The five test table-drop allowlists match the tables the bootstrapper creates |
+| `Conventions/BootstrapperTableAllowlistTest` | `SchemaFixture::CORE_TABLES` matches the tables the bootstrapper creates |
 | `Conventions/ConfigAppendOnlyTest` | `Config`'s constructor is append-only; reordering silently rebinds positional callers |
 | `Conventions/FinalClassGuardTest` | Every class under `src/` is `final` — this engine composes rather than inherits |
 | `Conventions/DocsConsistencyTest` | The README stays free of internal design-record citations, and the version constant matches the changelog |

@@ -10,6 +10,7 @@ use PHPUnit\Framework\TestCase;
 use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Config\Config;
 use StarDust\StarDust;
+use StarDust\Tests\Smoke\Support\SchemaFixture;
 
 /**
  * Phase 1 smoke suite — verifies the bootstrap migration runner against
@@ -28,32 +29,6 @@ use StarDust\StarDust;
  */
 final class BootstrapTest extends TestCase
 {
-    /**
-     * Static Phase 1 tables the bootstrap creates. Phase 2 extension pages
-     * (`entry_slots_page_N`) are named dynamically and are NOT listed here —
-     * `dropAllTables()` discovers them from `information_schema` at runtime
-     * and drops them before this static set.
-     *
-     * The listed order is the reverse of FK dependency for human readability;
-     * `dropAllTables()` disables `FOREIGN_KEY_CHECKS` for the sweep, so the
-     * order is not load-bearing for the drop to succeed.
-     *
-     * @var list<string>
-     */
-    private const TABLES = [
-        'stardust_slot_assignments',
-        'stardust_pages',
-        'stardust_fields',
-        'stardust_models',
-        'stardust_sync_queue',
-        'entry_data',
-        'stardust_schema_version',
-        'stardust_export_jobs',
-        'stardust_import_jobs',
-        'stardust_reconciler_dlq',
-        'backfill_checkpoints',
-    ];
-
     private PDO $pdo;
 
     protected function setUp(): void
@@ -91,36 +66,19 @@ final class BootstrapTest extends TestCase
         }
     }
 
+    /**
+     * The real drop-and-rebuild, which this class alone still needs.
+     *
+     * Delegates to the same sweep {@see SchemaFixture::dropAll()} that
+     * the rest of the suite uses only as a fallback, so both share one
+     * table list. Phase 2 extension pages (`entry_slots_page_N`) are
+     * named dynamically and cannot be listed; the sweep discovers them
+     * from `information_schema` and drops them before the Phase 1
+     * tables they reference.
+     */
     private function dropAllTables(): void
     {
-        $this->pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
-
-        // Phase 2 extension pages (entry_slots_page_N) are named dynamically,
-        // so they cannot be allowlisted in self::TABLES — discover any that
-        // a previous Phase 2 smoke test (or a half-finished run) left behind
-        // and drop them before the Phase 1 tables they reference.
-        $pages = $this->pdo
-            ->query(
-                "SELECT table_name FROM information_schema.TABLES"
-                . " WHERE table_schema = DATABASE() AND table_name LIKE 'entry_slots_page_%'"
-            )
-            ->fetchAll(PDO::FETCH_COLUMN);
-        foreach ($pages as $pageTable) {
-            try {
-                $this->pdo->exec("DROP TABLE IF EXISTS {$pageTable}");
-            } catch (\Throwable) {
-                // ignored
-            }
-        }
-
-        foreach (self::TABLES as $t) {
-            try {
-                $this->pdo->exec("DROP TABLE IF EXISTS {$t}");
-            } catch (\Throwable) {
-                // ignored
-            }
-        }
-        $this->pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
+        SchemaFixture::dropAll($this->pdo);
     }
 
     /** Exit criterion 1: blank database → all tables present. */
@@ -128,7 +86,7 @@ final class BootstrapTest extends TestCase
     {
         (new Bootstrapper($this->pdo))->run();
 
-        foreach (self::TABLES as $table) {
+        foreach (SchemaFixture::CORE_TABLES as $table) {
             self::assertTrue(
                 $this->tableExists($table),
                 "Expected table {$table} to exist after bootstrap.",
@@ -162,7 +120,7 @@ final class BootstrapTest extends TestCase
         self::assertSame('phase1', $marker, 'Idempotent bootstrap must not recreate populated tables.');
 
         // And every table must still be present.
-        foreach (self::TABLES as $table) {
+        foreach (SchemaFixture::CORE_TABLES as $table) {
             self::assertTrue($this->tableExists($table), "Table {$table} disappeared during idempotent re-run.");
         }
     }

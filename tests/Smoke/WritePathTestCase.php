@@ -8,35 +8,26 @@ use PDO;
 use PDOException;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
-use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Clock\SystemClock;
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
 use StarDust\Tests\Smoke\Support\LegacyPage;
+use StarDust\Tests\Smoke\Support\SchemaFixture;
 
 /**
  * Shared scaffolding for Phase 3 write-path smoke tests.
  *
- * Provides the env-gated MySQL connection, the table-drop sweep, and
- * a handful of registry-seed helpers (model + field + reserved slot)
- * so individual tests can focus on their behavioural assertions.
+ * Provides the env-gated MySQL connection, the per-test schema reset,
+ * and a handful of registry-seed helpers (model + field + reserved
+ * slot) so individual tests can focus on their behavioural assertions.
+ *
+ * There is deliberately no `tearDown()` sweep: {@see SchemaFixture} is
+ * what guarantees a clean slate, and it runs in `setUp()`. Leaving the
+ * last test's rows in place costs nothing and makes a failure easier
+ * to inspect afterwards.
  */
 abstract class WritePathTestCase extends TestCase
 {
-    protected const PHASE_1_TABLES = [
-        'stardust_slot_assignments',
-        'stardust_pages',
-        'stardust_fields',
-        'stardust_models',
-        'stardust_sync_queue',
-        'entry_data',
-        'stardust_schema_version',
-        'stardust_export_jobs',
-        'stardust_import_jobs',
-        'stardust_reconciler_dlq',
-        'backfill_checkpoints',
-    ];
-
     protected PDO $pdo;
 
     protected function setUp(): void
@@ -59,48 +50,7 @@ abstract class WritePathTestCase extends TestCase
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
 
-        $this->dropEverything();
-        (new Bootstrapper($this->pdo))->run();
-    }
-
-    protected function tearDown(): void
-    {
-        if (! isset($this->pdo)) {
-            return;
-        }
-        try {
-            $this->dropEverything();
-        } catch (\Throwable) {
-            // best-effort
-        }
-    }
-
-    protected function dropEverything(): void
-    {
-        $this->pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
-
-        $pages = $this->pdo
-            ->query(
-                "SELECT table_name FROM information_schema.TABLES"
-                . " WHERE table_schema = DATABASE() AND table_name LIKE 'entry_slots_page_%'"
-            )
-            ->fetchAll(PDO::FETCH_COLUMN);
-        foreach ($pages as $pageTable) {
-            try {
-                $this->pdo->exec("DROP TABLE IF EXISTS {$pageTable}");
-            } catch (\Throwable) {
-                // ignored
-            }
-        }
-
-        foreach (self::PHASE_1_TABLES as $t) {
-            try {
-                $this->pdo->exec("DROP TABLE IF EXISTS {$t}");
-            } catch (\Throwable) {
-                // ignored
-            }
-        }
-        $this->pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
+        SchemaFixture::reset($this->pdo);
     }
 
     /**

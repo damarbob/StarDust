@@ -7,7 +7,6 @@ namespace StarDust\Tests\Smoke\Slot;
 use PDO;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
-use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Clock\SystemClock;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Page\PageProvisioner;
@@ -15,6 +14,7 @@ use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Slot\SlotAssignment;
 use StarDust\Slot\SlotReserver;
 use StarDust\Tests\Smoke\Support\LegacyPage;
+use StarDust\Tests\Smoke\Support\SchemaFixture;
 use StarDust\Watcher\SpreadSampler;
 
 /**
@@ -38,20 +38,6 @@ use StarDust\Watcher\SpreadSampler;
  */
 final class SlotAffinityTest extends TestCase
 {
-    private const PHASE_1_TABLES = [
-        'stardust_slot_assignments',
-        'stardust_pages',
-        'stardust_fields',
-        'stardust_models',
-        'stardust_sync_queue',
-        'entry_data',
-        'stardust_schema_version',
-        'stardust_export_jobs',
-        'stardust_import_jobs',
-        'stardust_reconciler_dlq',
-        'backfill_checkpoints',
-    ];
-
     private PDO $pdo;
 
     protected function setUp(): void
@@ -64,20 +50,7 @@ final class SlotAffinityTest extends TestCase
         }
 
         $this->pdo = $this->newConnection();
-        $this->dropEverything();
-        (new Bootstrapper($this->pdo))->run();
-    }
-
-    protected function tearDown(): void
-    {
-        if (! isset($this->pdo)) {
-            return;
-        }
-        try {
-            $this->dropEverything();
-        } catch (\Throwable) {
-            // best-effort
-        }
+        SchemaFixture::reset($this->pdo);
     }
 
     // ---------------------------------------------------------------
@@ -608,29 +581,4 @@ final class SlotAffinityTest extends TestCase
         $stmt->execute([$pageId, $family]);
     }
 
-    private function dropEverything(): void
-    {
-        $this->pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
-
-        $pages = $this->pdo->query(
-            'SELECT table_name FROM information_schema.TABLES'
-            . " WHERE table_schema = DATABASE() AND table_name LIKE 'entry_slots_page_%'"
-        )->fetchAll(PDO::FETCH_COLUMN);
-
-        foreach ($pages as $pageTable) {
-            try {
-                $this->pdo->exec("DROP TABLE IF EXISTS {$pageTable}");
-            } catch (\Throwable) {
-                // ignored
-            }
-        }
-        foreach (self::PHASE_1_TABLES as $t) {
-            try {
-                $this->pdo->exec("DROP TABLE IF EXISTS {$t}");
-            } catch (\Throwable) {
-                // ignored
-            }
-        }
-        $this->pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
-    }
 }
