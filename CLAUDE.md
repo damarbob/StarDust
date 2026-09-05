@@ -188,7 +188,7 @@ The engine ships as a framework-neutral Composer library. Zero framework / ORM /
 | [src/Write/](src/Write/) | `EntryWriter`, `PayloadSplitter`, `LiveSlotMap`, `BulkIngestor`, `BulkIngestSubmitter`, `BackfillExecutor`. | 3 |
 | [src/Read/](src/Read/) | The ADR 0005 two-query bounded read, plus the ADR 0041 sort DTOs and the two-format cursor codec. Largely hollowed out by Phase 8 — read `src/Search/CLAUDE.md` too. | 4 |
 | [src/Daemon/](src/Daemon/) | Shared scaffolding: `PollLoop`, `Tickable`, `ShutdownSignal`, `PidFileGuard`, `AdvisoryLock`. | 5 |
-| [src/Watcher/](src/Watcher/) | Singleton page provisioner + `CardinalitySampler` + the ADR 0031 `SpreadSampler`. Demand-driven since ADR 0035; indexes ADR 0042 headroom in every family on top of that demand. | 5 / 6b |
+| [src/Watcher/](src/Watcher/) | Singleton page provisioner + `CardinalitySampler` + the ADR 0031 `SpreadSampler`, whose floor is capacity-derived since ADR 0044. Demand-driven since ADR 0035; indexes ADR 0042 headroom in every family on top of that demand. | 5 / 6b |
 | [src/Reconciler/](src/Reconciler/) | Multi-worker drain over six work sources, the ADR 0018 DLQ and replayer, the ADR 0007 exhaustion reservation, and the lock-retry budget behind `TickOutcome::LOCK_WAIT`. | 5 |
 | [src/Liberator/](src/Liberator/) | Singleton slot reclamation with the ADR 0009 deadlock/gap path. | 6a |
 | [src/Retype/](src/Retype/) | Retype + filterability-promotion lifecycle and the ADR 0024 coercion matrix. | 6b |
@@ -210,10 +210,11 @@ The engine ships as a framework-neutral Composer library. Zero framework / ORM /
 - **Support — [src/Support/UuidV4.php](src/Support/UuidV4.php):** The one shared utility. `UuidV4::generate(): string` is the source of every `correlation_id` / `chunk_correlation_id` in the daemons and of the uniqueness suffix in `WorkerIdentity::mint()`. Covered by `tests/Smoke/UuidV4Test`.
 - **Clock — [src/Clock/SystemClock.php](src/Clock/SystemClock.php):** `psr/clock` default; UTC `DateTimeImmutable`. Always inject this rather than calling `new DateTime` directly, so tests can swap in a frozen clock.
 
-### Two cross-cutting rules worth knowing without opening a nested file
+### Three cross-cutting rules worth knowing without opening a nested file
 
 - **Adding a new log event name requires an ADR 0020 update**, or `tests/Smoke/EventVocabularyTest` fails. It greps eleven `src/` directories for `'event' => '...'` literals and asserts the union is a subset of the allowlist. **The scan is per-directory and `scanDir()` returns `[]` for a directory that does not exist**, so a new event-emitting package needs its own scan method here or its events go unenforced while the suite stays green — this has already happened once with `src/Write/`. Full vocabulary: `src/Logging/CLAUDE.md`.
 - **`NonFilterableFieldSlotException` and `FieldNotFilterableException` are different exceptions.** The first is a reservation-time invariant violation ("your code asked the registry for something the architecture forbids"); the second is the read-path pre-flight rejection for a filter targeting such a field ("fix your query"). One word apart, and that is exactly why both exist. Full taxonomy: `src/Exception/CLAUDE.md`.
+- **`theoretical_min_pages` is one formula with two callers, and ADR 0044 gave it a second shared input.** `Watcher\SpreadSample::theoreticalMinPages()` is what ADR 0031's advisory reports and what ADR 0033's planner searches from, so `excess_pages -> 0` is a real success criterion instead of two subsystems agreeing by luck; the per-page capacity it now derives the floor from is read through `Slot\IndexedFreeCapacityReader` for the same reason. **Move both callers together or neither.** The floor is no longer `count / 25` — capacity is heterogeneous since ADR 0043, so it is read off the pages the model occupies, counting indexed free slots plus the ones the model already holds there. Two live consequences: the number is time-varying, and spread forced by `Config::$pageIndexHeadroom` reports zero excess by design. Details: `src/Watcher/CLAUDE.md`.
 
 ### Schema invariants worth knowing before editing DDL
 

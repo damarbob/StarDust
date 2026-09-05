@@ -270,6 +270,7 @@ abstract class Phase5TestCase extends ReadPathTestCase
             pdo: $this->pdo,
             logger: $logger ?? new NullLogger(),
             excessPageThreshold: $excessPageThreshold,
+            capacityReader: new \StarDust\Slot\IndexedFreeCapacityReader($this->pdo),
         );
     }
 

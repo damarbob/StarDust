@@ -6,6 +6,7 @@ namespace StarDust\Watcher;
 
 use PDO;
 use Psr\Log\LoggerInterface;
+use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Support\UuidV4;
 
 /**
@@ -61,6 +62,7 @@ final class SpreadSampler
         private readonly PDO $pdo,
         private readonly LoggerInterface $logger,
         private readonly int $excessPageThreshold,
+        private readonly IndexedFreeCapacityReader $capacityReader,
     ) {
     }
 
@@ -110,11 +112,18 @@ final class SpreadSampler
     }
 
     /**
-     * One bounded registry query, folded per `(tenant_id, model_id)`.
+     * Two bounded registry queries, folded per `(tenant_id, model_id)`.
      *
      * A model with no live filterable slot produces no row and therefore
      * no sample — correct, since a model with nothing slotted has no
      * spread to report.
+     *
+     * The second query is ADR 0044's: `theoretical_min_pages` is now
+     * derived from what the model's pages can actually hold, and live
+     * slot rows alone cannot say how wide a page is. It is one aggregate
+     * over the whole pool per *run*, not per model, and it stays inside
+     * the registry — so the "safe to run over every model, every day"
+     * property above is unaffected.
      *
      * @return list<SpreadSample>
      */
@@ -156,6 +165,12 @@ final class SpreadSampler
             $grouped[$key]['slotColumns'][] = (string) $row['slot_column'];
         }
 
+        if ($grouped === []) {
+            return [];
+        }
+
+        $freeByPage = $this->capacityReader->load();
+
         $samples = [];
         foreach ($grouped as $group) {
             $samples[] = SpreadSample::fromLiveSlots(
@@ -163,6 +178,7 @@ final class SpreadSampler
                 modelId: $group['modelId'],
                 pageIds: $group['pageIds'],
                 slotColumns: $group['slotColumns'],
+                freeByPage: $freeByPage,
             );
         }
 

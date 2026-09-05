@@ -11,6 +11,7 @@ use StarDust\Exception\CompactionCapacityException;
 use StarDust\Exception\RetypeInProgressException;
 use StarDust\Reconciler\TickOutcome;
 use StarDust\Retype\RetypeCheckpointRepository;
+use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Tests\Smoke\Phase6bTestCase;
 use StarDust\Watcher\SpreadSampler;
 
@@ -40,7 +41,12 @@ final class CompactModelTest extends Phase6bTestCase
     {
         [$modelId, $fields, $entryIds] = $this->seedFragmentedModel();
 
-        $sampler = new SpreadSampler($this->pdo, $this->makeRecordingLogger(), 2);
+        $sampler = new SpreadSampler(
+            $this->pdo,
+            $this->makeRecordingLogger(),
+            2,
+            new IndexedFreeCapacityReader($this->pdo),
+        );
 
         $before = $sampler->report(1, $modelId);
         self::assertSame(3, $before[0]->pagesOccupied, 'Fixture must start fragmented.');
@@ -169,7 +175,7 @@ final class CompactModelTest extends Phase6bTestCase
             'Its second relocation must have drained, not collided.',
         );
 
-        $after = (new SpreadSampler($this->pdo, $this->makeRecordingLogger(), 2))->report(1, $modelId);
+        $after = $this->makeSpreadSampler()->report(1, $modelId);
         self::assertSame(0, $after[0]->excessPages(), 'excess_pages -> 0 is the success criterion.');
         self::assertSame(count($fields), $after[0]->liveSlotCount, 'No slot may be lost across two runs.');
     }
@@ -199,17 +205,18 @@ final class CompactModelTest extends Phase6bTestCase
      * An inadmissible plan fails before touching anything. The registry
      * must be byte-identical afterwards — no tombstones, no checkpoints,
      * no version bump — so a refused compaction is never a half-migration.
+     *
+     * The fixture is cross-family since ADR 0044, and it has to be.
+     * Starving one family everywhere no longer produces a refusal: with
+     * the floor read off real page capacity, a model whose pages have no
+     * room left *is* at its floor, so the planner returns a no-op and
+     * `spread:report` agrees at `excess_pages = 0`. What remains
+     * genuinely inadmissible is a floor that only a per-family view can
+     * reach — see {@see self::seedCrossFamilyDeadlock()}.
      */
     public function testInadmissiblePlanLeavesTheRegistryUntouched(): void
     {
-        [$modelId] = $this->seedFragmentedModel();
-
-        // Consume every remaining free string slot everywhere, so no
-        // page can absorb another field.
-        $this->pdo->exec(
-            "UPDATE stardust_slot_assignments SET status = 'assigned'"
-            . " WHERE status = 'free' AND slot_type = 'str'"
-        );
+        $modelId = $this->seedCrossFamilyDeadlock();
 
         $versionBefore = $this->fetchSchemaVersion();
         $slotsBefore = $this->slotFingerprint();
@@ -407,7 +414,7 @@ final class CompactModelTest extends Phase6bTestCase
 
         $plan = $this->makeCompactionService()->compact(1, $modelId);
 
-        $after = (new SpreadSampler($this->pdo, $this->makeRecordingLogger(), 2))->report(1, $modelId);
+        $after = $this->makeSpreadSampler()->report(1, $modelId);
         self::assertSame(
             $plan->pagesAfter(),
             $after[0]->pagesOccupied,
@@ -483,6 +490,39 @@ final class CompactModelTest extends Phase6bTestCase
      *
      * @return array{0: int, 1: array<string, int>, 2: list<int>}
      */
+    /**
+     * A model whose floor is one page, on two pages that between them
+     * cannot deliver it.
+     *
+     * ```text
+     * page A  cols i_str_01 i_str_02 i_int_01   own str,int   free str:1
+     * page B  cols i_str_01 i_int_01 i_int_02   own str,int   free int:1
+     * counts  str 2, int 2
+     * host    A {str 2, int 1}   B {str 1, int 2}   → floor 1 < 2 pages
+     * size 1  → A takes B's str into i_str_02, then B's int finds no
+     *           free int column on A → inadmissible
+     * ```
+     *
+     * Each family *alone* would fit on one page; the two disagree about
+     * which page, which is exactly where ADR 0044's per-family minimum is
+     * a lower bound rather than an exact packing. This is the shape that
+     * keeps `CompactionCapacityException` reachable.
+     */
+    private function seedCrossFamilyDeadlock(): int
+    {
+        $pageA = $this->provisionPage(['i_str_01', 'i_str_02', 'i_int_01']);
+        $pageB = $this->provisionPage(['i_str_01', 'i_int_01', 'i_int_02']);
+
+        $modelId = $this->createModel(1);
+
+        $this->bindSlot($pageA, 'i_str_01', $this->createField($modelId, 'string', true, 'alpha'), 'assigned');
+        $this->bindSlot($pageA, 'i_int_01', $this->createField($modelId, 'int', true, 'beta'), 'assigned');
+        $this->bindSlot($pageB, 'i_str_01', $this->createField($modelId, 'string', true, 'gamma'), 'assigned');
+        $this->bindSlot($pageB, 'i_int_01', $this->createField($modelId, 'int', true, 'delta'), 'assigned');
+
+        return $modelId;
+    }
+
     private function seedFragmentedModel(): array
     {
         // Page 1 is roomiest so the planner consolidates onto it. Pages 2

@@ -24,7 +24,9 @@ use StarDust\Watcher\SpreadSample;
  * measures. That is not a coincidence to be tidied away later: it is
  * what makes `excess_pages → 0` a real success criterion rather than
  * two subsystems agreeing by luck. The `theoretical_min_pages` formula
- * is reused from {@see SpreadSample} for the same reason.
+ * is reused from {@see SpreadSample} for the same reason — and since
+ * ADR 0044 so is its input, the per-page capacity both subsystems now
+ * derive the floor from.
  *
  * ## Candidates are pages the model already occupies
  *
@@ -63,8 +65,21 @@ final class CompactionPlanner
     ): CompactionPlan {
         $pagesOccupied = self::distinctPages($modelSlots);
         $countsByFamily = self::countByFamily($modelSlots);
-        $minPages = SpreadSample::theoreticalMinPages($countsByFamily);
         $pagesBefore = count($pagesOccupied);
+
+        // ADR 0044: the floor is read off the pages this model can
+        // actually reach — the free slots they hold plus the ones the
+        // model already occupies there. Note the two capacities are not
+        // interchangeable: the floor counts `free + own`, while
+        // `assign()` below spends `free` alone. A slot the model already
+        // holds is capacity for staying put, never for taking a move.
+        $minPages = SpreadSample::theoreticalMinPages(
+            $countsByFamily,
+            SpreadSample::hostableByPage(
+                array_intersect_key($freeCapacity, array_flip($pagesOccupied)),
+                self::ownByPage($modelSlots),
+            ),
+        );
 
         // Already at the floor — nothing to do, and this is a success,
         // not an error. A model whose family ceilings force three pages
@@ -110,8 +125,9 @@ final class CompactionPlanner
             'Cannot compact model %d (tenant %d): it occupies %d pages against a floor of %d,'
             . ' but no smaller page set has enough free slots of the required families to absorb'
             . ' the moves. A relocated field holds its old slot until the Liberator sweeps it'
-            . ' (ADR 0009), so let the tombstone backlog drain, let the Watcher provision, and'
-            . ' re-run. Nothing was mutated.',
+            . ' (ADR 0009), so let the tombstone backlog drain and re-run. Provisioning cannot'
+            . ' help: candidates are drawn from the pages this model already occupies, so a new'
+            . ' page is not one. Nothing was mutated.',
             $modelId,
             $tenantId,
             $pagesBefore,
@@ -221,6 +237,23 @@ final class CompactionPlanner
         sort($ids);
 
         return $ids;
+    }
+
+    /**
+     * The model's own live slots, per page per family — its half of the
+     * ADR 0044 hostable capacity.
+     *
+     * @param  list<ModelSlot>               $modelSlots
+     * @return array<int, array<string, int>> pageId ⇒ family ⇒ count
+     */
+    private static function ownByPage(array $modelSlots): array
+    {
+        $own = [];
+        foreach ($modelSlots as $slot) {
+            $own[$slot->pageId][$slot->slotType] = ($own[$slot->pageId][$slot->slotType] ?? 0) + 1;
+        }
+
+        return $own;
     }
 
     /**

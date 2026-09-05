@@ -22,8 +22,8 @@ final class SpreadSamplerTest extends Phase5TestCase
 {
     /**
      * The headline measurement: three live string slots split across two
-     * pages. The model needs one page (3 ≤ 25), so one of the two is
-     * avoidable.
+     * pages. Either page has three `str` columns, so the model fits on
+     * one and the second is avoidable.
      */
     public function testMeasuresPagesOccupiedAgainstTheTheoreticalMinimum(): void
     {
@@ -223,12 +223,21 @@ final class SpreadSamplerTest extends Phase5TestCase
     // Fixtures
     // ---------------------------------------------------------------
 
-    /** @return array{0: int, 1: int} two pages, each indexed for the str family */
+    /**
+     * @return array{0: int, 1: int} two pages, each indexed for the str family
+     *
+     * Three columns, not two, and the width is load-bearing since ADR
+     * 0044: the floor is now derived from what these pages can actually
+     * hold, so a model of three string fields only has a floor of one
+     * page if one page has room for three. On two-column pages the same
+     * fixture is *correctly* at its floor and reports no excess — which
+     * would make the headline measurement vacuous rather than wrong.
+     */
     private function twoPages(): array
     {
         return [
-            $this->provisionPage(['i_str_01', 'i_str_02']),
-            $this->provisionPage(['i_str_01', 'i_str_02']),
+            $this->provisionPage(['i_str_01', 'i_str_02', 'i_str_03']),
+            $this->provisionPage(['i_str_01', 'i_str_02', 'i_str_03']),
         ];
     }
 

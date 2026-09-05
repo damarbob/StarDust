@@ -71,6 +71,12 @@ The predicate tests "participates in any index", not specifically the `(tenant_i
 
 Because indexedness is derived from `information_schema.STATISTICS` rather than persisted, this class is also the seam that would keep a future `stardust_slot_assignments.is_indexed` column a one-file migration.
 
+## `IndexedFreeCapacityReader`
+
+**The single definition of "capacity a filterable field could claim on this page", per page per family** — `status = 'free'` narrowed by `IndexedSlotPredicate`, grouped by `(page_id, slot_type)`. Extracted from `CompactionRepository` by ADR 0044, which made `SpreadSampler` need the same number: the spread advisory's `theoretical_min_pages` is now derived from the capacity compaction assigns against, so two implementations could disagree about whether a compaction achieved anything — the failure mode the shared `theoreticalMinPages()` formula already exists to prevent. `CompactionRepository::loadIndexedFreeCapacity()` delegates rather than being deleted, so the planner's collaborator keeps its shape.
+
+It sits here rather than in `src/Watcher/` or `src/Compaction/` on the `IndexedSlotPredicate` / `LiveSlotTombstoner` precedent, and because the alternative made the Watcher depend on the compaction package. Registry-only and unfiltered by page — both callers want the whole pool, once per operation.
+
 ## `DECLARED_TYPE_TO_SLOT_TYPE`
 
 `public const` so the Watcher's demand reader folds waiters into families with the same map.

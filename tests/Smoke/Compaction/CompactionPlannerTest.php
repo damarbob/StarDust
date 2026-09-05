@@ -102,8 +102,14 @@ final class CompactionPlannerTest extends TestCase
 
     /**
      * The capacity check is the whole reason a plan can be refused, and
-     * it must refuse *before* anything moves. Here the free capacity is
-     * too thin anywhere to consolidate.
+     * it must refuse *before* anything moves.
+     *
+     * Since ADR 0044 the refusal has to be cross-family. Three `str`
+     * fields on three pages with no free `str` anywhere are at their
+     * floor — three pages is genuinely the fewest that can hold them, so
+     * that reads as a no-op, not an error. Here each family would fit on
+     * one page but they disagree about which, so the floor is one, the
+     * planner tries, and no single-page target set can absorb the moves.
      */
     public function testThrowsWhenNoSmallerPageSetCanAbsorbTheMoves(): void
     {
@@ -111,14 +117,44 @@ final class CompactionPlannerTest extends TestCase
 
         CompactionPlanner::plan(1, 7, [
             $this->slot(1, 'str', pageId: 1),
+            $this->slot(2, 'int', pageId: 1),
+            $this->slot(3, 'str', pageId: 2),
+            $this->slot(4, 'int', pageId: 2),
+        ], [
+            // Page 1 can take another string but no int; page 2 the
+            // reverse. Neither can host the whole model.
+            1 => ['str' => 1, 'int' => 0],
+            2 => ['str' => 0, 'int' => 1],
+        ]);
+    }
+
+    /**
+     * The counterpart, and the behaviour ADR 0044 changed: a model whose
+     * pages have no room left is **at its floor**, not inadmissible.
+     * Refusing here used to send an operator chasing capacity for a
+     * layout that is already as tight as it can be.
+     *
+     * The general form, worth knowing: with no free capacity anywhere,
+     * the hostable capacity of each page is exactly what the model
+     * already holds there, so covering the counts takes every page and
+     * the floor always equals `pages_before`. A starved model is never
+     * compactable and never an error.
+     */
+    public function testStarvedSingleFamilyModelIsAtItsFloorNotInadmissible(): void
+    {
+        $plan = CompactionPlanner::plan(1, 7, [
+            $this->slot(1, 'str', pageId: 1),
             $this->slot(2, 'str', pageId: 2),
             $this->slot(3, 'str', pageId: 3),
         ], [
-            // No page has room for anyone else's field.
             1 => ['str' => 0],
             2 => ['str' => 0],
             3 => ['str' => 0],
         ]);
+
+        self::assertTrue($plan->isNoop());
+        self::assertSame(3, $plan->theoreticalMinPages);
+        self::assertSame(0, $plan->excessPagesRemoved());
     }
 
     /**
@@ -129,19 +165,23 @@ final class CompactionPlannerTest extends TestCase
      */
     public function testDoesNotSpendCapacityItIsAboutToRelease(): void
     {
-        $this->expectException(CompactionCapacityException::class);
-
-        // Page 1 hosts one field and has exactly zero free slots. If the
-        // planner wrongly assumed page 2's field could take the slot
-        // page 1's field is vacating, it would plan a move that the
-        // pinned reservation then refuses mid-flight.
-        CompactionPlanner::plan(1, 7, [
+        // Neither page has a free slot. If a vacated slot counted as
+        // capacity the moment the plan named it, the floor here would be
+        // one page and the planner would move page 2's field into a slot
+        // the Liberator will not release for a whole sweep — the move
+        // the pinned reservation then refuses mid-flight. Counting only
+        // rows that are `free` now makes two pages the floor.
+        $plan = CompactionPlanner::plan(1, 7, [
             $this->slot(1, 'str', pageId: 1),
             $this->slot(2, 'str', pageId: 2),
         ], [
             1 => ['str' => 0],
             2 => ['str' => 0],
         ]);
+
+        self::assertSame(2, $plan->theoreticalMinPages);
+        self::assertTrue($plan->isNoop());
+        self::assertSame([], $plan->relocations);
     }
 
     /** A relocation must target a page with capacity in its own family. */

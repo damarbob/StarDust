@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Compaction;
 
 use PDO;
+use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Support\ModelDeletionProbe;
 
 /**
@@ -95,38 +96,16 @@ final class CompactionRepository
      * Free slots per page per family, restricted to columns that are
      * actually indexed.
      *
-     * The index restriction is not optional. A relocated field is
-     * filterable, so ADR 0016 commitment 1 and ADR 0004 require its slot
-     * to carry an index — the pinned reservation passes
-     * `requireIndexed: true`, and a planner counting unindexed free slots
-     * would build plans the reservation then refuses, turning a clean
-     * up-front `CompactionCapacityException` into a mid-flight failure.
-     * {@see \StarDust\Slot\IndexedSlotPredicate} is the shared definition
-     * of "indexed", the same one the reserver and the Watcher use.
-     *
-     * Only `free` rows are counted, which is what makes double-occupancy
-     * correct for free: a slot this plan is about to vacate becomes
-     * `tombstoned`, not `free`, and does not return until the Liberator
-     * sweeps it (ADR 0009).
+     * Delegates to {@see IndexedFreeCapacityReader}, which ADR 0031's
+     * spread advisory now shares: since ADR 0044 the sampler derives its
+     * `theoretical_min_pages` from the same per-page capacity this
+     * planner assigns against, and two implementations of "free and
+     * indexed" would be free to disagree.
      *
      * @return array<int, array<string, int>> pageId ⇒ family ⇒ count
      */
     public function loadIndexedFreeCapacity(): array
     {
-        $stmt = $this->pdo->query(
-            'SELECT sa.page_id, sa.slot_type, COUNT(*) AS free_slots'
-            . ' FROM stardust_slot_assignments sa'
-            . ' JOIN stardust_pages p ON p.id = sa.page_id'
-            . " WHERE sa.status = 'free'"
-            . '   AND ' . \StarDust\Slot\IndexedSlotPredicate::existsSql('sa', 'p')
-            . ' GROUP BY sa.page_id, sa.slot_type'
-        );
-
-        $capacity = [];
-        foreach ($stmt === false ? [] : $stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $capacity[(int) $row['page_id']][(string) $row['slot_type']] = (int) $row['free_slots'];
-        }
-
-        return $capacity;
+        return (new IndexedFreeCapacityReader($this->pdo))->load();
     }
 }

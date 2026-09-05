@@ -74,6 +74,7 @@ use StarDust\Search\PreFlight\ValueTypeValidator;
 use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchResult;
 use StarDust\Search\SearchService;
+use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
@@ -1032,6 +1033,7 @@ final class StarDust
             pdo: $this->config->pdo,
             logger: $this->config->logger,
             excessPageThreshold: $this->config->spreadExcessPageThreshold,
+            capacityReader: new IndexedFreeCapacityReader($this->config->pdo),
         );
     }
 

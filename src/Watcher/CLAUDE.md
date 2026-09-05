@@ -75,7 +75,21 @@ ADR 0031 §Sampling Method filters `WHERE sa.tenant_id = :tenant_id`, but **`sta
 
 ### `theoretical_min_pages` is a max, never a sum
 
-`max over families of ceil(count[f] / capacity[f])` — one page serves all four families simultaneously. Summing the per-family minima is the natural-looking error and would make every multi-family model read as permanently fragmented. Capacities come from `PageProvisioner::slotColumnsForType()` rather than restated 25/15/10/10, so the formula cannot drift from the DDL. `SpreadSample`'s statics are public because ADR 0033's compaction planner needs the identical formula to pick a target page set.
+One page serves all four families simultaneously, so the minimum is the largest per-family requirement. Summing the per-family minima is the natural-looking error and would make every multi-family model read as permanently fragmented. `SpreadSample`'s statics are public because ADR 0033's compaction planner needs the identical formula to pick a target page set.
+
+### …and since ADR 0044 the per-family requirement is read off real pages
+
+Until 0044 it was `ceil(count[f] / capacity[f])` where capacity came from `PageProvisioner::slotColumnsForType()` — 25/15/10/10. **That was a page's real capacity only while every page carried all sixty columns and all sixty were claimable**, which ADR 0034 ended and ADR 0043 finished. Measured at the default `k = 4`: five serially promoted `str` fields on two four-column pages reported `theoretical_min_pages: 1` against a true floor of 2, and nine fields fired `high_spread_model` at an optimally packed model while `compactModel()` refused it. ADR 0031's own Consequences predicted exactly this ("if a future ADR introduces heterogeneous page layouts, the min-pages formula must be revised in lockstep"), which is why no ADR had to be argued into existence — only written.
+
+The requirement is now: per family, take the candidate pages roomiest-first and count how many it takes to cover `count[f]`. Three things about the input are load-bearing:
+
+- **Candidates are the pages the model occupies**, matching ADR 0033's v1 restriction that compaction never migrates a model onto an untouched page. Free capacity elsewhere is unreachable, so counting it would report a floor no operation can deliver — `SpreadSample::fromLiveSlots()` intersects the free-capacity map against the model's own pages for exactly this reason.
+- **A page's capacity is `indexed free + this model's own live slots there`** (`SpreadSample::hostableByPage()`) — what compaction can use, since fields already on a target page stay put. Do not substitute the page's total column count: a compaction could then finish cleanly and still leave `excess_pages > 0`, which is the criterion that makes the shared formula worth sharing.
+- **Free capacity and hostable capacity are not interchangeable.** The floor counts `free + own`; `CompactionPlanner::assign()` spends `free` alone. Conflating them would let a relocation target a slot another field already holds.
+
+Two consequences to keep in mind when reading a sample: **the number is time-varying** (another model claiming a slot on a shared page moves this model's floor), and **spread forced by `Config::$pageIndexHeadroom` reports zero excess** — `k + 1` fields of one family cannot share a `k`-column page, so those joins are structural and compaction is not the lever. A second `layout_min_pages` field was considered for that case and rejected; `pages_occupied` already carries the raw join count.
+
+`collect()` therefore runs **two** queries, not one — the live-slot join, then `Slot\IndexedFreeCapacityReader` once per run (global, grouped by page, not per model). Both are registry-only, so the "safe over every model, every day" property is intact.
 
 ## `CardinalitySampler`
 

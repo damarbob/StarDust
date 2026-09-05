@@ -11,6 +11,7 @@ use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Clock\SystemClock;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Page\PageProvisioner;
+use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Slot\SlotAssignment;
 use StarDust\Slot\SlotReserver;
 use StarDust\Tests\Smoke\Support\LegacyPage;
@@ -420,7 +421,12 @@ final class SlotAffinityTest extends TestCase
             'Sanity: the oldest page must still have capacity, or nothing was proven.',
         );
 
-        $samples = (new SpreadSampler($this->pdo, new NullLogger(), 2))->report(1, $modelId);
+        $samples = (new SpreadSampler(
+            $this->pdo,
+            new NullLogger(),
+            2,
+            new IndexedFreeCapacityReader($this->pdo),
+        ))->report(1, $modelId);
 
         self::assertCount(1, $samples);
         self::assertSame(4, $samples[0]->liveSlotCount);
@@ -454,11 +460,27 @@ final class SlotAffinityTest extends TestCase
             $reserver->reserve($this->createField($modelId));
         }
 
-        $samples = (new SpreadSampler($this->pdo, new NullLogger(), 2))->report(1, $modelId);
+        $samples = (new SpreadSampler(
+            $this->pdo,
+            new NullLogger(),
+            2,
+            new IndexedFreeCapacityReader($this->pdo),
+        ))->report(1, $modelId);
 
-        self::assertSame(3, $samples[0]->pagesOccupied);
-        self::assertSame(1, $samples[0]->theoreticalMinPages);
-        self::assertSame(2, $samples[0]->excessPages(), 'Affinity cannot beat structural capacity limits.');
+        self::assertSame(
+            3,
+            $samples[0]->pagesOccupied,
+            'Affinity cannot beat structural capacity limits.',
+        );
+
+        // `pages_occupied` is the whole control here, not `excess_pages`.
+        // Since ADR 0044 the floor is read off real page capacity, and
+        // one-column pages genuinely cannot hold three string fields — so
+        // this spread is unavoidable and correctly reports no excess. It
+        // is still a spread, which is the thing the sibling test above
+        // has to be shown capable of producing.
+        self::assertSame(3, $samples[0]->theoreticalMinPages);
+        self::assertSame(0, $samples[0]->excessPages());
     }
 
     // ---------------------------------------------------------------
