@@ -26,7 +26,17 @@ Two OR-composed triggers:
 
 `$action` keeps its closed set `no_action | provisioned | lock_contention`; the reason lives in the separate closed `trigger` set `none | unsatisfiable_demand | low_capacity`, with `unsatisfiable_demand` taking precedence.
 
-Indexed columns are sized `clamp(waiters − indexedFree, 1, familyCapacity)` per demanded family — floored at one because AC#1 binds the low-capacity path too, and empty when there is no demand (no speculative indexing, per ADR 0003 + Phase 2).
+Indexed columns are sized `clamp(max(waiters − indexedFree, headroom), 1, familyCapacity)` per demanded family — floored at one because AC#1 binds the low-capacity path too, and empty when there is no demand.
+
+`headroom` comes from an injected `IndexHeadroomPolicy` (ADR 0042), currently `FlatIndexHeadroom` carrying `Config::$pageIndexHeadroom`. **At the shipped default of 1 it is arithmetically inert** — `max(1, shortfall, 1)` is the old `max(1, shortfall)` — so the seam is in place and the policy change is not. ADR 0042's second landing raises the default to 4 and widens the loop to iterate all four families rather than only demanded ones, at which point "empty when there is no demand" stops being true and a `low_capacity` page stops being dead weight.
+
+**The floor and the cap live in the planner, not in the policy, and that is deliberate.** It means no implementation — including `k = 0`, and including one a consumer writes — can break the starvation-freedom guarantee above or emit a column that does not exist. The `max(0, …)` guarding the slice looks redundant to PHPStan and is not: PHP enforces only `int` on `headroomFor()`, and `array_slice($cols, 0, -3)` returns everything *but* the last three columns, so a negative return would silently index most of a family instead of none of it.
+
+### The headroom fallback duplicates `Config`'s default
+
+`Watcher::__construct()` takes `?IndexHeadroomPolicy $headroomPolicy = null` and falls back to `FlatIndexHeadroom(1)` — the same shape as `$provisionLockTimeoutSeconds = 10` two lines above it, and carrying the same hazard. `Phase5TestCase::makeWatcher()` constructs `Watcher` directly and passes no policy, so **every Watcher smoke test runs on that fallback rather than on `Config::$pageIndexHeadroom`.** Raising the Config default in ADR 0042's second landing without raising the fallback alongside it would leave the entire Watcher suite silently exercising the old value while production ran the new one.
+
+`Watcher/IndexHeadroomWiringTest` is the only test that reaches the daemon through `StarDust::watcher()`, and therefore the only one that reads the Config field at all. It exists because **that factory had no coverage whatsoever** — a wrong field name or a dropped named argument in it would have left the whole suite green. Verified by neutering the wiring to a literal `1` and confirming the raised-headroom case fails; the default case correctly stays green, which is why the test asserts both.
 
 ### Two traps
 

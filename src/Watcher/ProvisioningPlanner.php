@@ -65,6 +65,7 @@ final class ProvisioningPlanner
         CapacitySnapshot $snapshot,
         PendingDemand $demand,
         float $threshold,
+        IndexHeadroomPolicy $headroom,
     ): ProvisioningPlan {
         $usableFree  = 0;
         $usableTotal = 0;
@@ -111,7 +112,7 @@ final class ProvisioningPlanner
         return new ProvisioningPlan(
             shouldProvision: $shouldProvision,
             trigger: $trigger,
-            indexedColumns: $shouldProvision ? self::indexedColumnsFor($snapshot, $demand) : [],
+            indexedColumns: $shouldProvision ? self::indexedColumnsFor($snapshot, $demand, $headroom) : [],
             starvedFamilies: $starved,
             usableFree: $usableFree,
             usableTotal: $usableTotal,
@@ -121,21 +122,30 @@ final class ProvisioningPlanner
 
     /**
      * Columns the new page should index: enough of each demanded family
-     * to cover its shortfall, floored at one and capped at the family's
+     * to cover its shortfall, floored at one, widened to the
+     * {@see IndexHeadroomPolicy}'s headroom, and capped at the family's
      * per-page capacity.
      *
      * The floor is not an optimisation — a page provisioned while a
      * field waits on that family must carry an index on at least one of
      * its free columns, and that binds the low-capacity path too, where
-     * the shortfall can be zero or negative.
+     * the shortfall can be zero or negative. It is applied here rather
+     * than left to the policy so that no policy, including `k = 0` and
+     * anything a consumer writes, can break ADR 0035's
+     * starvation-freedom guarantee.
      *
-     * With no demand the set is empty: the page is pure headroom, and
-     * indexing speculatively is exactly what the phase plan forbids.
+     * The outer `max(0, …)` looks redundant and is not: PHP enforces
+     * only `int` on the policy's return, and `array_slice($cols, 0, -3)`
+     * yields everything *but* the last three columns — so a negative
+     * headroom would silently index most of a family instead of none.
      *
      * @return list<string>
      */
-    private static function indexedColumnsFor(CapacitySnapshot $snapshot, PendingDemand $demand): array
-    {
+    private static function indexedColumnsFor(
+        CapacitySnapshot $snapshot,
+        PendingDemand $demand,
+        IndexHeadroomPolicy $headroom,
+    ): array {
         $columns = [];
 
         foreach ($demand->families() as $family) {
@@ -144,7 +154,8 @@ final class ProvisioningPlanner
             $available = PageProvisioner::slotColumnsForType($family);
 
             $shortfall = $demand->waitersFor($family) - $snapshot->indexedFreeFor($family);
-            $take = max(1, min($shortfall, count($available)));
+            $want = max(1, $shortfall, $headroom->headroomFor($family));
+            $take = max(0, min($want, count($available)));
 
             foreach (array_slice($available, 0, $take) as $column) {
                 $columns[] = $column;

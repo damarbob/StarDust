@@ -97,6 +97,9 @@ final class Watcher implements Tickable
     /** @var Closure(int, int): int RNG returning a value in [min, max]. */
     private readonly Closure $jitterFn;
 
+    /** ADR 0042 index headroom, applied to every page this daemon provisions. */
+    private readonly IndexHeadroomPolicy $headroomPolicy;
+
     /**
      * @param (Closure(int, int): int)|null $jitterFn injectable RNG
      *        (signature mirrors `random_int`); defaults to `random_int`.
@@ -117,8 +120,13 @@ final class Watcher implements Tickable
         private readonly int $cardinalityJitterSeconds,
         ?Closure $jitterFn = null,
         private readonly int $provisionLockTimeoutSeconds = 10,
+        ?IndexHeadroomPolicy $headroomPolicy = null,
     ) {
         $this->jitterFn = $jitterFn ?? static fn (int $min, int $max): int => random_int($min, $max);
+        // Defaulted for the same reason $provisionLockTimeoutSeconds is:
+        // a direct constructor call (fixtures, one-off scripts) should not
+        // have to know the policy. Config owns the value operators tune.
+        $this->headroomPolicy = $headroomPolicy ?? new FlatIndexHeadroom(1);
     }
 
     public function tick(): void
@@ -126,7 +134,7 @@ final class Watcher implements Tickable
         $correlationId = UuidV4::generate();
         $snapshot = $this->capacityReporter->report();
         $demand   = $this->pendingDemandReader->read();
-        $plan     = ProvisioningPlanner::plan($snapshot, $demand, $this->capacityThreshold);
+        $plan     = ProvisioningPlanner::plan($snapshot, $demand, $this->capacityThreshold, $this->headroomPolicy);
 
         $this->logger->info('watcher poll started', [
             'event'              => 'poll_started',

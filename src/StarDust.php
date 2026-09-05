@@ -78,6 +78,7 @@ use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
+use StarDust\Watcher\FlatIndexHeadroom;
 use StarDust\Watcher\PendingDemandReader;
 use StarDust\Watcher\SpreadSampler;
 use StarDust\Watcher\Watcher;
@@ -634,6 +635,7 @@ final class StarDust
             ),
             cardinalitySampler: $this->cardinalitySampler(),
             spreadSampler: $this->spreadSampler(),
+            headroomPolicy: new FlatIndexHeadroom($this->config->pageIndexHeadroom),
             capacityThreshold: $this->config->watcherCapacityThreshold,
             cardinalityIntervalSeconds: $this->config->cardinalityIntervalSeconds,
             cardinalityJitterSeconds: $this->config->cardinalityJitterSeconds,

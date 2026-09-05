@@ -36,6 +36,9 @@ final class Config
     public readonly int $cardinalityDistinctFloor;
     public readonly int $spreadExcessPageThreshold;
 
+    /** ADR 0042 — indexed columns per slot family on every newly provisioned page. */
+    public readonly int $pageIndexHeadroom;
+
     /** ADR 0038 model purge — see the constructor for why it is not `reconcilerChunkSize`. */
     public readonly int $modelPurgeChunkSize;
     public readonly int $modelPurgeLockRetryBudget;
@@ -114,6 +117,7 @@ final class Config
         ?int $modelPurgeLockRetryBudget = null,
         ?int $reconcilerLockRetryBudget = null,
         ?int $reconcilerLockRetryDelayMicros = null,
+        ?int $pageIndexHeadroom = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -239,5 +243,16 @@ final class Config
         // shared one. Note the purge has no gap path: on exhaustion it
         // rethrows with the cursor untouched rather than skipping rows.
         $this->modelPurgeLockRetryBudget = $modelPurgeLockRetryBudget ?? 3;
+
+        // ADR 0042 index headroom: columns of EVERY slot family indexed on
+        // a newly provisioned page, over and above current demand. Fixed
+        // per page at creation (ADR 0012), so raising it never widens a
+        // page that already exists.
+        //
+        // Not validated, and it does not need to be: ProvisioningPlanner
+        // clamps to [0, family capacity] and applies its own floor of one
+        // column per demanded family, so no value here can starve a waiter
+        // or name a column that does not exist.
+        $this->pageIndexHeadroom = $pageIndexHeadroom ?? 1;
     }
 }

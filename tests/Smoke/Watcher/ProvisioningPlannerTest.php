@@ -6,6 +6,8 @@ namespace StarDust\Tests\Smoke\Watcher;
 
 use PHPUnit\Framework\TestCase;
 use StarDust\Watcher\CapacitySnapshot;
+use StarDust\Watcher\FlatIndexHeadroom;
+use StarDust\Watcher\IndexHeadroomPolicy;
 use StarDust\Watcher\PendingDemand;
 use StarDust\Watcher\ProvisioningPlan;
 use StarDust\Watcher\ProvisioningPlanner;
@@ -43,9 +45,17 @@ final class ProvisioningPlannerTest extends TestCase
     }
 
     /** @param array<string,int> $waiters */
-    private function plan(CapacitySnapshot $snapshot, array $waiters = []): ProvisioningPlan
-    {
-        return ProvisioningPlanner::plan($snapshot, new PendingDemand($waiters), self::THRESHOLD);
+    private function plan(
+        CapacitySnapshot $snapshot,
+        array $waiters = [],
+        ?IndexHeadroomPolicy $headroom = null,
+    ): ProvisioningPlan {
+        return ProvisioningPlanner::plan(
+            $snapshot,
+            new PendingDemand($waiters),
+            self::THRESHOLD,
+            $headroom ?? new FlatIndexHeadroom(1),
+        );
     }
 
     public function testNoDemandAndHealthyRatioDoesNotProvision(): void

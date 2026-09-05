@@ -432,7 +432,7 @@ $company?->indexedFields();
 
 Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
-Phases 5, 6a, 7, and model deletion add thirty-six optional `Config` parameters for daemon tuning:
+Phases 5, 6a, 7, model deletion, and index headroom add thirty-seven optional `Config` parameters for daemon tuning:
 
 ```php
 $engine = new StarDust(new Config(
@@ -474,6 +474,8 @@ $engine = new StarDust(new Config(
     modelPurgeLockRetryBudget:           3,         // consecutive 1205/1213 retries before the purge rethrows
     reconcilerLockRetryBudget:           3,         // consecutive 1205/1213 retries on the other five work sources
     reconcilerLockRetryDelayMicros:      0,         // pace between those retries (0 = no pacing)
+    pageIndexHeadroom:                   1,         // indexed columns per slot family on each new page —
+                                                    // fixed when the page is created and never widened after
 ));
 ```
 
