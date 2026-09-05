@@ -485,10 +485,16 @@ final class CompactModelTest extends Phase6bTestCase
      */
     private function seedFragmentedModel(): array
     {
+        // Page 1 is roomiest so the planner consolidates onto it. Pages 2
+        // and 3 carry a spare column each: since ADR 0043 a page has
+        // exactly the columns it was provisioned with, so a one-column
+        // page has no free slot left once its field lands, and
+        // `stripeFieldOntoItsOwnPage()` would have nowhere to re-fragment
+        // to after a consolidation.
         $pages = [
             $this->provisionPage(['i_str_01', 'i_str_02', 'i_str_03']),
-            $this->provisionPage(['i_str_01']),
-            $this->provisionPage(['i_str_01']),
+            $this->provisionPage(['i_str_01', 'i_str_02']),
+            $this->provisionPage(['i_str_01', 'i_str_02']),
         ];
 
         $modelId = $this->createModel(1);

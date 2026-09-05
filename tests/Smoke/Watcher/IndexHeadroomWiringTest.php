@@ -124,12 +124,15 @@ final class IndexHeadroomWiringTest extends Phase5TestCase
     }
 
     /**
-     * `k = 0` is the documented opt-out to the pre-ADR-0042 policy, and it
-     * must survive the whole wiring rather than only the planner: the
-     * demanded family keeps its floor of one column, and nothing else is
-     * indexed.
+     * `k = 0` degrades to demand-sizing, and that must survive the whole
+     * wiring rather than only the planner: the demanded family keeps its
+     * floor of one column, and nothing else is indexed.
+     *
+     * It restores the pre-ADR-0042 *index set*, not the page it used to
+     * sit on — under ADR 0043 the page carries only that one column,
+     * where before it carried sixty and indexed one.
      */
-    public function testZeroHeadroomRestoresThePre0042PageShape(): void
+    public function testZeroHeadroomRestoresThePre0042IndexSet(): void
     {
         self::assertSame(['i_str_01'], $this->provisionThroughFacade(0));
     }

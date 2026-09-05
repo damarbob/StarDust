@@ -108,11 +108,25 @@ final class ProvisioningPlanner
         };
 
         $shouldProvision = $trigger !== ProvisioningPlan::TRIGGER_NONE;
+        $columns = $shouldProvision ? self::indexedColumnsFor($snapshot, $demand, $headroom) : [];
+
+        // Since ADR 0043 a page is created with exactly the columns it
+        // indexes, so provisioning nothing means a page with no
+        // inventory rows — it would add nothing to the capacity totals,
+        // leaving the ratio below threshold and provisioning another
+        // empty page every tick. Reachable only from the low-capacity
+        // trigger with no demand at `k = 0`: the demanded-family floor
+        // below guarantees the starvation trigger always names a column,
+        // so this can never suppress the starvation-freedom guarantee.
+        if ($shouldProvision && $columns === []) {
+            $shouldProvision = false;
+            $trigger = ProvisioningPlan::TRIGGER_NONE;
+        }
 
         return new ProvisioningPlan(
             shouldProvision: $shouldProvision,
             trigger: $trigger,
-            indexedColumns: $shouldProvision ? self::indexedColumnsFor($snapshot, $demand, $headroom) : [],
+            indexedColumns: $columns,
             starvedFamilies: $starved,
             usableFree: $usableFree,
             usableTotal: $usableTotal,
@@ -143,9 +157,12 @@ final class ProvisioningPlanner
      * than left to the policy so that no policy, including `k = 0` and
      * anything a consumer writes, can break ADR 0035's
      * starvation-freedom guarantee. **It is conditional on demand**: an
-     * undemanded family floors at zero, which is what keeps `k = 0` an
-     * exact opt-out to the pre-0042 policy rather than a rule that still
-     * indexes four columns.
+     * undemanded family floors at zero, which is what keeps `k = 0` a
+     * degradation to demand-sizing rather than a rule that still indexes
+     * four columns. It is no longer an *exact* return to the pre-0042
+     * policy, though: for an undemanded family that policy produced a
+     * page with no indexes, and under ADR 0043 that is a page with no
+     * columns, which `plan()` declines to provision at all.
      *
      * The outer `max(0, …)` looks redundant and is not: PHP enforces
      * only `int` on the policy's return, and `array_slice($cols, 0, -3)`

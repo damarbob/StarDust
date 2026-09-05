@@ -29,10 +29,11 @@ final class RetypeFilterabilityPromotionTest extends Phase6bTestCase
     {
         // A non-filterable field holding a live unindexed slot is the
         // pre-ADR-0034 legacy shape — SlotReserver refuses to create
-        // it now, so force it directly. Provision an unindexed page
-        // first so the forced slot lands there, then a SECOND page
-        // that DOES make i_str_01 indexed for the promotion to target.
-        $unindexedPage = $this->provisionPage([]);                  // no indexed slots
+        // it now, so force it directly. It needs a pre-ADR-0043 page
+        // too: only those carry an unindexed column for the forced slot
+        // to land on. The SECOND page is a current-shape one, indexing
+        // i_str_01 for the promotion to target.
+        $unindexedPage = $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', false, 'name');
         $this->forceGrandfatheredSlotFor($fieldId);
@@ -89,12 +90,12 @@ final class RetypeFilterabilityPromotionTest extends Phase6bTestCase
 
     public function testPromotionDefersWhenNoIndexedSlotAvailable(): void
     {
-        // Provision one unindexed page. The field is JSON-only and
+        // Provision one legacy (fully unindexed) page. The field is JSON-only and
         // holds no slot at all — the ADR 0034 normal shape for a
         // non-filterable field. We then promote: the initiator must
         // find no indexed free slot and defer (new slot reservation
         // returns null, field is left without a live slot).
-        $this->provisionPage([]);
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', false, 'name');
 

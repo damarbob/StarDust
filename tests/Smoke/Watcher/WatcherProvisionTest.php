@@ -28,12 +28,16 @@ final class WatcherProvisionTest extends Phase5TestCase
         $watcher->tick();
         self::assertSame(1, $this->countPages());
 
-        self::assertSame(60, $this->countSlotAssignments());
+        // Since ADR 0043 a page's inventory is exactly the columns it
+        // indexes, so an empty-database tick at the default `k = 4`
+        // registers four slots per family rather than sixty rows of
+        // which fifty-six were unclaimable.
+        self::assertSame(16, $this->countSlotAssignments());
     }
 
     public function testTickIsNoOpWhenCapacityAboveThreshold(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
 
         $watcher = $this->makeWatcher(threshold: 0.20);
         $watcher->tick();
@@ -81,7 +85,7 @@ final class WatcherProvisionTest extends Phase5TestCase
 
     public function testPollStartedCountsExistingPages(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
 
         $stream = fopen('php://memory', 'r+');
         self::assertNotFalse($stream);

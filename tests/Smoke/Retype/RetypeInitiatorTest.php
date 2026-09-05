@@ -26,7 +26,7 @@ final class RetypeInitiatorTest extends Phase6bTestCase
     public function testIncompatibleRetypeIsRejectedBeforeAnyMutation(): void
     {
         // Field starts as int; attempt to retype to datetime.
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'int', true, 'count');
         $this->reserveSlotFor($fieldId);
@@ -60,7 +60,7 @@ final class RetypeInitiatorTest extends Phase6bTestCase
      */
     public function testFilterableRetypeStillBumpsSchemaVersionExactlyOnce(): void
     {
-        $this->provisionPage(['i_int_01']);
+        $this->provisionPage(['i_str_01', 'i_int_01']);
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', true, 'value');
         $this->reserveSlotFor($fieldId);
@@ -80,10 +80,13 @@ final class RetypeInitiatorTest extends Phase6bTestCase
 
     public function testAtomicRegistryTransactionPopulatesEveryRow(): void
     {
-        // The field is filterable, so its replacement slot must be an
-        // indexed one (ADR 0016 commitment 1) — index the int column
-        // the string → int retype will land on.
-        $this->provisionPage(['i_int_01']);
+        // i_str_01 holds the field's original slot; i_int_01 is the
+        // replacement the string → int retype lands on, indexed because
+        // the field is filterable (ADR 0016 commitment 1). Both must be
+        // named: since ADR 0043 a page carries exactly its provisioned
+        // columns, so omitting the string one leaves the field with no
+        // old slot to tombstone.
+        $this->provisionPage(['i_str_01', 'i_int_01']);
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', true, 'name');
         $this->reserveSlotFor($fieldId);
@@ -141,7 +144,7 @@ final class RetypeInitiatorTest extends Phase6bTestCase
 
     public function testSecondInitiationForSameFieldThrowsRetypeInProgress(): void
     {
-        $this->provisionPage();
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', true, 'name');
         $this->reserveSlotFor($fieldId);
@@ -263,7 +266,7 @@ final class RetypeInitiatorTest extends Phase6bTestCase
 
     public function testInitiationFromOtherTenantThrowsFieldNotFound(): void
     {
-        $pageId = $this->provisionPage();
+        $pageId = $this->provisionLegacyPage();
         $modelId = $this->createModel(7); // model belongs to tenant 7
         $fieldId = $this->createField($modelId, 'string', true, 'name');
         $this->reserveSlotFor($fieldId);

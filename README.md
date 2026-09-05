@@ -92,7 +92,7 @@ Every entry's full payload is stored as JSON in `entry_data` — that's the syst
                                 ▼
    ┌─────────────────────────────────────────────────────────────┐
    │  entry_slots_page_1    (indexed 1:1 extension page)         │
-   │  entry_id │ i_str_01 │ i_int_01 │ …  (60 typed slots)       │
+   │  entry_id │ i_str_01 │ i_int_01 │ …  (typed slot columns)   │
    │     7     │  "Acme"  │   340    │                           │
    │           │ (name)   │(employees)                           │
    └─────────────────────────────────────────────────────────────┘
@@ -263,13 +263,15 @@ Registering a field records *intent*; the field becomes filterable once its valu
 
 **In a running deployment this is automatic.** The Watcher notices fields waiting on a slot and provisions pages indexed for them; the Reconciler then claims a slot for any registered filterable field it finds still unmapped while draining the sync queue. Write an entry touching the field and it becomes queryable a moment later, without you reserving anything.
 
-The manual route below is for one-off setup — a seed script, a test fixture, or a deployment where you want the slot in place before the first write. Provision a page (60 typed slots) and reserve one slot per field:
+The manual route below is for one-off setup — a seed script, a test fixture, or a deployment where you want the slot in place before the first write. A page is created with exactly the slot columns you name, and every one of them is indexed — so name the slots your filterable fields will use, then reserve one per field:
 
 ```php
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
 
-// Provision a page, indexing the two slots the filterable fields will use.
+// Provision a page carrying the two slots the filterable fields will use.
+// The page is created with exactly these columns, each with its own
+// composite (tenant_id, slot) index — the list may not be empty.
 (new PageProvisioner($pdo, $engine->config()->clock, $engine->logger()))
     ->provision(filterableSlots: ['i_str_01', 'i_int_01']);
 

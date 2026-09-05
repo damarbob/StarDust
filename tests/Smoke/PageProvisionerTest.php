@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace StarDust\Tests\Smoke;
 
+use InvalidArgumentException;
 use PDO;
 use PDOException;
 use PHPUnit\Framework\TestCase;
@@ -147,33 +148,77 @@ final class PageProvisionerTest extends TestCase
                         'ix_entry_slots_page_1_i_int_01',
                         'ix_entry_slots_page_1_i_dt_05',
                     ],
-                    "Unexpected per-slot index {$name} — non-filterable slots must remain unindexed.",
+                    "Unexpected per-slot index {$name} — a page indexes the named columns and no others.",
                 );
             }
         }
     }
 
-    /** Exit criterion: all 60 slot rows present, status='free', field_id IS NULL. */
-    public function testProvisionInsertsFullSlotInventory(): void
+    /**
+     * ADR 0043: the inventory names exactly the provisioned columns —
+     * one `free` row each, no more. It used to be all sixty regardless,
+     * which is what made `usable_free_slots` a number no operator could
+     * act on.
+     */
+    public function testProvisionInsertsInventoryForExactlyTheProvisionedColumns(): void
     {
-        $pageId = $this->newProvisioner()->provision();
+        $columns = ['i_str_01', 'i_str_02', 'i_int_01', 'i_num_03', 'i_dt_01'];
+        $pageId = $this->newProvisioner()->provision($columns);
 
         $rows = $this->pdo
-            ->query("SELECT slot_type, status, field_id FROM stardust_slot_assignments WHERE page_id = {$pageId}")
+            ->query(
+                'SELECT slot_column, slot_type, status, field_id FROM stardust_slot_assignments'
+                . " WHERE page_id = {$pageId} ORDER BY slot_column"
+            )
             ->fetchAll();
 
-        self::assertCount(60, $rows);
+        self::assertCount(count($columns), $rows);
 
         $byType = ['str' => 0, 'int' => 0, 'num' => 0, 'dt' => 0];
+        $seen = [];
         foreach ($rows as $r) {
             self::assertSame('free', (string) $r['status']);
             self::assertNull($r['field_id']);
             $byType[(string) $r['slot_type']]++;
+            $seen[] = (string) $r['slot_column'];
         }
-        self::assertSame(
-            ['str' => 25, 'int' => 15, 'num' => 10, 'dt' => 10],
-            $byType,
-        );
+
+        sort($columns);
+        self::assertSame($columns, $seen, 'Inventory must name the provisioned columns and nothing else.');
+        self::assertSame(['str' => 2, 'int' => 1, 'num' => 1, 'dt' => 1], $byType);
+    }
+
+    /**
+     * The other half of ADR 0043: the *table* carries only those
+     * columns, so there is no unindexed column for a stray inventory row
+     * to describe. Read from `information_schema` rather than the DDL
+     * string, since the DDL is what is under test.
+     */
+    public function testProvisionCreatesOnlyTheNamedSlotColumns(): void
+    {
+        $this->newProvisioner()->provision(['i_str_01', 'i_int_01']);
+
+        $columns = $this->pdo
+            ->query(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS'
+                . " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'entry_slots_page_1'"
+                . ' ORDER BY ORDINAL_POSITION'
+            )
+            ->fetchAll(PDO::FETCH_COLUMN);
+
+        self::assertSame(['entry_id', 'tenant_id', 'i_str_01', 'i_int_01'], $columns);
+    }
+
+    /**
+     * A page with no columns has no inventory, so it adds nothing to the
+     * capacity totals — the Watcher's low-capacity trigger would never
+     * clear and it would provision one every tick. Rejected at the
+     * entry point rather than left to fail as a malformed INSERT.
+     */
+    public function testProvisionRejectsAnEmptyColumnList(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->newProvisioner()->provision([]);
     }
 
     /**
@@ -196,7 +241,7 @@ final class PageProvisionerTest extends TestCase
 
         $threw = false;
         try {
-            $this->newProvisioner()->provision();
+            $this->newProvisioner()->provision(['i_str_01']);
         } catch (PDOException) {
             $threw = true;
         }
@@ -242,7 +287,7 @@ final class PageProvisionerTest extends TestCase
             ->query('SELECT version FROM stardust_schema_version WHERE id = 1')
             ->fetchColumn();
 
-        $this->newProvisioner()->provision();
+        $this->newProvisioner()->provision(['i_str_01']);
 
         $after = (int) $this->pdo
             ->query('SELECT version FROM stardust_schema_version WHERE id = 1')
@@ -255,9 +300,9 @@ final class PageProvisionerTest extends TestCase
     {
         $provisioner = $this->newProvisioner();
 
-        self::assertSame(1, $provisioner->provision());
-        self::assertSame(2, $provisioner->provision());
-        self::assertSame(3, $provisioner->provision());
+        self::assertSame(1, $provisioner->provision(['i_str_01']));
+        self::assertSame(2, $provisioner->provision(['i_str_01']));
+        self::assertSame(3, $provisioner->provision(['i_str_01']));
 
         $tables = $this->pdo
             ->query(

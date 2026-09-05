@@ -73,8 +73,10 @@ final class ProvisioningPlannerTest extends TestCase
      * no indexes at all, and was therefore capacity no reservation could
      * ever claim. It now carries headroom in every family.
      *
-     * The rename is the record of the decision; the `k = 0` case below
-     * preserves the old assertion as the documented opt-out.
+     * The rename is the record of the decision. The `k = 0` case below
+     * used to preserve the old assertion as the documented opt-out;
+     * under ADR 0043 that same setting declines to provision, because
+     * the page it would have produced now has no columns at all.
      */
     public function testNoDemandAndLowRatioStillIndexesHeadroomOnEveryFamily(): void
     {
@@ -90,11 +92,22 @@ final class ProvisioningPlannerTest extends TestCase
     }
 
     /**
-     * `k = 0` degrades to the pre-0042 index set exactly, which is what
-     * makes it a legal opt-out rather than a way to starve a waiter. The
-     * assertion is the one the case above used to carry.
+     * `k = 0` still degrades the index set to the pre-0042 rule — see
+     * {@see self::testDemandedFamilyFloorsAtOneColumnEvenWithZeroHeadroom()},
+     * which pins that for a demanded family — but with nobody waiting
+     * the pre-0042 answer was a page carrying no indexes at all, and
+     * since ADR 0043 that is a page carrying no *columns* at all.
+     *
+     * Such a page has no inventory rows, so it adds nothing to the
+     * capacity totals: the low-capacity ratio that triggered it stays
+     * below threshold and the Watcher provisions another one every tick,
+     * unbounded. So the plan declines instead.
+     *
+     * This cannot suppress the starvation-freedom guarantee: the
+     * demanded-family floor means any starved family always names a
+     * column, so a non-empty demand can never reach this branch.
      */
-    public function testZeroHeadroomRestoresThePre0042IndexSet(): void
+    public function testZeroHeadroomWithNoDemandDeclinesRatherThanProvisionNothing(): void
     {
         $plan = $this->plan(
             $this->snapshot(totalFree: 5, totalSlots: 120),
@@ -102,7 +115,8 @@ final class ProvisioningPlannerTest extends TestCase
             new FlatIndexHeadroom(0),
         );
 
-        self::assertTrue($plan->shouldProvision);
+        self::assertFalse($plan->shouldProvision);
+        self::assertSame(ProvisioningPlan::TRIGGER_NONE, $plan->trigger);
         self::assertSame([], $plan->indexedColumns);
     }
 
@@ -297,7 +311,13 @@ final class ProvisioningPlannerTest extends TestCase
 
         $snapshot = $this->snapshot(totalFree: 5, totalSlots: 120);
 
-        self::assertSame([], $this->plan($snapshot, [], $negative)->indexedColumns);
+        $clamped = $this->plan($snapshot, [], $negative);
+        self::assertSame([], $clamped->indexedColumns);
+        self::assertFalse(
+            $clamped->shouldProvision,
+            'Clamped to nothing means there is no page worth creating, not a page with no columns.',
+        );
+
         self::assertCount(60, $this->plan($snapshot, [], $enormous)->indexedColumns);
     }
 

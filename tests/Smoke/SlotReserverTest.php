@@ -14,6 +14,7 @@ use StarDust\Exception\NonFilterableFieldSlotException;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
+use StarDust\Tests\Smoke\Support\LegacyPage;
 
 /**
  * Phase 2 slot reserver smoke suite.
@@ -107,6 +108,12 @@ final class SlotReserverTest extends TestCase
         $this->pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
     }
 
+    /** A pre-ADR-0043 page: sixty columns, none indexed. */
+    private function provisionLegacyPage(): int
+    {
+        return LegacyPage::provision($this->pdo, 'phpunit/0');
+    }
+
     private function newProvisioner(): PageProvisioner
     {
         return new PageProvisioner(
@@ -150,7 +157,7 @@ final class SlotReserverTest extends TestCase
     /** Exactly one slot transitions free → assigned; 59 remain free; field_id is set. */
     public function testReserveTransitionsExactlyOneSlot(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('string', isFilterable: true);
 
         $assignment = $this->newReserver()->reserve($fieldId);
@@ -188,7 +195,7 @@ final class SlotReserverTest extends TestCase
      */
     public function testReserveMapsDeclaredTypeToCorrectSlotType(string $declaredType, string $expectedSlotType): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField($declaredType, isFilterable: true);
 
         $assignment = $this->newReserver()->reserve($fieldId);
@@ -212,7 +219,7 @@ final class SlotReserverTest extends TestCase
     /** When no free slot of the requested family exists, reserve() returns null without throwing. */
     public function testReserveReturnsNullWhenNoFreeSlotOfType(): void
     {
-        $pageId = $this->newProvisioner()->provision();
+        $pageId = $this->provisionLegacyPage();
         $fieldId = $this->registerField('string', isFilterable: true);
 
         // Tombstone every str slot so the family has no free inventory.
@@ -240,7 +247,7 @@ final class SlotReserverTest extends TestCase
     /** A field already holding a live slot cannot acquire a second one. */
     public function testReserveRejectsSecondLiveSlotForSameField(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('string', isFilterable: true);
 
         $first = $this->newReserver()->reserve($fieldId);
@@ -253,7 +260,7 @@ final class SlotReserverTest extends TestCase
     /** Successful reservation bumps the schema version exactly once. */
     public function testReserveIncrementsSchemaVersion(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('int', isFilterable: true);
 
         $before = (int) $this->pdo
@@ -271,7 +278,7 @@ final class SlotReserverTest extends TestCase
     /** ADR 0020 `slot_reserved` event lands on the structured-log stream. */
     public function testReserveEmitsStructuredLogEvent(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('datetime', isFilterable: true);
 
         $stream = fopen('php://memory', 'r+');
@@ -308,7 +315,7 @@ final class SlotReserverTest extends TestCase
     /** Unknown field id surfaces an InvalidArgumentException before any registry write. */
     public function testReserveRejectsUnknownFieldId(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $this->expectException(\InvalidArgumentException::class);
         $this->newReserver()->reserve(99999);
     }
@@ -319,7 +326,7 @@ final class SlotReserverTest extends TestCase
      */
     public function testReserveRejectsNonFilterableField(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('string', isFilterable: false);
 
         $versionBefore = (int) $this->pdo
@@ -333,11 +340,14 @@ final class SlotReserverTest extends TestCase
             // expected
         }
 
+        $total = (int) $this->pdo
+            ->query('SELECT COUNT(*) FROM stardust_slot_assignments')
+            ->fetchColumn();
         $free = (int) $this->pdo
             ->query("SELECT COUNT(*) FROM stardust_slot_assignments WHERE status = 'free'")
             ->fetchColumn();
         self::assertSame(
-            PageProvisioner::SLOTS_PER_PAGE,
+            $total,
             $free,
             'A rejected reservation must leave every slot free.',
         );
@@ -355,7 +365,7 @@ final class SlotReserverTest extends TestCase
      */
     public function testReserveRejectsNonFilterableFieldBeforeOpeningATransaction(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('string', isFilterable: false);
 
         try {
@@ -374,7 +384,7 @@ final class SlotReserverTest extends TestCase
     /** The guard covers the exhaustion-backfill variant too (ADR 0034 §1). */
     public function testReserveForExhaustionBackfillRejectsNonFilterableField(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('string', isFilterable: false);
 
         $this->expectException(NonFilterableFieldSlotException::class);
@@ -409,7 +419,7 @@ final class SlotReserverTest extends TestCase
      */
     public function testReserveForExhaustionBackfillRefusesAnUnindexedSlot(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('string', isFilterable: true);
 
         self::assertNull($this->newReserver()->reserveForExhaustionBackfill($fieldId));
@@ -481,7 +491,7 @@ final class SlotReserverTest extends TestCase
      */
     public function testReserveForBackfillWithinTransactionRejectsNonFilterableField(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
         $fieldId = $this->registerField('string', isFilterable: false);
 
         $this->pdo->beginTransaction();
@@ -503,7 +513,7 @@ final class SlotReserverTest extends TestCase
      */
     public function testUnknownFieldStillThrowsInvalidArgumentNotNonFilterable(): void
     {
-        $this->newProvisioner()->provision();
+        $this->provisionLegacyPage();
 
         try {
             $this->newReserver()->reserve(99999);

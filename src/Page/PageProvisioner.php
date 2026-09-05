@@ -17,17 +17,28 @@ use Throwable;
  *
  * Creates a new `entry_slots_page_N` table using Empty-Table-Only DDL
  * (ADR 0012), then atomically inserts the matching `stardust_pages` row,
- * its full 60-row `stardust_slot_assignments` inventory (`status='free'`),
- * and a `stardust_schema_version.version` bump in a single registry
+ * its `stardust_slot_assignments` inventory (`status='free'`), and a
+ * `stardust_schema_version.version` bump in a single registry
  * transaction (ADR 0017 §4.6 invariant #4). The page is never observed
  * with partial slot inventory.
  *
  * The Index Provisioning Policy (ADR 0003) is applied by the caller:
  * each slot column passed in `$filterableSlots` receives a composite
- * `(tenant_id, slot_column)` index on the new page; everything else is
- * created without one. Phase 5's Watcher will compute that list from
- * pending unmapped fields; Phase 2 takes it as a parameter so the class
- * can be used in isolation.
+ * `(tenant_id, slot_column)` index on the new page. Phase 5's Watcher
+ * computes that list from pending demand plus ADR 0042 headroom; the
+ * class takes it as a parameter so it can be used in isolation.
+ *
+ * **A page carries exactly the columns it indexes** (ADR 0043). It used
+ * to carry all sixty and index a handful, which made the other rows of
+ * its inventory describe capacity no reservation path could take — a
+ * filterable field's slot must be indexed (ADR 0004) and a
+ * non-filterable field holds no slot at all (ADR 0034), so an unindexed
+ * column could not legally be occupied by anything. Now `free` and
+ * `claimable` are the same set, and `CapacityReporter`'s numbers are
+ * true without a new column or predicate. Pages provisioned before that
+ * decision keep their sixty columns for good (ADR 0012 is
+ * forward-only), which is why `IndexedSlotPredicate` is permanent
+ * rather than transitional.
  *
  * The class is not a daemon — it has no polling loop, no singleton guard,
  * and no advisory-lock acquisition. Phase 5 will wrap an instance inside
@@ -35,11 +46,19 @@ use Throwable;
  */
 final class PageProvisioner
 {
+    /**
+     * Per-family layout: the **upper bound** on how many columns of one
+     * family a page may carry, not how many it does. Since ADR 0043 a
+     * page is created with exactly the columns it indexes, so its
+     * capacity is whatever the caller asked for — read it from that
+     * page's own inventory rows, never from a constant. (There is
+     * deliberately no `SLOTS_PER_PAGE` any more: a page-wide total
+     * stopped being a fact about pages.)
+     */
     public const STRING_SLOTS   = 25;
     public const INT_SLOTS      = 15;
     public const NUMERIC_SLOTS  = 10;
     public const DATETIME_SLOTS = 10;
-    public const SLOTS_PER_PAGE = 60;
 
     /**
      * String slots are `TEXT` so they can hold the full normative QueryFilter
@@ -85,14 +104,31 @@ final class PageProvisioner
     /**
      * Provision a new extension page.
      *
-     * @param list<string> $filterableSlots Slot column names (e.g. `i_str_01`) that should
-     *                                      receive a composite `(tenant_id, slot_column)` index.
-     *                                      Unknown column names throw `InvalidArgumentException`.
+     * The page is created with **exactly** the columns it indexes (ADR
+     * 0043), and its slot inventory names the same set — so every `free`
+     * row describes capacity a reservation can actually take. Passing an
+     * empty list is rejected rather than producing a page with no slots:
+     * such a page adds nothing to the capacity totals, so the Watcher's
+     * low-capacity trigger would never clear and it would provision one
+     * per tick forever.
+     *
+     * @param list<string> $filterableSlots Slot column names (e.g. `i_str_01`). Each is created
+     *                                      on the page and receives a composite
+     *                                      `(tenant_id, slot_column)` index. Unknown column names
+     *                                      and an empty list both throw `InvalidArgumentException`.
      * @return int The new `stardust_pages.id`, equal to the X in `entry_slots_page_X`.
      */
-    public function provision(array $filterableSlots = []): int
+    public function provision(array $filterableSlots): int
     {
         $filterableSlots = $this->validateFilterableSlots($filterableSlots);
+
+        if ($filterableSlots === []) {
+            throw new InvalidArgumentException(
+                'PageProvisioner: a page must carry at least one slot column.'
+                . ' Since ADR 0043 a page is created with exactly the columns it indexes,'
+                . ' so an empty list would produce a page with no claimable capacity.'
+            );
+        }
 
         $pageNumber = (int) PdoQuery::run(
             $this->pdo,
@@ -118,7 +154,7 @@ final class PageProvisioner
             );
             $insertPage->execute([$pageNumber, $tableName, $now, $this->provisionerIdentity]);
 
-            $this->insertSlotInventory($pageNumber, $now);
+            $this->insertSlotInventory($pageNumber, $filterableSlots, $now);
 
             $bumpVersion = $this->pdo->prepare(
                 'UPDATE stardust_schema_version'
@@ -162,6 +198,30 @@ final class PageProvisioner
     public static function slotFamilies(): array
     {
         return array_keys(self::SLOT_TYPE_DEFINITIONS);
+    }
+
+    /**
+     * The caller's column list, re-ordered into layout order.
+     *
+     * The page DDL, its inventory rows and their `slot_type` all derive
+     * from one traversal, so a page's shape does not depend on the order
+     * the planner happened to emit its columns in.
+     *
+     * @param  list<string> $columns
+     * @return list<string>
+     */
+    private static function orderColumns(array $columns): array
+    {
+        $wanted = array_flip($columns);
+
+        $out = [];
+        foreach (self::allSlotColumns() as $col) {
+            if (isset($wanted[$col])) {
+                $out[] = $col;
+            }
+        }
+
+        return $out;
     }
 
     /** @return list<string> All 60 slot column names in declaration order. */
@@ -218,20 +278,22 @@ final class PageProvisioner
      */
     private function buildPageDdl(string $tableName, array $filterableSlots): string
     {
+        $columns = self::orderColumns($filterableSlots);
+
         $lines = [
             "CREATE TABLE IF NOT EXISTS {$tableName} (",
             '    entry_id  BIGINT NOT NULL,',
             '    tenant_id BIGINT NOT NULL,',
         ];
 
-        foreach (self::allSlotColumns() as $col) {
+        foreach ($columns as $col) {
             $lines[] = sprintf('    %s %s NULL DEFAULT NULL,', $col, self::columnSqlType($col));
         }
 
         $lines[] = '    PRIMARY KEY (entry_id),';
         $lines[] = sprintf('    KEY ix_%s_tenant (tenant_id),', $tableName);
 
-        foreach ($filterableSlots as $slot) {
+        foreach ($columns as $slot) {
             $lines[] = sprintf('    KEY ix_%s_%s (tenant_id, %s),', $tableName, $slot, self::indexedColumnExpr($slot));
         }
 
@@ -248,12 +310,20 @@ final class PageProvisioner
         return implode("\n", $lines);
     }
 
-    private function insertSlotInventory(int $pageId, string $now): void
+    /**
+     * @param list<string> $filterableSlots
+     */
+    private function insertSlotInventory(int $pageId, array $filterableSlots, string $now): void
     {
+        $wanted = array_flip($filterableSlots);
+
         $placeholders = [];
         $params = [];
-        foreach (array_keys(self::SLOT_TYPE_DEFINITIONS) as $slotType) {
+        foreach (self::slotFamilies() as $slotType) {
             foreach (self::slotColumnsForType($slotType) as $col) {
+                if (! isset($wanted[$col])) {
+                    continue;
+                }
                 $placeholders[] = '(?, ?, ?, ?, ?)';
                 array_push($params, $pageId, $col, $slotType, 'free', $now);
             }

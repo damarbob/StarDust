@@ -81,7 +81,9 @@ final class RetypeNonFilterableTest extends Phase6bTestCase
 
     public function testRetypeOfNonFilterableFieldTombstonesGrandfatheredSlot(): void
     {
-        $this->provisionPage(['i_int_01']);
+        // A grandfathered slot is a live slot on a column no index
+        // covers, which only a pre-ADR-0043 page still has.
+        $this->provisionLegacyPage();
         $modelId = $this->createModel(1);
         $fieldId = $this->createField($modelId, 'string', false, 'legacy');
         $this->forceGrandfatheredSlotFor($fieldId);
