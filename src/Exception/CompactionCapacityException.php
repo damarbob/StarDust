@@ -24,9 +24,17 @@ use RuntimeException;
  * target pages before returning any, precisely when the model's pages
  * are already fragmented.
  *
- * Operator remedies, per the runbook: let the Liberator drain the
- * tombstone backlog, let the Watcher provision capacity, and re-run.
- * Re-running is always safe (ADR 0033 resume-is-re-run).
+ * Operator remedy, per the runbook: let the Liberator drain the
+ * tombstone backlog and re-run. Re-running is always safe (ADR 0033
+ * resume-is-re-run).
+ *
+ * **Provisioning is not a remedy**, though this docblock advised it
+ * until ADR 0044. `CompactionPlanner::rankCandidates()` draws candidates
+ * from the pages the model already occupies — ADR 0033's v1 restriction
+ * that compaction consolidates and never migrates a model onto a page it
+ * has never touched — so a page the Watcher provisions in response is
+ * not a candidate and cannot change the outcome. The thrown message says
+ * so; this block used to contradict it.
  */
 final class CompactionCapacityException extends RuntimeException
 {
