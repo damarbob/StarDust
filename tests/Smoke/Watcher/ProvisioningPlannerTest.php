@@ -67,13 +67,42 @@ final class ProvisioningPlannerTest extends TestCase
         self::assertSame([], $plan->indexedColumns);
     }
 
-    /** Headroom provisioning with nobody waiting indexes nothing — no speculative indexes. */
-    public function testNoDemandAndLowRatioProvisionsWithNoIndexedColumns(): void
+    /**
+     * Inverted by ADR 0042. This case previously asserted `[]` — a page
+     * provisioned by the low-capacity trigger with nobody waiting carried
+     * no indexes at all, and was therefore capacity no reservation could
+     * ever claim. It now carries headroom in every family.
+     *
+     * The rename is the record of the decision; the `k = 0` case below
+     * preserves the old assertion as the documented opt-out.
+     */
+    public function testNoDemandAndLowRatioStillIndexesHeadroomOnEveryFamily(): void
     {
         $plan = $this->plan($this->snapshot(totalFree: 5, totalSlots: 120));
 
         self::assertTrue($plan->shouldProvision);
         self::assertSame(ProvisioningPlan::TRIGGER_LOW_CAPACITY, $plan->trigger);
+        self::assertSame(
+            ['i_str_01', 'i_int_01', 'i_num_01', 'i_dt_01'],
+            $plan->indexedColumns,
+            'One column per family at k=1, in declaration order rather than the demand map ksorted order.',
+        );
+    }
+
+    /**
+     * `k = 0` degrades to the pre-0042 index set exactly, which is what
+     * makes it a legal opt-out rather than a way to starve a waiter. The
+     * assertion is the one the case above used to carry.
+     */
+    public function testZeroHeadroomRestoresThePre0042IndexSet(): void
+    {
+        $plan = $this->plan(
+            $this->snapshot(totalFree: 5, totalSlots: 120),
+            [],
+            new FlatIndexHeadroom(0),
+        );
+
+        self::assertTrue($plan->shouldProvision);
         self::assertSame([], $plan->indexedColumns);
     }
 
@@ -88,7 +117,11 @@ final class ProvisioningPlannerTest extends TestCase
         self::assertTrue($plan->shouldProvision);
         self::assertSame(ProvisioningPlan::TRIGGER_UNSATISFIABLE_DEMAND, $plan->trigger);
         self::assertSame(['dt'], $plan->starvedFamilies);
-        self::assertSame(['i_dt_01'], $plan->indexedColumns);
+        self::assertSame(
+            ['i_str_01', 'i_int_01', 'i_num_01', 'i_dt_01'],
+            $plan->indexedColumns,
+            'The starved family is covered; headroom covers the rest.',
+        );
     }
 
     public function testUnsatisfiableDemandTakesPrecedenceOverLowCapacityInTheReportedTrigger(): void
@@ -152,21 +185,34 @@ final class ProvisioningPlannerTest extends TestCase
             ['str' => 300],
         );
 
-        self::assertCount(25, $plan->indexedColumns, 'The str family holds 25 columns per page.');
-        self::assertSame('i_str_01', $plan->indexedColumns[0]);
-        self::assertSame('i_str_25', $plan->indexedColumns[24]);
+        $str = array_values(array_filter(
+            $plan->indexedColumns,
+            static fn (string $c): bool => str_starts_with($c, 'i_str_'),
+        ));
+
+        self::assertCount(25, $str, 'The str family holds 25 columns per page.');
+        self::assertSame('i_str_01', $str[0]);
+        self::assertSame('i_str_25', $str[24]);
+        self::assertCount(28, $plan->indexedColumns, '25 str, plus k=1 of each other family.');
     }
 
     /**
      * A page provisioned while a field waits on a family must carry an
      * index on at least one of that family's columns — even when the
-     * shortfall is zero because the low-capacity trigger fired.
+     * shortfall is zero because the low-capacity trigger fired, and even
+     * when headroom is switched off entirely.
+     *
+     * Driven at `k = 0`, because that is now the only setting where the
+     * floor is load-bearing: any positive headroom supplies the column
+     * anyway, and the case could not fail. The assertion is unchanged
+     * from before ADR 0042 for the same reason.
      */
-    public function testIndexedColumnsFloorAtOneColumnPerDemandedFamily(): void
+    public function testDemandedFamilyFloorsAtOneColumnEvenWithZeroHeadroom(): void
     {
         $plan = $this->plan(
             $this->snapshot(totalFree: 1, totalSlots: 120, indexedFree: ['int' => 5], indexedTotal: ['int' => 5]),
             ['int' => 1],
+            new FlatIndexHeadroom(0),
         );
 
         self::assertTrue($plan->shouldProvision);
@@ -174,14 +220,85 @@ final class ProvisioningPlannerTest extends TestCase
         self::assertSame(['i_int_01'], $plan->indexedColumns);
     }
 
-    public function testIndexedColumnsCoverEveryDemandedFamily(): void
+    public function testIndexedColumnsCoverEveryFamilyInDeclarationOrder(): void
     {
         $plan = $this->plan(
             $this->snapshot(totalFree: 0, totalSlots: 60),
             ['str' => 2, 'dt' => 1],
         );
 
-        self::assertSame(['i_dt_01', 'i_str_01', 'i_str_02'], $plan->indexedColumns);
+        // Was ['i_dt_01', 'i_str_01', 'i_str_02'] — demanded families only,
+        // ksorted. This order reaches `filterable_slots` on page_provisioned.
+        self::assertSame(
+            ['i_str_01', 'i_str_02', 'i_int_01', 'i_num_01', 'i_dt_01'],
+            $plan->indexedColumns,
+        );
+    }
+
+    /** A shortfall wider than the headroom wins: headroom is a floor, not a cap. */
+    public function testShortfallWiderThanHeadroomWins(): void
+    {
+        $plan = $this->plan(
+            $this->snapshot(totalFree: 0, totalSlots: 60),
+            ['str' => 10],
+            new FlatIndexHeadroom(4),
+        );
+
+        $str = array_filter(
+            $plan->indexedColumns,
+            static fn (string $c): bool => str_starts_with($c, 'i_str_'),
+        );
+
+        self::assertCount(10, $str);
+        self::assertCount(22, $plan->indexedColumns, '10 str, plus k=4 of each other family.');
+    }
+
+    /** The shipped default: four of every family, sixteen columns. */
+    public function testShippedHeadroomIndexesFourOfEveryFamily(): void
+    {
+        $plan = $this->plan(
+            $this->snapshot(totalFree: 5, totalSlots: 120),
+            [],
+            new FlatIndexHeadroom(4),
+        );
+
+        self::assertCount(16, $plan->indexedColumns);
+        self::assertSame(
+            ['i_str_01', 'i_str_02', 'i_str_03', 'i_str_04'],
+            array_slice($plan->indexedColumns, 0, 4),
+        );
+    }
+
+    /**
+     * The planner does not trust the policy, which is what lets ADR 0042's
+     * two open refinements arrive as new implementations without anyone
+     * revisiting the starvation-freedom guarantee.
+     *
+     * The negative case is the one that matters, and it is not theoretical:
+     * `array_slice($cols, 0, -3)` returns everything *but* the last three
+     * columns, so an unclamped negative return would index most of a family
+     * instead of none of it.
+     */
+    public function testPlannerClampsAHostilePolicyInBothDirections(): void
+    {
+        $negative = new class implements IndexHeadroomPolicy {
+            public function headroomFor(string $family): int
+            {
+                return -100;
+            }
+        };
+
+        $enormous = new class implements IndexHeadroomPolicy {
+            public function headroomFor(string $family): int
+            {
+                return 9_999;
+            }
+        };
+
+        $snapshot = $this->snapshot(totalFree: 5, totalSlots: 120);
+
+        self::assertSame([], $this->plan($snapshot, [], $negative)->indexedColumns);
+        self::assertCount(60, $this->plan($snapshot, [], $enormous)->indexedColumns);
     }
 
     /**

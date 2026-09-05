@@ -148,11 +148,27 @@ final class PageProvisioner
         return $pageNumber;
     }
 
+    /**
+     * The four slot families, in declaration order.
+     *
+     * Public because ADR 0042's provisioning planner indexes headroom in
+     * every family rather than only demanded ones, so it needs the
+     * universe rather than a caller-supplied list. Keeping it derived
+     * from `SLOT_TYPE_DEFINITIONS` is what stops the family set drifting
+     * from the DDL, on the same reasoning as {@see self::slotColumnsForType()}.
+     *
+     * @return list<string>
+     */
+    public static function slotFamilies(): array
+    {
+        return array_keys(self::SLOT_TYPE_DEFINITIONS);
+    }
+
     /** @return list<string> All 60 slot column names in declaration order. */
     public static function allSlotColumns(): array
     {
         $out = [];
-        foreach (array_keys(self::SLOT_TYPE_DEFINITIONS) as $type) {
+        foreach (self::slotFamilies() as $type) {
             foreach (self::slotColumnsForType($type) as $col) {
                 $out[] = $col;
             }

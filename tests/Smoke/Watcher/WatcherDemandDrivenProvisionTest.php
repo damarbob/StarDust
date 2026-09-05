@@ -131,7 +131,19 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
         foreach (['provision_started', 'provision_complete'] as $event) {
             $record = $this->record($records, $event);
             self::assertNotNull($record, "{$event} must fire.");
-            self::assertSame(['i_num_01'], $record['indexed_columns'], "{$event} reports the columns emitted.");
+            // Was ['i_num_01'] — the demanded family alone. ADR 0042 indexes
+            // headroom in every family, so a page provisioned for one waiting
+            // `numeric` field can also absorb the model's other fields.
+            self::assertSame(
+                [
+                    'i_str_01', 'i_str_02', 'i_str_03', 'i_str_04',
+                    'i_int_01', 'i_int_02', 'i_int_03', 'i_int_04',
+                    'i_num_01', 'i_num_02', 'i_num_03', 'i_num_04',
+                    'i_dt_01', 'i_dt_02', 'i_dt_03', 'i_dt_04',
+                ],
+                $record['indexed_columns'],
+                "{$event} reports the columns emitted.",
+            );
             self::assertSame(['num' => 1], $record['pending_demand'], "{$event} reports the demand behind them.");
             self::assertSame('unsatisfiable_demand', $record['trigger']);
         }
@@ -200,17 +212,40 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
         self::assertSame((float) $started['free_ratio'], (float) $started['usable_free_ratio']);
     }
 
-    /** With nobody waiting, a headroom page indexes nothing — no speculative indexes. */
-    public function testHeadroomProvisioningWithNoDemandIndexesNothing(): void
+    /**
+     * Inverted by ADR 0042, and the old name is kept here so the change is
+     * findable: this was `testHeadroomProvisioningWithNoDemandIndexesNothing`,
+     * and it asserted that a page the low-capacity trigger provisions with
+     * nobody waiting carries no indexes at all.
+     *
+     * That page was pure dead weight — sixty columns none of which any
+     * reservation could claim, because every production reservation path
+     * requires an indexed slot. It now carries sixteen.
+     *
+     * Note "headroom" is overloaded across the two ADRs: ADR 0035 uses it for
+     * a page provisioned ahead of demand, ADR 0042 for the spare indexes on
+     * one. This case is the intersection, which is why it was the confusing
+     * one to name.
+     */
+    public function testLowCapacityPageWithNoDemandIsStillClaimableCapacity(): void
     {
         $records = $this->tickAndReadLog();
 
         $complete = $this->record($records, 'provision_complete');
         self::assertNotNull($complete);
         self::assertSame('low_capacity', $complete['trigger']);
-        self::assertSame([], $complete['indexed_columns']);
+        self::assertCount(16, $complete['indexed_columns'], 'Four of every family at the shipped k = 4.');
 
-        // Only the always-present tenant key and the primary key.
-        self::assertSame(['entry_id', 'tenant_id'], $this->indexedColumnsOf(1));
+        self::assertSame(
+            [
+                'entry_id', 'tenant_id',
+                'i_str_01', 'i_str_02', 'i_str_03', 'i_str_04',
+                'i_int_01', 'i_int_02', 'i_int_03', 'i_int_04',
+                'i_num_01', 'i_num_02', 'i_num_03', 'i_num_04',
+                'i_dt_01', 'i_dt_02', 'i_dt_03', 'i_dt_04',
+            ],
+            $this->indexedColumnsOf(1),
+            'The DDL carries an index per headroom column, alongside the PK and tenant key.',
+        );
     }
 }

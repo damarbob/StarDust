@@ -253,6 +253,6 @@ final class Config
         // clamps to [0, family capacity] and applies its own floor of one
         // column per demanded family, so no value here can starve a waiter
         // or name a column that does not exist.
-        $this->pageIndexHeadroom = $pageIndexHeadroom ?? 1;
+        $this->pageIndexHeadroom = $pageIndexHeadroom ?? 4;
     }
 }

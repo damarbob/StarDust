@@ -126,7 +126,10 @@ final class Watcher implements Tickable
         // Defaulted for the same reason $provisionLockTimeoutSeconds is:
         // a direct constructor call (fixtures, one-off scripts) should not
         // have to know the policy. Config owns the value operators tune.
-        $this->headroomPolicy = $headroomPolicy ?? new FlatIndexHeadroom(1);
+        // Must track Config::$pageIndexHeadroom's default: Phase5TestCase's
+        // makeWatcher() passes no policy, so this value is what the whole
+        // Watcher smoke suite runs on. See src/Watcher/CLAUDE.md.
+        $this->headroomPolicy = $headroomPolicy ?? new FlatIndexHeadroom(4);
     }
 
     public function tick(): void

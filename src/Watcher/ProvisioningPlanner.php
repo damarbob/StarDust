@@ -124,7 +124,17 @@ final class ProvisioningPlanner
      * Columns the new page should index: enough of each demanded family
      * to cover its shortfall, floored at one, widened to the
      * {@see IndexHeadroomPolicy}'s headroom, and capped at the family's
-     * per-page capacity.
+     * per-page capacity — evaluated for **every** family, not only the
+     * demanded ones (ADR 0042).
+     *
+     * Indexing only what is demanded was coherent while ADR 0003 let a
+     * non-filterable field hold a slot "for typed retrieval". ADR 0034
+     * withdrew that, and with ADR 0004 requiring a filterable field's
+     * slot to be indexed, an unindexed slot column can no longer be
+     * occupied by anything — so a page's usable capacity is permanently
+     * whatever it indexed at birth, and ADR 0012 forbids widening it
+     * later. Sizing to demand alone therefore produced one page per
+     * serially promoted field.
      *
      * The floor is not an optimisation — a page provisioned while a
      * field waits on that family must carry an index on at least one of
@@ -132,7 +142,10 @@ final class ProvisioningPlanner
      * the shortfall can be zero or negative. It is applied here rather
      * than left to the policy so that no policy, including `k = 0` and
      * anything a consumer writes, can break ADR 0035's
-     * starvation-freedom guarantee.
+     * starvation-freedom guarantee. **It is conditional on demand**: an
+     * undemanded family floors at zero, which is what keeps `k = 0` an
+     * exact opt-out to the pre-0042 policy rather than a rule that still
+     * indexes four columns.
      *
      * The outer `max(0, …)` looks redundant and is not: PHP enforces
      * only `int` on the policy's return, and `array_slice($cols, 0, -3)`
@@ -148,13 +161,16 @@ final class ProvisioningPlanner
     ): array {
         $columns = [];
 
-        foreach ($demand->families() as $family) {
-            // Families originate from SlotReserver's declared-type map,
-            // so this always resolves to a real per-page layout.
+        // Declaration order (str, int, num, dt) rather than the demand
+        // map's ksorted order. The result reaches `filterable_slots` on
+        // page_provisioned and `indexed_columns` on three Watcher lines,
+        // so the order is observable; grouping by family beats alphabetical.
+        foreach (PageProvisioner::slotFamilies() as $family) {
             $available = PageProvisioner::slotColumnsForType($family);
 
-            $shortfall = $demand->waitersFor($family) - $snapshot->indexedFreeFor($family);
-            $want = max(1, $shortfall, $headroom->headroomFor($family));
+            $demanded  = $demand->waitersFor($family);
+            $shortfall = $demanded - $snapshot->indexedFreeFor($family);
+            $want = max($demanded > 0 ? 1 : 0, $shortfall, $headroom->headroomFor($family));
             $take = max(0, min($want, count($available)));
 
             foreach (array_slice($available, 0, $take) as $column) {

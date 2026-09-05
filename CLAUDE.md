@@ -188,7 +188,7 @@ The engine ships as a framework-neutral Composer library. Zero framework / ORM /
 | [src/Write/](src/Write/) | `EntryWriter`, `PayloadSplitter`, `LiveSlotMap`, `BulkIngestor`, `BulkIngestSubmitter`, `BackfillExecutor`. | 3 |
 | [src/Read/](src/Read/) | The ADR 0005 two-query bounded read, plus the ADR 0041 sort DTOs and the two-format cursor codec. Largely hollowed out by Phase 8 — read `src/Search/CLAUDE.md` too. | 4 |
 | [src/Daemon/](src/Daemon/) | Shared scaffolding: `PollLoop`, `Tickable`, `ShutdownSignal`, `PidFileGuard`, `AdvisoryLock`. | 5 |
-| [src/Watcher/](src/Watcher/) | Singleton page provisioner + `CardinalitySampler` + the ADR 0031 `SpreadSampler`. Demand-driven since ADR 0035. | 5 / 6b |
+| [src/Watcher/](src/Watcher/) | Singleton page provisioner + `CardinalitySampler` + the ADR 0031 `SpreadSampler`. Demand-driven since ADR 0035; indexes ADR 0042 headroom in every family on top of that demand. | 5 / 6b |
 | [src/Reconciler/](src/Reconciler/) | Multi-worker drain over six work sources, the ADR 0018 DLQ and replayer, the ADR 0007 exhaustion reservation, and the lock-retry budget behind `TickOutcome::LOCK_WAIT`. | 5 |
 | [src/Liberator/](src/Liberator/) | Singleton slot reclamation with the ADR 0009 deadlock/gap path. | 6a |
 | [src/Retype/](src/Retype/) | Retype + filterability-promotion lifecycle and the ADR 0024 coercion matrix. | 6b |

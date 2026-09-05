@@ -474,7 +474,7 @@ $engine = new StarDust(new Config(
     modelPurgeLockRetryBudget:           3,         // consecutive 1205/1213 retries before the purge rethrows
     reconcilerLockRetryBudget:           3,         // consecutive 1205/1213 retries on the other five work sources
     reconcilerLockRetryDelayMicros:      0,         // pace between those retries (0 = no pacing)
-    pageIndexHeadroom:                   1,         // indexed columns per slot family on each new page —
+    pageIndexHeadroom:                   4,         // indexed columns per slot family on each new page —
                                                     // fixed when the page is created and never widened after
 ));
 ```
