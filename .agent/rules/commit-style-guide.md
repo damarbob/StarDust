@@ -37,6 +37,15 @@ This project follows a specific style for commit messages to ensure history is r
    - **Do not "restore" a 72-column limit.** The classic 50/72 rule exists for `git send-email` workflows, where mailing lists re-wrap anything longer, and for 80-column terminals, where `git log`'s 4-space body indent leaves 76. Neither applies here: this project's history is read on GitHub and in IDE git panes.
    - Those viewers **preserve hard newlines instead of reflowing them**. A pre-wrapped paragraph therefore renders as a stack of short lines frozen at 72 characters, each with full line height, regardless of how wide the window is — looser and more ragged than the paragraph it was meant to be. An unwrapped line flows to fit.
 
+## Issue References
+
+1. **Never write `#` immediately followed by digits**, in the subject or the body. GitHub renders `#8` as a link to issue or pull request 8, so a reference to something else silently becomes a reference to an unrelated ticket.
+   - The trap in this project is the design repo's own citation style. `blueprints/*.md` cite acceptance criteria as `AC#3`, `AC#8`, `AC#11` — correct in Markdown, and wrong the moment the same phrase is pasted into a commit. Write **`AC 8`**, or spell it out as "acceptance criterion 8".
+   - It bites because it is invisible locally: `git log` shows the text you wrote, and only the GitHub view resolves the link. Two commits shipped with `AC#6` / `AC#11` / `AC#14` before anyone noticed.
+   - The same applies to any numbered reference — `#2 in the list`, `step #3`. Drop the `#`.
+2. **The one intended use is a real issue or PR number**, where the link is what you want (`Fixes #142`). If you are not linking to this repository's issue tracker, do not use the character.
+3. **Check before handing a message over**: `git log -1 --format=%B | grep -n '#[0-9]'` should print nothing.
+
 ## Examples
 
 ### Single Change
