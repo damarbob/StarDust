@@ -493,7 +493,8 @@ final class SqlFilterCompiler
         if ($leaf->value === null) {
             throw new LogicException("operator '{$leaf->operator}' requires a value");
         }
-        return $leaf->value->value;
+        $v = $leaf->value->value;
+        return is_array($v) ? $v : $this->toMysqlLiteral($leaf, $v);
     }
 
     /**
@@ -505,8 +506,62 @@ final class SqlFilterCompiler
         if (!is_array($v)) {
             throw new LogicException("operator '{$leaf->operator}' requires a list value");
         }
-        /** @var list<mixed> $v */
-        return $v;
+        $literals = [];
+        foreach ($v as $element) {
+            $literals[] = $this->toMysqlLiteral($leaf, $element);
+        }
+        return $literals;
+    }
+
+    /**
+     * Renders a pre-flight-normalised value as the literal MySQL wants.
+     *
+     * Only `datetime` moves. `ValueTypeValidator` hands the driver
+     * canonical UTC RFC 3339 (`…T03:00:00Z`) because the AST is
+     * driver-neutral; a `DATETIME` column wants `Y-m-d H:i:s`. MySQL
+     * does accept the RFC 3339 form — it truncates at the zone
+     * designator and still plans a range scan — but raises warning 1292
+     * `Incorrect datetime value` every time, so converting here keeps
+     * the emitted SQL clean as well as correct.
+     *
+     * Fractional seconds are preserved: measured on 8.0.13, a
+     * fractional constant compares exactly against a second-precision
+     * column, so truncating would break `lt` / `gt` at the boundary.
+     *
+     * Every bound reaches the bindings list through {@see scalar()} or
+     * {@see listValue()}, so those two call sites cover the scalar,
+     * set (`in` / `nin`) and range (`between`) paths alike.
+     *
+     * **Converting only a value that carries a zone designator is what
+     * makes this idempotent**, and that is load-bearing rather than
+     * defensive: the output carries none, so a second application is a
+     * no-op. Without the guard, re-converting `'2026-01-01 03:00:00'`
+     * would parse it in PHP's default timezone and then shift it to
+     * UTC — a silent offset, on a machine configured for anything but
+     * UTC, introduced by nothing worse than an extra call.
+     */
+    private function toMysqlLiteral(LeafNode $leaf, mixed $value): mixed
+    {
+        if (!is_string($value) || $leaf->field->descriptor?->declaredType !== 'datetime') {
+            return $value;
+        }
+        if (preg_match('/(?:Z|[+\-]\d{2}:\d{2})$/', $value) !== 1) {
+            return $value;
+        }
+        try {
+            $parsed = new \DateTimeImmutable($value);
+        } catch (\Throwable) {
+            // Unreachable through pre-flight, which has already parsed
+            // this value. Leaving it verbatim keeps a driver called
+            // directly behaving exactly as it did before.
+            return $value;
+        }
+        // A no-op on a pre-flight bound, which is already `Z`. It is
+        // what makes a direct caller's own offset correct too, rather
+        // than silently formatting its wall clock.
+        $utc = $parsed->setTimezone(new \DateTimeZone('UTC'));
+        $micros = $utc->format('u');
+        return $utc->format('Y-m-d H:i:s') . ($micros === '000000' ? '' : '.' . $micros);
     }
 
     /**

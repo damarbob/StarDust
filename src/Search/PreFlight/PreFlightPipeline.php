@@ -19,10 +19,13 @@ use StarDust\Search\EntrySearchInterface;
  *   2. {@see CapabilityChecker} — check operator and field against the
  *      active driver's capability surface.
  *   3. {@see ValueTypeValidator} — verify every typed value matches
- *      the resolved field's `declared_type` and the bounded limits.
+ *      the resolved field's `declared_type` and the bounded limits,
+ *      and normalise `datetime` bounds to UTC per the wire-format
+ *      blueprint §4.5 criterion 20.
  *
- * Returns a new AST root carrying the resolved field references so
- * downstream collaborators (compiler, executor) can skip the lookup.
+ * Returns a new AST root carrying the resolved field references and the
+ * normalised values, so downstream collaborators (compiler, executor)
+ * can skip the lookup and never see a consumer-local UTC offset.
  *
  * {@see validateSort()} is a fourth stage on a separate entry point
  * rather than a fourth call inside {@see validate()}, because a sort is
@@ -48,8 +51,7 @@ final class PreFlightPipeline
     ): FilterNode {
         $resolved = $this->fieldRefResolver->resolveAll($node, $snapshot, $tenantId, $correlationId);
         $this->capabilityChecker->check($resolved, $driver, $tenantId, $correlationId);
-        $this->valueTypeValidator->validate($resolved, $tenantId, $correlationId);
-        return $resolved;
+        return $this->valueTypeValidator->validate($resolved, $tenantId, $correlationId);
     }
 
     /**

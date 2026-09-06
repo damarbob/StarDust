@@ -198,7 +198,7 @@ The engine ships as a framework-neutral Composer library. Zero framework / ORM /
 | [src/Chronicler/](src/Chronicler/) | Multi-worker export drain, artifact streaming, ADR 0025 failure semantics, GC. | 7 |
 | [src/Filter/](src/Filter/) | Filter AST, JSON wire decoder, the 13-code validation taxonomy. Registry-free. | 8 |
 | [src/Compaction/](src/Compaction/) | ADR 0033 operator-initiated model compaction: pure planner, registry projection, sequential orchestrator. | — |
-| [src/Search/](src/Search/) | Driver contract, four-stage pre-flight pipeline, `SearchService`, MySQL driver + adaptive SQL compiler. | 8 |
+| [src/Search/](src/Search/) | Driver contract, four-stage pre-flight pipeline (stage 3 validates **and normalises** — `ValueTypeValidator::validate()` returns a node), `SearchService`, MySQL driver + adaptive SQL compiler. | 8 |
 | [src/Logging/](src/Logging/) | `StdoutNdjsonLogger` and the ADR 0020 closed event vocabulary. | all |
 | [src/Exception/](src/Exception/) | The typed-error taxonomy. | all |
 

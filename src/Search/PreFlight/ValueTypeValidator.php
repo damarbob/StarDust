@@ -11,6 +11,7 @@ use StarDust\Filter\Ast\FilterNode;
 use StarDust\Filter\Ast\LeafNode;
 use StarDust\Filter\Ast\NotNode;
 use StarDust\Filter\Ast\OrNode;
+use StarDust\Filter\Ast\TypedValue;
 use StarDust\Filter\Limits\FilterLimits;
 use StarDust\Filter\Operator;
 use StarDust\Filter\QueryFilterValidationException;
@@ -32,6 +33,26 @@ use StarDust\Filter\ValidationErrorCode;
  * Rejections raise {@see QueryFilterValidationException} carrying
  * `value_type_mismatch` or `value_out_of_bounds`. Runs after the
  * {@see FieldRefResolver} so every leaf has a resolved descriptor.
+ *
+ * It also **normalises** as it goes, which is why it returns a new AST
+ * root rather than `void`. The wire-format blueprint §4.5 criterion 20
+ * requires every `datetime` value to reach the driver in UTC, and the
+ * offset the validator insists on is otherwise discarded downstream:
+ * MySQL truncates an RFC 3339 literal at the zone designator, so
+ * `…T10:00:00+07:00` matched the row holding `10:00`, not the row
+ * holding `03:00`, with only a warning 1292 nothing reads.
+ *
+ * The normalised form is canonical UTC RFC 3339 (`…T03:00:00Z`) —
+ * deliberately *not* a MySQL `DATETIME` literal. The AST is
+ * driver-neutral per ADR 0022, so a custom driver has to receive an
+ * unambiguous instant; rendering it as a MySQL literal is
+ * {@see \StarDust\Search\Mysql\SqlFilterCompiler}'s job, at bind time.
+ *
+ * Fractional seconds are preserved rather than truncated. A slot column
+ * is `DATETIME` (second precision), but MySQL compares a fractional
+ * constant against it exactly — verified on 8.0.13 that
+ * `'…10:00:00' < '…10:00:00.5'` is true — so flooring the bound would
+ * make `lt` / `gt` wrong at the boundary.
  */
 final class ValueTypeValidator
 {
@@ -44,30 +65,42 @@ final class ValueTypeValidator
     ) {
     }
 
-    public function validate(FilterNode $node, int $tenantId, string $correlationId): void
+    /**
+     * Validates every leaf and returns a new AST root carrying the
+     * normalised values. Composite nodes are rebuilt rather than
+     * mutated, the same shape {@see FieldRefResolver::resolveAll()}
+     * uses — the AST is immutable throughout pre-flight.
+     */
+    public function validate(FilterNode $node, int $tenantId, string $correlationId): FilterNode
     {
         if ($node instanceof LeafNode) {
-            $this->validateLeaf($node, $tenantId, $correlationId);
-            return;
+            return $this->validateLeaf($node, $tenantId, $correlationId);
         }
-        if ($node instanceof AndNode || $node instanceof OrNode) {
+        if ($node instanceof AndNode) {
+            $children = [];
             foreach ($node->args as $child) {
-                $this->validate($child, $tenantId, $correlationId);
+                $children[] = $this->validate($child, $tenantId, $correlationId);
             }
-            return;
+            return new AndNode($children);
+        }
+        if ($node instanceof OrNode) {
+            $children = [];
+            foreach ($node->args as $child) {
+                $children[] = $this->validate($child, $tenantId, $correlationId);
+            }
+            return new OrNode($children);
         }
         if ($node instanceof NotNode) {
-            $this->validate($node->arg, $tenantId, $correlationId);
-            return;
+            return new NotNode($this->validate($node->arg, $tenantId, $correlationId));
         }
         throw new LogicException('ValueTypeValidator: unknown FilterNode ' . $node::class);
     }
 
-    private function validateLeaf(LeafNode $leaf, int $tenantId, string $correlationId): void
+    private function validateLeaf(LeafNode $leaf, int $tenantId, string $correlationId): LeafNode
     {
         // Presence operators carry no value — nothing to check.
         if (in_array($leaf->operator, Operator::PRESENCE, true)) {
-            return;
+            return $leaf;
         }
         if ($leaf->value === null) {
             throw new LogicException(
@@ -90,9 +123,69 @@ final class ValueTypeValidator
             foreach ($value as $element) {
                 $this->validateElement($element, $declaredType, $leaf, $tenantId, $correlationId);
             }
-            return;
+            return $this->normaliseLeaf($leaf, $declaredType);
         }
         $this->validateElement($value, $declaredType, $leaf, $tenantId, $correlationId);
+        return $this->normaliseLeaf($leaf, $declaredType);
+    }
+
+    /**
+     * Rewrites a `datetime` leaf's bound(s) into canonical UTC. Every
+     * other declared type is returned untouched, so this is a no-op for
+     * the overwhelming majority of leaves.
+     *
+     * Runs only after {@see validateElement()} has accepted the value,
+     * which is what lets it treat a non-string here as a bug rather
+     * than as input — the same posture the missing-value branch above
+     * already takes.
+     */
+    private function normaliseLeaf(LeafNode $leaf, string $declaredType): LeafNode
+    {
+        if ($declaredType !== 'datetime' || $leaf->value === null) {
+            return $leaf;
+        }
+        $value = $leaf->value->value;
+
+        if (is_array($value)) {
+            $normalised = [];
+            foreach ($value as $element) {
+                if (!is_string($element)) {
+                    throw new LogicException(
+                        'datetime element reached normalisation as ' . get_debug_type($element)
+                    );
+                }
+                $normalised[] = self::toCanonicalUtc($element);
+            }
+            return $leaf->withNormalisedValue(new TypedValue($normalised));
+        }
+        if (!is_string($value)) {
+            throw new LogicException(
+                'datetime value reached normalisation as ' . get_debug_type($value)
+            );
+        }
+        return $leaf->withNormalisedValue(new TypedValue(self::toCanonicalUtc($value)));
+    }
+
+    /**
+     * RFC 3339 with an explicit offset → the same instant in UTC, `Z`
+     * form. Fractional seconds are carried through when the input had
+     * them and omitted when it did not, so the common case stays the
+     * shape a reader expects.
+     *
+     * The value has already round-tripped through `DateTimeImmutable`
+     * in {@see isRfc3339WithOffset()}, so the constructor cannot throw
+     * here. Same `setTimezone(UTC)` idiom as
+     * {@see \StarDust\Write\PayloadSplitter::coerceDatetime()} and
+     * {@see \StarDust\Retype\RetypeCoercionEngine} — do not add a
+     * fourth spelling of it.
+     */
+    private static function toCanonicalUtc(string $value): string
+    {
+        $utc = (new \DateTimeImmutable($value))->setTimezone(new \DateTimeZone('UTC'));
+        $micros = $utc->format('u');
+        return $utc->format('Y-m-d\TH:i:s')
+            . ($micros === '000000' ? '' : '.' . $micros)
+            . 'Z';
     }
 
     private function validateElement(

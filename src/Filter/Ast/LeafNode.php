@@ -35,6 +35,17 @@ final class LeafNode implements FilterNode
     }
 
     /**
+     * Returns a copy of this leaf carrying a rewritten value. Used by
+     * `ValueTypeValidator` to hand the driver a normalised bound —
+     * a `datetime` in canonical UTC rather than the consumer's own
+     * offset — without mutating the input tree.
+     */
+    public function withNormalisedValue(TypedValue $value): self
+    {
+        return new self($this->operator, $this->field, $value);
+    }
+
+    /**
      * Convenience builder for internal callers (and tests) that already
      * know the model from the surrounding `EntryQuery` / `SearchRequest`.
      * The emitted leaf's {@see FieldRef} has empty `modelName`, which the

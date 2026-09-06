@@ -30,12 +30,29 @@ Four single-method visitors in fixed order:
 
 1. **`FieldRefResolver`** — resolves every leaf's `FieldRef` against the snapshot; raises `UnknownFieldException` with a `pre_flight_rejected` event.
 2. **`CapabilityChecker`** — checks `driver.supportedOperators()` then `driver.supportsFilterOn(fieldId)`. Raises `QueryFilterValidationException(capability_unsupported)` with a **distinct `capability_unsupported` event**, or `FieldNotFilterableException` for non-filterable fields.
-3. **`ValueTypeValidator`** — per-leaf declared-type and bounds enforcement: string max 4096 chars, int signed-64-bit, numeric finite, datetime RFC 3339 with an explicit UTC offset.
+3. **`ValueTypeValidator`** — per-leaf declared-type and bounds enforcement: string max 4096 chars, int signed-64-bit, numeric finite, datetime RFC 3339 with an explicit UTC offset. **It also normalises, which is why it returns a node rather than `void`** — see below.
 4. **`SortValidator`** (ADR 0041) — resolves the sort target, asks `driver.supportsSortOn()`, and checks the cursor was issued for this ordering. Raises `UnknownFieldException`, `FieldNotSortableException`, or `InvalidCursorException`, each with a `pre_flight_rejected` event carrying a new `reason` (`sort_field_unknown`, `sort_field_not_sortable`, `cursor_sort_mismatch`) — **`reason` values, not event names, so ADR 0020 is untouched**.
 
 `SortValidator` hangs off a **separate `validateSort()` entry point** rather than a fourth call inside `validate()`, because a sort is not part of the filter tree and has to be checked when there is no filter at all.
 
 The `capability_unsupported` event is deliberately separate from the generic `pre_flight_rejected` so operators can metric "consumer asked for a feature this driver doesn't service" on its own.
+
+### Datetime bounds are normalised in two layers, and each layer alone would look sufficient
+
+The wire format demands an explicit UTC offset on every `datetime` bound and rejects the naive form. Until this landed nothing then *applied* the offset: `SqlFilterCompiler` bound the accepted string verbatim, and MySQL truncates an RFC 3339 literal at the zone designator — so `…T10:00:00+07:00` matched the row holding `10:00`, not the row holding `03:00`. Silent in both directions: the value passed pre-flight, the query still planned as a range scan, and the only complaint was a `Warning 1292` nothing reads. It was also asymmetric with the write path, which normalises in `PayloadSplitter`, so an instant written and then filtered for did not match itself. This is what the wire-format blueprint §4.5 criterion 20 already required ("The API normalises all datetime values to UTC before handing the filter to the driver"); it was an unimplemented criterion, not an open question, so it needed no ADR.
+
+- **`ValueTypeValidator` rewrites the bound to canonical UTC RFC 3339** (`…T03:00:00Z`) once the value has been accepted, covering the scalar, set (`in` / `nin`) and range (`between`) shapes. Deliberately **not** a MySQL `DATETIME` literal: the AST is driver-neutral per ADR 0022, and a driver backed by something other than MySQL has to receive an unambiguous instant.
+- **`SqlFilterCompiler::toMysqlLiteral()` renders that as `Y-m-d H:i:s[.u]` at bind time**, through `scalar()` and `listValue()` — the two funnels every bound already passes through. MySQL-specific formatting belongs in the MySQL-specific class, and it is what removes the 1292 from the emitted SQL.
+
+**Either layer alone fixes the MySQL result set, which is a trap for anyone "simplifying" one away.** Neutering just one leaves every behavioural test in `DatetimeBoundNormalisationTest` green, so each layer carries a pin of its own that no behavioural case can substitute for — `testPreFlightHandsTheDriverCanonicalUtcRfc3339` and `testTheCompilerBindsAMysqlDatetimeLiteral`. The behavioural tests were validated by neutering *both*, on the `SlotAffinityTest` precedent, and each pin by neutering its own layer.
+
+`toMysqlLiteral()` converts only a value carrying a zone designator, and **that guard is load-bearing rather than defensive**: its own output carries none, so a second application is a no-op. Without it, re-converting `'2026-01-01 03:00:00'` would parse in PHP's default timezone and then shift to UTC — a silent offset on any host not set to UTC, introduced by nothing worse than an extra call.
+
+**Do not try to assert the 1292's absence through `SHOW WARNINGS`.** The suite's PDO uses native prepares, `SHOW WARNINGS` is unsupported in that protocol, and the attempt replaces the list it was going to read — it comes back holding a lone `1295`, so the assertion passes no matter what was emitted. Asserting after `search()` fails for a second, independent reason: a bounded read is two queries, the filter is in the first, and the second resets the list before the call returns. The warning's absence was verified directly against 8.0.13; the suite pins the binding that causes it.
+
+**Fractional seconds are preserved, not floored.** A slot column is `DATETIME` at second precision, so flooring the bound looks free — but MySQL compares a fractional constant against it exactly (measured on 8.0.13: `'…10:00:00' < '…10:00:00.5'` is true), so a floored `lt` bound would wrongly exclude the row sitting on the boundary. `testFractionalSecondsAreNotTruncatedAwayFromABound` was validated by flooring and confirming it goes red. Note this differs from `PayloadSplitter` and `RetypeCoercionEngine`, which *do* truncate — correctly, because they format a value being **stored** into that column, where a bound is being **compared** against it.
+
+**The sort anchor is not a third site.** `compileAnchorJoin()` binds only `$anchorId` and `$tenantId`; it resolves the sort value from the anchor row itself, so that value is already column-native and never passes through a bound.
 
 ## `SearchService::execute()`
 
