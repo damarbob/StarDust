@@ -332,6 +332,137 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
         );
     }
 
+    /**
+     * ROADMAP item 25, defect A: a lock failure in the gap commit must
+     * not kill the daemon.
+     *
+     * `commitGap()` used to rethrow, and it is called from inside
+     * `sweep()`'s own retry handler, so its failure escaped past the
+     * budget and the gap path both. `PollLoop` documents that it does
+     * not catch, so the Liberator process exited.
+     */
+    public function testALockFailureInTheGapCommitDoesNotEscapeSweep(): void
+    {
+        [$modelId, $fieldId, $pageId, $_n] = $this->setupModelWithReservedField(1, 'string');
+        $tableName = $this->pageTableNameFor($pageId);
+        $slotAssignmentId = $this->slotAssignmentIdFor($fieldId);
+        $slotColumn = $this->slotColumnFor($slotAssignmentId);
+
+        $this->seedSlotValues($modelId, $tableName, $slotColumn, 20);
+        $this->tombstoneSlotAssignment($slotAssignmentId);
+
+        // Fail every registry cursor write. Under the old shape the
+        // chunk retries exhaust, the gap commit is attempted, and its
+        // own failure propagates straight out.
+        $pdo = DeadlockInjectingPdo::wrap(
+            $this->pdo,
+            $tableName,
+            $slotColumn,
+            throwTimes: PHP_INT_MAX,
+            errorInfo: DeadlockInjectingPdo::DEADLOCK,
+            sqlFragment: 'UPDATE stardust_slot_assignments SET sweep_cursor_id',
+        );
+
+        $sweeper = new SlotSweeper(
+            pdo: $pdo,
+            logger: new NullLogger(),
+            chunkSize: 10,
+            interChunkDelayMicros: 0,
+            deadlockRetryBudget: 3,
+            sleepFn: static fn (int $_micros) => null,
+        );
+
+        // The assertion is that this returns at all.
+        $sweeper->sweep(
+            new TombstonedSlot($slotAssignmentId, $pageId, $slotColumn, $tableName, null),
+            'test-corr-gapfail',
+        );
+
+        $row = $this->fetchSlotAssignment($slotAssignmentId);
+        self::assertSame('tombstoned', $row['status'], 'Nothing committed, so nothing reclaims.');
+
+        // The shape an operator sees for the WORST-stuck slot, and the
+        // reason the runbook queries on `tombstoned_at` rather than on
+        // `sweep_gap_count`: the counter rides the next successful chunk
+        // commit, and here no commit succeeded, so it reads zero. A
+        // query filtering on a non-zero count cannot find this slot.
+        self::assertSame(0, (int) $row['sweep_gap_count']);
+        self::assertNull($row['sweep_cursor_id']);
+        self::assertSame(
+            20,
+            $this->countNonNullValues($tableName, $slotColumn),
+            'Nothing was swept, which is why the slot must stay tombstoned.',
+        );
+    }
+
+    /**
+     * ROADMAP item 25, defect B: after a gap, no chunk may commit a
+     * cursor past the skipped rows.
+     *
+     * ADR 0046 keeps its no-reclaim decision in `$firstGapCursor`,
+     * which is in-memory, and only rewound the durable cursor on the
+     * FINAL chunk. Every chunk in between committed its own high-water
+     * mark - past the gap. A daemon killed in that window restarts
+     * beyond the skipped rows, sees no gap of its own, and reclaims a
+     * slot with residue: the bleed 0046 exists to close, reached
+     * through the restart rather than through reuse.
+     *
+     * Asserted on the event stream because it is a property of every
+     * intermediate commit, not just of the end state - a completed pass
+     * rewinds and hides it.
+     */
+    public function testNoChunkAfterAGapCommitsACursorPastIt(): void
+    {
+        [$modelId, $fieldId, $pageId, $_n] = $this->setupModelWithReservedField(1, 'string');
+        $tableName = $this->pageTableNameFor($pageId);
+        $slotAssignmentId = $this->slotAssignmentIdFor($fieldId);
+        $slotColumn = $this->slotColumnFor($slotAssignmentId);
+
+        // 30 rows / chunk 10, so there is a committed chunk between the
+        // gap and the final one. With 20 there is not, and the rewind
+        // masks the defect entirely.
+        $this->seedSlotValues($modelId, $tableName, $slotColumn, 30);
+        $this->tombstoneSlotAssignment($slotAssignmentId);
+
+        $pdo = DeadlockInjectingPdo::wrap($this->pdo, $tableName, $slotColumn, throwTimes: 3);
+
+        $stream = fopen('php://memory', 'r+');
+        self::assertNotFalse($stream);
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        $sweeper = new SlotSweeper(
+            pdo: $pdo,
+            logger: $logger,
+            chunkSize: 10,
+            interChunkDelayMicros: 0,
+            deadlockRetryBudget: 3,
+            sleepFn: static fn (int $_micros) => null,
+        );
+        $sweeper->sweep(
+            new TombstonedSlot($slotAssignmentId, $pageId, $slotColumn, $tableName, null),
+            'test-corr-nopast',
+        );
+
+        $events = $this->readNdjsonStream($stream);
+
+        $gapCursor = null;
+        foreach ($events as $e) {
+            if ($e['event'] === 'sweep_gap_flagged') {
+                // The gap's own lower bound: the cursor it was standing at.
+                $gapCursor ??= (int) $e['start_id'];
+                continue;
+            }
+            if ($e['event'] === 'sweep_chunk' && $gapCursor !== null) {
+                self::assertLessThanOrEqual(
+                    $gapCursor,
+                    (int) $e['sweep_cursor_id'],
+                    'A chunk after a gap committed a cursor past the skipped rows; a crash here reclaims over them.',
+                );
+            }
+        }
+        self::assertNotNull($gapCursor, 'Fixture: the sweep must actually have gapped.');
+    }
+
     private function slotAssignmentIdFor(int $fieldId): int
     {
         $stmt = $this->pdo->prepare('SELECT id FROM stardust_slot_assignments WHERE field_id = ?');
@@ -391,6 +522,7 @@ final class DeadlockInjectingPdo extends PDO
         string $slotColumn,
         int $throwTimes,
         array $errorInfo = self::DEADLOCK,
+        ?string $sqlFragment = null,
     ): self {
         $reflection = new ReflectionClass(self::class);
         /** @var self $instance */
@@ -400,7 +532,10 @@ final class DeadlockInjectingPdo extends PDO
         $instance->errorInfo = $errorInfo;
         // Match the literal fragment SlotSweeper builds:
         //   UPDATE <table> SET <col> = NULL WHERE entry_id IN (...)
-        $instance->targetSqlFragment = "UPDATE {$tableName} SET {$slotColumn} = NULL";
+        // `$sqlFragment` overrides the default. An empty chunk issues no
+        // nullification UPDATE at all, so the only way to fail one is to
+        // target a registry statement it does issue.
+        $instance->targetSqlFragment = $sqlFragment ?? "UPDATE {$tableName} SET {$slotColumn} = NULL";
         return $instance;
     }
 
