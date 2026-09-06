@@ -37,9 +37,17 @@ use StarDust\Support\RetryableLockFailure;
  *   - `SQLSTATE 40001` → rollback, emit `deadlock_retry`, sleep
  *     `interChunkDelayMicros`, retry the same chunk from the same
  *     cursor. After `deadlockRetryBudget` consecutive deadlocks on
- *     the same chunk, take the gap path: advance the cursor by the
- *     chunk size, increment `sweep_gap_count`, emit
- *     `sweep_gap_flagged`, continue.
+ *     the same chunk, take the gap path: advance past **the chunk**
+ *     (`max(last id in chunk, cursor + chunkSize)` — ADR 0046; the
+ *     bare id arithmetic under-advances on a sparse page), increment
+ *     `sweep_gap_count`, emit `sweep_gap_flagged`, continue.
+ *   - **A sweep that took the gap path does not reclaim** (ADR 0046).
+ *     ADR 0009 step 4 permits `tombstoned → free` only once the slot
+ *     is confirmed 100% nullified, and a skipped chunk is not that.
+ *     The final chunk instead rewinds `sweep_cursor_id` to the first
+ *     gap's cursor and leaves the slot `tombstoned`, so the next
+ *     Liberator cycle re-walks from there. No `sweep_complete` fires,
+ *     which is what AC#11 already specifies.
  *
  * Note on the UPDATE WHERE clause: the sweep is keyed on
  * `(page, slot_column) for id > sweep_cursor_id` with no tenant
@@ -95,15 +103,26 @@ final class SlotSweeper
         $cursor = $slot->sweepCursorId ?? 0;
         $retryCount = 0;
 
+        // ADR 0046: the lowest cursor at which this sweep abandoned a
+        // chunk, or null if it has abandoned none. A sweep that skipped
+        // anything has not "confirmed the slot is 100% nullified" (ADR
+        // 0009 step 4), so it must not reclaim — and it rewinds to here
+        // so the next pass re-walks from the first thing it missed
+        // rather than from the beginning of the page.
+        $firstGapCursor = null;
+
         while (true) {
             $rowIds = $this->selectChunkRowIds($slot->tableName, $cursor);
             $rowCount = count($rowIds);
             $isLast = $rowCount < $this->chunkSize;
             $newCursor = $rowCount === 0 ? $cursor : (int) end($rowIds);
 
+            $reclaim = $isLast && $firstGapCursor === null;
+            $storeCursor = ($isLast && $firstGapCursor !== null) ? $firstGapCursor : $newCursor;
+
             $start = microtime(true);
             try {
-                $this->commitChunk($slot, $rowIds, $newCursor, $isLast);
+                $this->commitChunk($slot, $rowIds, $storeCursor, $reclaim);
             } catch (PDOException $e) {
                 if ($this->isRetryableLockFailure($e)) {
                     if ($this->pdo->inTransaction()) {
@@ -121,16 +140,38 @@ final class SlotSweeper
                     ]);
 
                     if ($retryCount >= $this->deadlockRetryBudget) {
-                        $gapEnd = $cursor + $this->chunkSize;
+                        // ADR 0046 / ADR 0009: skip the CHUNK, which is
+                        // `LIMIT` rows. `$cursor + $chunkSize` is a span
+                        // of *ids*, and the two coincide only where the
+                        // page's entry_ids are dense from the cursor up.
+                        // On a sparse page it under-advances, re-selects
+                        // the same poisoned rows, and burns the budget
+                        // again per chunkSize of id space crossed.
+                        //
+                        // `max()` is conservative, not load-bearing: on a
+                        // full chunk it always picks $newCursor, and it
+                        // differs only on a partial or empty chunk, which
+                        // is by definition the last one, so there is
+                        // nothing beyond to over-skip. It buys the
+                        // property that the gap never advances by *less*
+                        // than the pre-0046 behaviour. It does NOT stop a
+                        // spin on an empty chunk: measured, persistent
+                        // contention there escapes through commitGap()
+                        // below, which has no retry of its own.
+                        $gapEnd = max($newCursor, $cursor + $this->chunkSize);
                         $this->commitGap($slot, $gapEnd);
                         $this->logger->warning('slot sweep gap flagged', [
                             'event'              => 'sweep_gap_flagged',
                             'source'             => 'liberator',
                             'correlation_id'     => $correlationId,
                             'slot_assignment_id' => $slot->slotAssignmentId,
-                            'start_id'           => $cursor,
+                            // The chunk's own range, per blueprint AC#8 —
+                            // not the cursor span, which named rows the
+                            // sweep neither cleared nor skipped.
+                            'start_id'           => $rowIds[0] ?? $cursor,
                             'end_id'             => $gapEnd,
                         ]);
+                        $firstGapCursor ??= $cursor;
                         $cursor = $gapEnd;
                         $retryCount = 0;
                         ($this->sleepFn)($this->interChunkDelayMicros);
@@ -161,17 +202,27 @@ final class SlotSweeper
                 'slot_assignment_id' => $slot->slotAssignmentId,
                 'rows_nullified'     => $rowCount,
                 'chunk_elapsed_ms'   => $elapsedMs,
-                'sweep_cursor_id'    => $newCursor,
+                'sweep_cursor_id'    => $storeCursor,
             ]);
 
             if ($isLast) {
-                $this->logger->info('slot sweep complete', [
-                    'event'              => 'sweep_complete',
-                    'source'             => 'liberator',
-                    'correlation_id'     => $correlationId,
-                    'slot_assignment_id' => $slot->slotAssignmentId,
-                    'sweep_cursor_id'    => $newCursor,
-                ]);
+                // ADR 0046: no reclaim, and therefore no `sweep_complete`,
+                // when this sweep abandoned a chunk. Blueprint AC#11
+                // defines the event as one per slot transitioned to
+                // `free`, so staying silent here is the contract rather
+                // than a hole in it — the operator's signal is the
+                // `sweep_gap_flagged` that already fired, plus a
+                // `sweep_gap_count` that keeps climbing while the slot
+                // stays tombstoned.
+                if ($reclaim) {
+                    $this->logger->info('slot sweep complete', [
+                        'event'              => 'sweep_complete',
+                        'source'             => 'liberator',
+                        'correlation_id'     => $correlationId,
+                        'slot_assignment_id' => $slot->slotAssignmentId,
+                        'sweep_cursor_id'    => $storeCursor,
+                    ]);
+                }
                 return;
             }
 

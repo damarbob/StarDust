@@ -7,6 +7,7 @@ namespace StarDust\Tests\Smoke\Liberator;
 use PDO;
 use PDOException;
 use PDOStatement;
+use Psr\Log\NullLogger;
 use ReflectionClass;
 use StarDust\Clock\SystemClock;
 use StarDust\Liberator\SlotSweeper;
@@ -187,21 +188,148 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
         $sweeper->sweep($slot, 'test-corr-gap');
 
         $events = array_map(static fn ($e) => $e['event'], $this->readNdjsonStream($stream));
-        // 3 deadlock_retry → sweep_gap_flagged → second chunk succeeds
-        // (sweep_chunk + sweep_complete because rows 11–20 = 10 rows
-        // returned, next iteration sees 0 rows < chunk = isLast).
+        // 3 deadlock_retry -> sweep_gap_flagged -> second chunk succeeds
+        // -> empty chunk closes the pass. **No `sweep_complete`**: per
+        // ADR 0046 a sweep that abandoned a chunk does not reclaim, and
+        // blueprint AC#11 defines that event as one per slot
+        // transitioned to `free`.
         self::assertSame(
             ['deadlock_retry', 'deadlock_retry', 'deadlock_retry', 'sweep_gap_flagged',
-             'sweep_chunk', 'sweep_chunk', 'sweep_complete'],
+             'sweep_chunk', 'sweep_chunk'],
             $events,
         );
 
         $row = $this->fetchSlotAssignment($slotAssignmentId);
-        self::assertSame('free', $row['status']);
+        self::assertSame(
+            'tombstoned',
+            $row['status'],
+            'ADR 0009 step 4 permits free only on a slot confirmed 100% nullified.',
+        );
         self::assertSame(1, (int) $row['sweep_gap_count'], 'One gap must increment sweep_gap_count by 1.');
         // Rows 11-20 nullified; rows 1-10 still hold values (the gap).
         self::assertSame(10, $this->countNonNullValues($tableName, $slotColumn));
         self::assertNotNull($entryIds[0]);
+        // Rewound to the first gap's cursor, not left at the end, so the
+        // next pass re-walks the skipped range instead of sailing past it.
+        self::assertSame(0, (int) $row['sweep_cursor_id']);
+    }
+
+    /**
+     * ROADMAP item 23 - the gap must skip the CHUNK, not a span of ids.
+     *
+     * `$cursor + $chunkSize` is arithmetic on ids where ADR 0009 says
+     * skip ahead by `LIMIT` rows. The two agree only where the page's
+     * `entry_id` values are dense and start just above the cursor,
+     * which is what dropping `entry_data` between tests used to
+     * guarantee. On a sparse page the gap under-advances, re-selects
+     * the same poisoned rows, and burns the whole retry budget again
+     * for every `chunkSize` of *id space* it creeps forward.
+     */
+    public function testGapSkipsTheWholeChunkWhenPageIdsAreSparse(): void
+    {
+        [$modelId, $fieldId, $pageId, $_n] = $this->setupModelWithReservedField(1, 'string');
+        $tableName = $this->pageTableNameFor($pageId);
+        $slotAssignmentId = $this->slotAssignmentIdFor($fieldId);
+        $slotColumn = $this->slotColumnFor($slotAssignmentId);
+
+        // Two rows, a wide id gap, then two more - a model occupying one
+        // page among several, or a page that has seen deletions.
+        //
+        // Bump RELATIVE to the ids just issued. An absolute
+        // `AUTO_INCREMENT = 200` is silently a no-op once the counter is
+        // already past it, and since ADR 0046 took `entry_data` out of
+        // `SchemaFixture::IDENTITY_TABLES` it usually is - this test
+        // passed alone and failed in the suite before that was fixed.
+        $low = $this->seedSlotValues($modelId, $tableName, $slotColumn, 2);
+        $this->pdo->exec('ALTER TABLE entry_data AUTO_INCREMENT = ' . ($low[1] + 200));
+        $high = $this->seedSlotValues($modelId, $tableName, $slotColumn, 2);
+        self::assertGreaterThan($low[1] + 50, $high[0], 'Fixture: ids must actually be sparse.');
+
+        $this->tombstoneSlotAssignment($slotAssignmentId);
+
+        // Throw forever on the nullification UPDATE, so every chunk gaps.
+        $pdo = DeadlockInjectingPdo::wrap($this->pdo, $tableName, $slotColumn, throwTimes: PHP_INT_MAX);
+
+        $stream = fopen('php://memory', 'r+');
+        self::assertNotFalse($stream);
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        $sweeper = new SlotSweeper(
+            pdo: $pdo,
+            logger: $logger,
+            chunkSize: 2,
+            interChunkDelayMicros: 0,
+            deadlockRetryBudget: 3,
+            sleepFn: static fn (int $_micros) => null,
+        );
+
+        $sweeper->sweep(
+            new TombstonedSlot($slotAssignmentId, $pageId, $slotColumn, $tableName, null),
+            'test-corr-sparse',
+        );
+
+        $events = array_map(static fn ($e) => $e['event'], $this->readNdjsonStream($stream));
+        $gaps = count(array_filter($events, static fn ($e) => $e === 'sweep_gap_flagged'));
+
+        // Two populated chunks, so two gaps. Advancing by chunkSize of
+        // id space instead took 101 to cross the hole, measured.
+        self::assertSame(2, $gaps, 'Each gap must consume one whole chunk.');
+        self::assertSame(
+            2,
+            (int) $this->fetchSlotAssignment($slotAssignmentId)['sweep_gap_count'],
+            'sweep_gap_count must count skipped chunks, not failed attempts to pass one.',
+        );
+    }
+
+    /**
+     * ADR 0046, the convergence half: the slot stays tombstoned, so the
+     * next Liberator cycle picks it up, re-walks the gap now that the
+     * contention has cleared, and only then reclaims.
+     *
+     * Without this the fix would be a capacity leak rather than a
+     * correctness fix - it is what makes "do not reclaim" a deferral
+     * instead of a refusal.
+     */
+    public function testTheNextPassClearsTheGapAndOnlyThenReclaims(): void
+    {
+        [$modelId, $fieldId, $pageId, $_n] = $this->setupModelWithReservedField(1, 'string');
+        $tableName = $this->pageTableNameFor($pageId);
+        $slotAssignmentId = $this->slotAssignmentIdFor($fieldId);
+        $slotColumn = $this->slotColumnFor($slotAssignmentId);
+
+        $this->seedSlotValues($modelId, $tableName, $slotColumn, 20);
+        $this->tombstoneSlotAssignment($slotAssignmentId);
+
+        // Pass 1: contention on the first chunk, so it gaps.
+        $pdo = DeadlockInjectingPdo::wrap($this->pdo, $tableName, $slotColumn, throwTimes: 3);
+        $sweeper = new SlotSweeper(
+            pdo: $pdo,
+            logger: new NullLogger(),
+            chunkSize: 10,
+            interChunkDelayMicros: 0,
+            deadlockRetryBudget: 3,
+            sleepFn: static fn (int $_micros) => null,
+        );
+        $sweeper->sweep(
+            new TombstonedSlot($slotAssignmentId, $pageId, $slotColumn, $tableName, null),
+            'test-corr-pass-1',
+        );
+
+        self::assertSame('tombstoned', $this->fetchSlotAssignment($slotAssignmentId)['status']);
+        self::assertSame(10, $this->countNonNullValues($tableName, $slotColumn));
+
+        // Pass 2: the real Liberator, contention gone. It re-loads the
+        // slot from the registry, so it picks up the rewound cursor.
+        $this->makeLiberator(chunkSize: 10)->tick();
+
+        $row = $this->fetchSlotAssignment($slotAssignmentId);
+        self::assertSame('free', $row['status'], 'A clean pass must reclaim.');
+        self::assertSame(0, $this->countNonNullValues($tableName, $slotColumn));
+        self::assertSame(
+            1,
+            (int) $row['sweep_gap_count'],
+            'The gap annotation survives the reclaim as the record of what happened.',
+        );
     }
 
     private function slotAssignmentIdFor(int $fieldId): int

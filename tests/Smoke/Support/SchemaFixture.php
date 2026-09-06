@@ -90,17 +90,16 @@ final class SchemaFixture
      *   `entry_slots_page_{id}`, so a counter that kept climbing would
      *   rename the table out from under every fixture that hardcodes
      *   `entry_slots_page_1`.
-     * - **`entry_data`** — its ids become `entry_slots_page_N.entry_id`,
-     *   and `SlotSweeper`'s ADR 0009 gap path advances the cursor as
-     *   `$cursor + $chunkSize`, which is arithmetic on *ids* rather
-     *   than the "skip ahead by LIMIT rows" the ADR specifies. The two
-     *   agree only while entry ids are dense and 1-based, which is
-     *   precisely what dropping the table used to guarantee.
-     *   `LiberatorDeadlockRetryTest::testThreeConsecutiveDeadlocks
-     *   TriggersSweepGap` fails without this, and it is the *fixture*
-     *   holding that assumption up — see the note in TESTING.md.
-     *   Resetting the counter here keeps this refactor behaviour-
-     *   neutral; it does not make the gap path correct.
+     * `entry_data` **was** here and came out with ADR 0046. It was
+     * listed for one reason: `SlotSweeper`'s gap path advanced the
+     * cursor as `$cursor + $chunkSize` — arithmetic on *ids* where ADR
+     * 0009 says skip ahead by `LIMIT` rows — and the two agree only
+     * while entry ids are dense and 1-based, which dropping the table
+     * used to guarantee. The gap now advances by the chunk's own last
+     * id, so nothing reads an `entry_data` id as a literal any more and
+     * the reset bought only the defect's silence. Removing it saves one
+     * `ALTER TABLE` (~18 ms) per test. **Do not re-add it to make a
+     * failing sweep test pass** — that is the defect coming back.
      *
      * Deliberately not "all of them" — `ALTER TABLE … AUTO_INCREMENT`
      * is itself DDL (~18 ms each, measured), so resetting all eleven
@@ -109,7 +108,7 @@ final class SchemaFixture
      * table here only when something genuinely reads its ids as
      * literals, and say what does.
      */
-    private const IDENTITY_TABLES = ['stardust_pages', 'entry_data'];
+    private const IDENTITY_TABLES = ['stardust_pages'];
 
     /**
      * Whether a reset in this process has already pinned the counters.
