@@ -13,6 +13,7 @@ use StarDust\Exception\RetypeInProgressException;
 use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Slot\LiveSlotTombstoner;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -121,6 +122,10 @@ final class DeleteFieldInitiator
 
         $oldSlotId = null;
 
+        // The lifecycle id, persisted onto the checkpoint below so the
+        // purge can emit `delete_complete` under it.
+        $correlationId = UuidV4::generate();
+
         $this->pdo->beginTransaction();
         try {
             // 1. Sever. ADR 0009 requires the registry mapping to be
@@ -162,7 +167,7 @@ final class DeleteFieldInitiator
             );
             $bump->execute([$now]);
 
-            $this->deleteCheckpoints->insertOrReset($fieldId, $now);
+            $this->deleteCheckpoints->insertOrReset($fieldId, $now, $correlationId);
 
             $this->pdo->commit();
         } catch (Throwable $e) {
@@ -175,6 +180,7 @@ final class DeleteFieldInitiator
         $this->logger->info('field deletion started', [
             'event'                  => 'delete_started',
             'source'                 => 'registry',
+            'correlation_id'         => $correlationId,
             'tenant_id'              => $tenantId,
             'model_id'               => $field['model_id'],
             'field_id'               => $fieldId,

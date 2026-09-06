@@ -13,9 +13,13 @@ Phase 5 singleton page provisioner (ADR 0008). Process-level singleton enforceme
 5. If the 24 h jittered advisory timer is due, runs **both** `CardinalitySampler::sample()` (ADR 0019) and `SpreadSampler::sampleAll()` (ADR 0031).
 6. Emits `poll_complete` with `action` + `trigger`.
 
+**Both advisories take the cycle id**, so a daily sweep's hundreds of `cardinality_sampled` / `spread_sampled` lines read as one sweep instead of hundreds of unrelated observations. `CardinalitySampler::sample()` and `SpreadSampler::sampleAll()` still mint one when passed null, since `bin/stardust spread:report` is its own operation boundary. This was missed on the first pass of the ADR 0020 correlation work and is the reason `RegistryCorrelationTest` carries an explicit warning: both samplers *name* `correlation_id` at their emit sites, so a static scan passes them while they mint ids nothing else shares.
+
 **One timer drives both advisories.** ADR 0031 §Sampling Triggers 1 requires it: spread drifts only on registry mutation, so a daily cadence is generous, and a second schedule would be a second stampede surface for nothing. A third advisory hangs off the same gate. The private members are named `$nextAdvisorySampleAt` / `shouldSampleAdvisories()` / `scheduleNextAdvisorySample()` accordingly, while the `Config::$cardinality*` fields keep their names because those are public surface.
 
 Provisioning emits `provision_started` → `provision_complete`, both carrying `trigger` + `indexed_columns` + `pending_demand` per AC#6. It catches `AdvisoryLockTimeoutException` → `lock_contention`, and any other Throwable → `provision_failed` with `indexed_columns`, then re-throws so the daemon exits.
+
+**The cycle id is passed into `provision()`**, so `PageProvisioner`'s `page_provisioned` lands between that pair under the same `correlation_id` rather than under one the logger synthesised for it. Until it was, the one event naming the page could not be joined to the decision that created it — invisibly, because a synthesised UUID is indistinguishable from a threaded one on the wire. `WatcherDemandDrivenProvisionTest::testPageProvisionedJoinsTheTickThatOrderedIt` pins all three; background in `src/Logging/CLAUDE.md`.
 
 ## Provisioning is demand-driven as of ADR 0035
 

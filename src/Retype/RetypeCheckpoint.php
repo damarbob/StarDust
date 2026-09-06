@@ -24,6 +24,14 @@ final class RetypeCheckpoint
         public readonly string $targetDeclaredType,
         public readonly bool $targetIsFilterable,
         public readonly string $fieldName,
+        /**
+         * The lifecycle id minted by `RetypeInitiator` — or inherited
+         * from `CompactionService` when this retype is a relocation — and
+         * stamped onto `retype_started`. Null for a checkpoint opened
+         * before the column existed, in which case the work source falls
+         * back to the chunk id.
+         */
+        public readonly ?string $correlationId = null,
     ) {
     }
 }

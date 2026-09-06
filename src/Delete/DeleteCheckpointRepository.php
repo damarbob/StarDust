@@ -57,7 +57,7 @@ final class DeleteCheckpointRepository
     public function loadOneClaimable(): ?DeleteCheckpoint
     {
         $stmt = $this->pdo->prepare(
-            'SELECT c.id, c.last_processed_id,'
+            'SELECT c.id, c.last_processed_id, c.correlation_id,'
             . ' f.id AS field_id, f.name AS field_name, f.model_id, m.tenant_id'
             . ' FROM backfill_checkpoints c'
             . ' JOIN stardust_fields f'
@@ -82,6 +82,7 @@ final class DeleteCheckpointRepository
             modelId: (int) $row['model_id'],
             lastProcessedId: (int) $row['last_processed_id'],
             fieldName: (string) $row['field_name'],
+            correlationId: $row['correlation_id'] === null ? null : (string) $row['correlation_id'],
         );
     }
 
@@ -113,18 +114,19 @@ final class DeleteCheckpointRepository
      * the row and the field's `deleted_at` behind, and re-issuing the
      * delete must resume rather than crash.
      */
-    public function insertOrReset(int $fieldId, string $now): int
+    public function insertOrReset(int $fieldId, string $now, ?string $correlationId = null): int
     {
         $stmt = $this->pdo->prepare(
             'INSERT INTO backfill_checkpoints'
-            . ' (job_name, last_processed_id, status, started_at, updated_at)'
-            . " VALUES (?, 0, 'running', ?, ?)"
+            . ' (job_name, last_processed_id, status, started_at, updated_at, correlation_id)'
+            . " VALUES (?, 0, 'running', ?, ?, ?)"
             . ' ON DUPLICATE KEY UPDATE'
             . "     last_processed_id = 0, status = 'running',"
             . '     started_at = VALUES(started_at), updated_at = VALUES(updated_at),'
-            . '     completed_at = NULL, last_error = NULL'
+            . '     completed_at = NULL, last_error = NULL,'
+            . '     correlation_id = VALUES(correlation_id)'
         );
-        $stmt->execute([self::jobNameFor($fieldId), $now, $now]);
+        $stmt->execute([self::jobNameFor($fieldId), $now, $now, $correlationId]);
 
         // lastInsertId() is 0 on the UPDATE branch of an upsert, so
         // re-read rather than trusting it.

@@ -10,6 +10,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\NonFilterableFieldSlotException;
+use StarDust\Support\UuidV4;
 use StarDust\Write\LiveSlotMap;
 use Throwable;
 
@@ -58,9 +59,15 @@ final class SlotReserver
     ) {
     }
 
-    public function reserve(int $fieldId): ?SlotAssignment
+    /**
+     * @param ?string $correlationId The enclosing operation's id, stamped onto
+     *                               `slot_reserved` per ADR 0020's
+     *                               carried-through-sub-events clause. `null`
+     *                               means no enclosing operation and mints one.
+     */
+    public function reserve(int $fieldId, ?string $correlationId = null): ?SlotAssignment
     {
-        return $this->reserveInOwnTransaction($fieldId, 'assigned', false);
+        return $this->reserveInOwnTransaction($fieldId, 'assigned', false, $correlationId);
     }
 
     /**
@@ -91,10 +98,16 @@ final class SlotReserver
      * the caller emits `capacity_wait` and retries on a later tick,
      * once the Watcher's ADR 0035 unsatisfiable-demand trigger has
      * provisioned a page carrying the starved family's index.
+     *
+     * `$correlationId` is the claiming chunk's id: this reservation is a
+     * sub-event of the chunk that discovered the unmapped field, and ADR
+     * 0020 requires the two join.
      */
-    public function reserveForExhaustionBackfill(int $fieldId): ?SlotAssignment
-    {
-        return $this->reserveInOwnTransaction($fieldId, 'assigned', true);
+    public function reserveForExhaustionBackfill(
+        int $fieldId,
+        ?string $correlationId = null,
+    ): ?SlotAssignment {
+        return $this->reserveInOwnTransaction($fieldId, 'assigned', true, $correlationId);
     }
 
     /**
@@ -151,6 +164,7 @@ final class SlotReserver
         int $fieldId,
         string $targetStatus,
         bool $requireIndexed,
+        ?string $correlationId = null,
     ): ?SlotAssignment {
         // Resolved (and guarded) before `beginTransaction()` so a
         // rejected field never opens a transaction or takes the
@@ -169,14 +183,20 @@ final class SlotReserver
         }
 
         if ($assignment !== null) {
-            $this->emitSlotReservedEvent($fieldId, $assignment, $targetStatus);
+            $this->emitSlotReservedEvent(
+                $fieldId,
+                $assignment,
+                $targetStatus,
+                $field['tenantId'],
+                $correlationId,
+            );
         }
 
         return $assignment;
     }
 
     /**
-     * @param array{slotType: string, modelId: int} $field resolved by
+     * @param array{slotType: string, modelId: int, tenantId: int} $field resolved by
      *        {@see self::resolveReservableField()} — taking it as a
      *        parameter is what keeps the ADR 0034 filterability guard
      *        unbypassable, and it carries the model id that ADR 0032
@@ -429,12 +449,30 @@ final class SlotReserver
      * Public for the RetypeInitiator to call after its outer commit
      * succeeds. Phase 2 / Phase 5 callers use the own-transaction
      * variants which emit internally.
+     *
+     * `$tenantId` is a parameter rather than a field on `SlotAssignment`,
+     * which is the opposite of the `affinity` decision below and for a
+     * concrete reason: affinity is a property of the *assignment* and its
+     * post-commit callers would have to guess it, whereas the tenant is a
+     * property of the *field* and every caller already holds it. It is
+     * required, not nullable — ADR 0020 mandates `tenant_id` "for any
+     * event tied to tenant-owned data", and a slot assignment is, so an
+     * omittable parameter would just reopen the hole this closes.
+     *
+     * `$correlationId` is the enclosing operation's id; `null` mints one.
      */
-    public function emitSlotReservedEvent(int $fieldId, SlotAssignment $assignment, string $status): void
-    {
+    public function emitSlotReservedEvent(
+        int $fieldId,
+        SlotAssignment $assignment,
+        string $status,
+        int $tenantId,
+        ?string $correlationId = null,
+    ): void {
         $this->logger->info('slot reserved', [
             'event'              => 'slot_reserved',
             'source'             => 'registry',
+            'correlation_id'     => $correlationId ?? UuidV4::generate(),
+            'tenant_id'          => $tenantId,
             'field_id'           => $fieldId,
             'slot_assignment_id' => $assignment->slotAssignmentId,
             'page_id'            => $assignment->pageId,
@@ -463,7 +501,13 @@ final class SlotReserver
      * keeps affinity from adding a parameter to any of the three public
      * `reserve*()` signatures.
      *
-     * @return array{slotType: string, modelId: int}
+     * `tenant_id` rides along the same way, for `slot_reserved`'s ADR 0020
+     * tenant scoping. It is the one value here that needs the join to
+     * `stardust_models`; adding it costs nothing in locking terms because
+     * this read runs *before* `beginTransaction()` on the own-transaction
+     * paths and takes no row locks on either.
+     *
+     * @return array{slotType: string, modelId: int, tenantId: int}
      *
      * @throws NonFilterableFieldSlotException when the field is
      *                                         non-filterable (ADR 0034 —
@@ -481,8 +525,10 @@ final class SlotReserver
         // RESTRICT foreign key and block the purge's final DELETE, which
         // is a bad enough outcome to be worth defending twice.
         $stmt = $this->pdo->prepare(
-            'SELECT declared_type, is_filterable, model_id FROM stardust_fields'
-            . ' WHERE id = ? AND deleted_at IS NULL'
+            'SELECT f.declared_type, f.is_filterable, f.model_id, m.tenant_id'
+            . ' FROM stardust_fields f'
+            . ' JOIN stardust_models m ON m.id = f.model_id'
+            . ' WHERE f.id = ? AND f.deleted_at IS NULL'
         );
         $stmt->execute([$fieldId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -505,6 +551,10 @@ final class SlotReserver
                 "SlotReserver: field {$fieldId} has unrecognised declared_type '{$declaredType}'."
             );
 
-        return ['slotType' => $slotType, 'modelId' => (int) $row['model_id']];
+        return [
+            'slotType' => $slotType,
+            'modelId'  => (int) $row['model_id'],
+            'tenantId' => (int) $row['tenant_id'],
+        ];
     }
 }

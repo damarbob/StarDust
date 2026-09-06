@@ -262,6 +262,51 @@ final class CompactModelTest extends Phase6bTestCase
         self::assertSame(1, $complete[0]['context']['pages_after']);
     }
 
+    /**
+     * ADR 0020's carried-through-sub-events clause, at the widest span
+     * the engine has: a compaction relocates N fields, each of which
+     * opens a retype whose initiator would otherwise mint an id of its
+     * own. All of it is one operator action and reads as one operation.
+     *
+     * Without the threading each relocation looks like an unrelated
+     * retype, which is the shape that makes a compaction impossible to
+     * audit after the fact — and it is invisible, because the logger
+     * fills in a plausible id for every one of them.
+     */
+    public function testRelocationEventsJoinTheCompactionThatOrderedThem(): void
+    {
+        [$modelId] = $this->seedFragmentedModel();
+        $logger = $this->makeRecordingLogger();
+
+        $this->makeCompactionService($logger)->compact(1, $modelId);
+        $records = $logger->records();
+
+        $planned = $this->recordsWithEvent($records, 'compaction_planned');
+        $operationId = $planned[0]['context']['correlation_id'];
+        self::assertIsString($operationId);
+
+        $retypes = $this->recordsWithEvent($records, 'retype_started');
+        self::assertCount(2, $retypes, 'The fixture relocates two fields.');
+
+        foreach ($retypes as $retype) {
+            self::assertSame(
+                $operationId,
+                $retype['context']['correlation_id'],
+                'A relocation is a sub-event of the compaction, not its own operation.',
+            );
+        }
+
+        // The reservations ride the same id, one level deeper again.
+        foreach ($this->recordsWithEvent($records, 'slot_reserved') as $reserved) {
+            self::assertSame($operationId, $reserved['context']['correlation_id']);
+        }
+
+        self::assertSame(
+            $operationId,
+            $this->recordsWithEvent($records, 'compaction_complete')[0]['context']['correlation_id'],
+        );
+    }
+
     // ---------------------------------------------------------------
     // ADR 0039 — refusing to plan around an in-flight relocation
     // ---------------------------------------------------------------

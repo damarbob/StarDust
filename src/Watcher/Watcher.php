@@ -162,8 +162,12 @@ final class Watcher implements Tickable
         }
 
         if ($this->shouldSampleAdvisories()) {
-            $this->cardinalitySampler->sample();
-            $this->spreadSampler->sampleAll();
+            // Both advisories run inside this tick, so both carry its
+            // cycle id — a daily sweep emits hundreds of samples and an
+            // operator needs to see them as one sweep, not as hundreds
+            // of unrelated observations.
+            $this->cardinalitySampler->sample($correlationId);
+            $this->spreadSampler->sampleAll($correlationId);
             $this->scheduleNextAdvisorySample($this->clock->now()->getTimestamp());
         }
 
@@ -214,7 +218,10 @@ final class Watcher implements Tickable
                 'pending_demand'  => $demand->forLog(),
             ]);
 
-            $pageId = $this->pageProvisioner->provision($plan->indexedColumns);
+            // The cycle id goes down with it so `page_provisioned` joins
+            // the provision_started/provision_complete pair around it,
+            // per ADR 0020's carried-through-sub-events clause.
+            $pageId = $this->pageProvisioner->provision($plan->indexedColumns, $correlationId);
 
             $this->logger->info('page provision complete', [
                 'event'           => 'provision_complete',

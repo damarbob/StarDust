@@ -75,9 +75,9 @@ final class SpreadSampler
      * stampede surface for no benefit, since spread drifts only on
      * registry mutation.
      */
-    public function sampleAll(): void
+    public function sampleAll(?string $correlationId = null): void
     {
-        $this->emitAll($this->collect(null, null), 'periodic');
+        $this->emitAll($this->collect(null, null), 'periodic', $correlationId);
     }
 
     /**
@@ -87,10 +87,16 @@ final class SpreadSampler
      * spread delta the relocation caused is visible immediately instead
      * of up to a day later. For ADR 0033 compaction this is also the
      * built-in success check: `excess_pages` should have dropped.
+     *
+     * `$correlationId` is the relocation's id — the same one
+     * `promote_to_ready` carries, and for a compaction the same one
+     * `compaction_planned` carries. The sample reports on the state that
+     * relocation produced, so ADR 0020 makes it a sub-event of it rather
+     * than an operation of its own.
      */
-    public function sampleModel(int $tenantId, int $modelId): void
+    public function sampleModel(int $tenantId, int $modelId, ?string $correlationId = null): void
     {
-        $this->emitAll($this->collect($tenantId, $modelId), 'post_relocation');
+        $this->emitAll($this->collect($tenantId, $modelId), 'post_relocation', $correlationId);
     }
 
     /**
@@ -191,9 +197,9 @@ final class SpreadSampler
      *
      * @param list<SpreadSample> $samples
      */
-    private function emitAll(array $samples, string $trigger): void
+    private function emitAll(array $samples, string $trigger, ?string $correlationId = null): void
     {
-        $correlationId = UuidV4::generate();
+        $correlationId ??= UuidV4::generate();
 
         foreach ($samples as $sample) {
             $this->emit($sample, $trigger, $correlationId);

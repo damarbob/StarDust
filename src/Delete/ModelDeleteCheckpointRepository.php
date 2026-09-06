@@ -62,7 +62,8 @@ final class ModelDeleteCheckpointRepository
     public function loadOneClaimable(): ?ModelDeleteCheckpoint
     {
         $stmt = $this->pdo->prepare(
-            'SELECT c.id, c.last_processed_id, m.id AS model_id, m.tenant_id'
+            'SELECT c.id, c.last_processed_id, c.correlation_id,'
+            . ' m.id AS model_id, m.tenant_id'
             . ' FROM backfill_checkpoints c'
             . ' JOIN stardust_models m'
             . '   ON m.id = CAST(SUBSTRING(c.job_name, '
@@ -85,6 +86,7 @@ final class ModelDeleteCheckpointRepository
             modelId: (int) $row['model_id'],
             tenantId: (int) $row['tenant_id'],
             lastProcessedId: (int) $row['last_processed_id'],
+            correlationId: $row['correlation_id'] === null ? null : (string) $row['correlation_id'],
         );
     }
 
@@ -108,18 +110,19 @@ final class ModelDeleteCheckpointRepository
      * marked `failed` leaves both the row and `stardust_models.deleted_at`
      * behind — and re-issuing the delete must resume rather than crash.
      */
-    public function insertOrReset(int $modelId, string $now): int
+    public function insertOrReset(int $modelId, string $now, ?string $correlationId = null): int
     {
         $stmt = $this->pdo->prepare(
             'INSERT INTO backfill_checkpoints'
-            . ' (job_name, last_processed_id, status, started_at, updated_at)'
-            . " VALUES (?, 0, 'running', ?, ?)"
+            . ' (job_name, last_processed_id, status, started_at, updated_at, correlation_id)'
+            . " VALUES (?, 0, 'running', ?, ?, ?)"
             . ' ON DUPLICATE KEY UPDATE'
             . "     last_processed_id = 0, status = 'running',"
             . '     started_at = VALUES(started_at), updated_at = VALUES(updated_at),'
-            . '     completed_at = NULL, last_error = NULL'
+            . '     completed_at = NULL, last_error = NULL,'
+            . '     correlation_id = VALUES(correlation_id)'
         );
-        $stmt->execute([self::jobNameFor($modelId), $now, $now]);
+        $stmt->execute([self::jobNameFor($modelId), $now, $now, $correlationId]);
 
         // lastInsertId() is 0 on the UPDATE branch of an upsert.
         return $this->idForModel($modelId);

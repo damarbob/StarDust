@@ -6,6 +6,17 @@ Per **ADR 0020**, one NDJSON record per call to stdout; **stderr is reserved for
 
 Injecting a custom PSR-3 logger transfers ADR 0020 conformance to the caller.
 
+### The synthesised `correlation_id` hides a real defect class — know this before auditing
+
+`log()` fills in a fresh `UuidV4::generate()` whenever the context omits `correlation_id` or passes it as null. That is deliberate and it stays: ADR 0020 types the field as a required non-nullable string, and a consumer's own PSR-3 logger will not be so careful.
+
+**But it means the wire cannot distinguish a threaded id from an invented one.** Nine `source: registry` sites emitted no id for months; every record they produced was well-formed, passed every shape assertion in the suite, and correlated to nothing. The gap was found by reading a `rename_started` line next to the `rename_complete` that closed it and noticing they would not join — not by any test, because no test *could*.
+
+Two things follow, and neither is optional:
+
+- **A "correlation_id is a UUID" assertion proves nothing.** `PageProvisionerTest`, `SlotReserverTest` and `EntryWriterTest` all contained one throughout. What earns its keep is asserting that two events of one operation carry the *same* id — see `tests/Smoke/LifecycleCorrelationTest`.
+- **The enforcement is a source scan, not a runtime check.** `tests/Smoke/Conventions/RegistryCorrelationTest` requires the id be **passed** at every `source: registry` emit site. It is scoped to that source because the daemon sources mint per-cycle or per-chunk ids at the top of the tick and thread them everywhere, so they have never had this failure mode; `registry` is the source with no owning loop.
+
 ## The closed event vocabulary
 
 **Adding a new event name requires updating ADR 0020**, or `tests/Smoke/EventVocabularyTest` fails. That test greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`, `src/Retype/`, `src/Rename/`, `src/Delete/`, `src/Compaction/`, `src/Write/`, `src/Chronicler/`, `src/Export/`, `src/Search/`, and `src/Filter/` for `'event' => '...'` literals and asserts the union is a subset of the allowlist. Each source's allowlist is enforced independently, which is why the same name can legitimately appear under two sources.

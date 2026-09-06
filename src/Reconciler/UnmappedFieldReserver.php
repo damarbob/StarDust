@@ -74,15 +74,19 @@ final class UnmappedFieldReserver
      * entry's own model is what turns them back into the field ids the
      * reserver needs.
      *
+     * `$correlationId` is the claiming chunk's id, forwarded so the
+     * `slot_reserved` events this produces join the `chunk_complete` that
+     * caused them (ADR 0020's carried-through-sub-events clause).
+     *
      * @param list<string> $fieldNames
      */
-    public function reserveFor(int $entryId, array $fieldNames): int
+    public function reserveFor(int $entryId, array $fieldNames, ?string $correlationId = null): int
     {
         $reserved = 0;
 
         foreach ($this->resolveFieldIds($entryId, $fieldNames) as $fieldId) {
             try {
-                if ($this->slotReserver->reserveForExhaustionBackfill($fieldId) !== null) {
+                if ($this->slotReserver->reserveForExhaustionBackfill($fieldId, $correlationId) !== null) {
                     $reserved++;
                 }
             } catch (PDOException) {

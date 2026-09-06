@@ -24,6 +24,13 @@ final class DeleteCheckpoint
         public readonly int $modelId,
         public readonly int $lastProcessedId,
         public readonly string $fieldName,
+        /**
+         * The lifecycle id minted by `DeleteFieldInitiator` and stamped
+         * onto `delete_started`. Null for a checkpoint opened before the
+         * column existed, in which case the work source falls back to the
+         * chunk id.
+         */
+        public readonly ?string $correlationId = null,
     ) {
     }
 }

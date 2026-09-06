@@ -46,6 +46,18 @@ The replacement reservation goes through the same chokepoint as every other, so 
 
 Emits `retype_started` post-commit carrying `backfill_required` — false means the lifecycle started and finished in that one transaction, so a missing later `promote_to_ready` is not a stall. `deferred_assignment` is guarded on `backfill_required`: a registry-only transition always leaves `$newSlot` null but is *complete*, not deferred, and reporting it as deferred would show operators permanent phantom backlog.
 
+### One correlation id spans the whole lifecycle, and `runTuple()` is where it enters
+
+`runTuple()` takes a `?string $correlationId` and mints one when it is null, which makes the fork explicit: `initiate()` **is** the operation boundary and passes null; `initiateRelocation()` receives compaction's id and a relocation therefore reads as a sub-event of the `compaction_planned` that ordered it rather than as an unrelated retype.
+
+That id covers three events across two processes: `retype_started`, the `slot_reserved` emitted beside it, and — via `backfill_checkpoints.correlation_id` — the `promote_to_ready` the work source emits when the drain lands. Full rationale and the `chunk_correlation_id` companion field: `src/Rename/CLAUDE.md`.
+
+**The two post-promotion advisories take the lifecycle id too.** `CardinalitySampler::sampleSlot()` and `SpreadSampler::sampleModel()` fire because the promotion happened and describe the state it produced, so `cardinality_sampled`, `low_cardinality_index`, `spread_sampled` and `high_spread_model` are sub-events of the retype. For a relocation that means ADR 0031's "the spread sample is compaction's built-in success check" becomes literally checkable — the sample carries the id of the compaction it is judging.
+
+**The work source's own deferred reservation is the one exception**, and it is not an oversight: that `slot_reserved` rides the *chunk* id, because the chunk is what discovered the capacity and claimed the slot. `promote_to_ready` on the same tick rides the lifecycle id. Two different ids in one tick's output, deliberately.
+
+`insertOrReset()` resets `correlation_id` alongside `source_declared_type` — the same second-lifecycle trap, with the same silent failure mode.
+
 ### `initiateRelocation()` — the ADR 0033 sibling
 
 `initiateRelocation(tenantId, fieldId, pinnedPageId)` runs the same tuple as `initiate()` (both delegate to a shared private `runTuple()`), with two differences that are the entire reason it exists:

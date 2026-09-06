@@ -247,10 +247,16 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
         // discipline used elsewhere in the codebase: emit events that
         // describe committed state, never rolled-back state.
         if ($reservedThisTick) {
+            // A deferred reservation is a sub-event of *this chunk*, not
+            // of the retype lifecycle: the chunk is what discovered the
+            // capacity and took the slot. So it rides the chunk id, while
+            // `promote_to_ready` below rides the lifecycle id.
             $this->slotReserver->emitSlotReservedEvent(
                 $checkpoint->fieldId,
                 $newSlot,
                 'backfilling',
+                $checkpoint->tenantId,
+                $chunkCorrelationId,
             );
         }
 
@@ -275,20 +281,41 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
         ]);
 
         if ($promoted) {
+            // The lifecycle id, not the chunk's — this closes the
+            // operation `retype_started` opened. See the equivalent note
+            // in RenameBackfillWorkSource for the full rationale and for
+            // why the chunk id stays under its own key.
+            $lifecycleCorrelationId = $checkpoint->correlationId ?? $chunkCorrelationId;
+
             $this->logger->info('slot promoted to ready', [
-                'event'              => 'promote_to_ready',
-                'source'             => 'registry',
-                'correlation_id'     => $chunkCorrelationId,
-                'tenant_id'          => $checkpoint->tenantId,
-                'field_id'           => $checkpoint->fieldId,
-                'slot_assignment_id' => $newSlot->slotAssignmentId,
-                'declared_type'      => $checkpoint->targetDeclaredType,
-                'is_filterable'      => $checkpoint->targetIsFilterable,
+                'event'                => 'promote_to_ready',
+                'source'               => 'registry',
+                'correlation_id'       => $lifecycleCorrelationId,
+                'chunk_correlation_id' => $chunkCorrelationId,
+                'tenant_id'            => $checkpoint->tenantId,
+                'field_id'             => $checkpoint->fieldId,
+                'slot_assignment_id'   => $newSlot->slotAssignmentId,
+                'declared_type'        => $checkpoint->targetDeclaredType,
+                'is_filterable'        => $checkpoint->targetIsFilterable,
             ]);
 
             // Triggers `cardinality_sampled` (always) and
             // `low_cardinality_index` (conditionally) per ADR 0019.
-            $this->cardinalitySampler->sampleSlot($newSlot->slotAssignmentId);
+            //
+            // Both advisories below take the *lifecycle* id rather than
+            // the chunk's. They fire because the promotion happened and
+            // they describe the state it produced, so ADR 0020 makes
+            // them sub-events of the retype — the whole lifecycle, from
+            // `retype_started` through `slot_reserved` and
+            // `promote_to_ready` to these two samples, reads as one
+            // thread. For a compaction that thread reaches all the way
+            // back to `compaction_planned`, which is what makes ADR
+            // 0031's "spread sample is the built-in success check"
+            // actually checkable against the operation it judges.
+            $this->cardinalitySampler->sampleSlot(
+                $newSlot->slotAssignmentId,
+                $lifecycleCorrelationId,
+            );
 
             // ADR 0031 post-relocation one-shot. A retype vacates one
             // slot and claims another, so it can move the model onto a
@@ -297,7 +324,11 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
             // the next daily sample. Fires here rather than at
             // initiation because the relocation is only complete once
             // the slot reaches `ready`.
-            $this->spreadSampler->sampleModel($checkpoint->tenantId, $checkpoint->modelId);
+            $this->spreadSampler->sampleModel(
+                $checkpoint->tenantId,
+                $checkpoint->modelId,
+                $lifecycleCorrelationId,
+            );
         }
 
         return TickOutcome::WORK_DONE;

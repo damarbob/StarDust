@@ -15,6 +15,7 @@ use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Support\LikePattern;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -118,6 +119,10 @@ final class DeleteModelInitiator
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
 
+        // The lifecycle id, persisted onto the checkpoint below so the
+        // purge can emit `model_delete_complete` under it.
+        $correlationId = UuidV4::generate();
+
         $this->pdo->beginTransaction();
 
         try {
@@ -172,7 +177,7 @@ final class DeleteModelInitiator
             $bump->execute([$now]);
 
             // 7. Open the purge.
-            $this->modelCheckpoints->insertOrReset($modelId, $now);
+            $this->modelCheckpoints->insertOrReset($modelId, $now, $correlationId);
 
             $this->pdo->commit();
         } catch (Throwable $e) {
@@ -186,6 +191,7 @@ final class DeleteModelInitiator
         $this->logger->info('model deletion started', [
             'event'            => 'model_delete_started',
             'source'           => 'registry',
+            'correlation_id'   => $correlationId,
             'tenant_id'        => $tenantId,
             'model_id'         => $modelId,
             'model_name'       => $model['name'],

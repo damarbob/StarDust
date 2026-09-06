@@ -9,6 +9,7 @@ use PDO;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\ModelNameConflictException;
 use StarDust\Exception\ModelNotFoundException;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -137,13 +138,20 @@ final class ModelRenamer
             throw $e;
         }
 
+        // Minted here rather than threaded in: a model rename is one
+        // committed UPDATE with no asynchronous half and no sub-events,
+        // so the operation and the event are the same thing. It is
+        // explicit anyway, because a synthesised id from the logger is
+        // indistinguishable from a threaded one and that is exactly how
+        // nine sites drifted unnoticed.
         $this->logger->info('model renamed', [
-            'event'     => 'model_renamed',
-            'source'    => 'registry',
-            'tenant_id' => $tenantId,
-            'model_id'  => $modelId,
-            'old_name'  => $currentName,
-            'new_name'  => $newName,
+            'event'          => 'model_renamed',
+            'source'         => 'registry',
+            'correlation_id' => UuidV4::generate(),
+            'tenant_id'      => $tenantId,
+            'model_id'       => $modelId,
+            'old_name'       => $currentName,
+            'new_name'       => $newName,
         ]);
     }
 

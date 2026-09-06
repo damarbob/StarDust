@@ -30,6 +30,13 @@ final class ModelDeleteCheckpoint
         public readonly int $modelId,
         public readonly int $tenantId,
         public readonly int $lastProcessedId,
+        /**
+         * The lifecycle id minted by `DeleteModelInitiator` and stamped
+         * onto `model_delete_started`. Null for a checkpoint opened
+         * before the column existed, in which case the work source falls
+         * back to the chunk id.
+         */
+        public readonly ?string $correlationId = null,
     ) {
     }
 }

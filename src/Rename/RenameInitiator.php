@@ -15,6 +15,7 @@ use StarDust\Exception\FieldNotFoundException;
 use StarDust\Exception\RenameInProgressException;
 use StarDust\Exception\RetypeInProgressException;
 use StarDust\Retype\RetypeCheckpointRepository;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -85,6 +86,12 @@ final class RenameInitiator
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
 
+        // The lifecycle id. Minted at the operation boundary the way
+        // CompactionService does, and — unlike compaction, which finishes
+        // in one call — persisted onto the checkpoint below so the
+        // asynchronous half can emit `rename_complete` under it.
+        $correlationId = UuidV4::generate();
+
         $this->pdo->beginTransaction();
         try {
             // Inside the transaction, not before it: the check
@@ -108,7 +115,7 @@ final class RenameInitiator
             );
             $bump->execute([$now]);
 
-            $this->renameCheckpoints->insertOrReset($fieldId, $now);
+            $this->renameCheckpoints->insertOrReset($fieldId, $now, $correlationId);
 
             $this->pdo->commit();
         } catch (Throwable $e) {
@@ -119,13 +126,14 @@ final class RenameInitiator
         }
 
         $this->logger->info('field rename started', [
-            'event'     => 'rename_started',
-            'source'    => 'registry',
-            'tenant_id' => $tenantId,
-            'model_id'  => $field['model_id'],
-            'field_id'  => $fieldId,
-            'old_name'  => $field['name'],
-            'new_name'  => $newName,
+            'event'          => 'rename_started',
+            'source'         => 'registry',
+            'correlation_id' => $correlationId,
+            'tenant_id'      => $tenantId,
+            'model_id'       => $field['model_id'],
+            'field_id'       => $fieldId,
+            'old_name'       => $field['name'],
+            'new_name'       => $newName,
         ]);
     }
 

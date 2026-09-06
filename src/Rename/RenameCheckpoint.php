@@ -25,6 +25,13 @@ final class RenameCheckpoint
         public readonly int $lastProcessedId,
         public readonly string $currentName,
         public readonly string $previousName,
+        /**
+         * The lifecycle id minted by `RenameInitiator` and stamped onto
+         * `rename_started`. Null for a checkpoint opened before the
+         * column existed, in which case the work source falls back to the
+         * chunk id and behaves exactly as it did before.
+         */
+        public readonly ?string $correlationId = null,
     ) {
     }
 }

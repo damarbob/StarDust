@@ -87,6 +87,12 @@ Same reasoning and the same trap as the rename executor: `json_decode($json, tru
 
 **One path guard, not two.** `JSON_CONTAINS_PATH(fields, 'one', :path)` is for idempotence and an honest `rowCount()` — `JSON_REMOVE` on an absent path is already a no-op. The rename executor's second guard protects a destination key from a stale write; a delete has no destination.
 
+## One correlation id spans both halves
+
+Both initiators mint a v4 UUID at the operation boundary, stamp `delete_started` / `model_delete_started` with it, and persist it to `backfill_checkpoints.correlation_id` in the severance transaction; both work sources read it back and emit `delete_complete` / `model_delete_complete` under it, with the tick's id preserved as `chunk_correlation_id`. Mechanism, fallback semantics and the second-lifecycle reset trap are all documented once in `src/Rename/CLAUDE.md`.
+
+It matters more here than anywhere else in the engine. A model purge is the one drain that destroys rows, and `model_delete_started` is often the last human-legible record of what a model *was* — field count, slots tombstoned, name. Without a shared id, reconstructing "what did this deletion actually remove" from a `model_delete_complete` line meant matching on `model_id` and a timestamp against an id that had already been reused by every intervening tick.
+
 ## No `CAPACITY_WAIT`
 
 The purge touches no slot — the initiator already tombstoned it — so it can never be blocked on inventory. The work source returns `WORK_DONE`, `IDLE`, or `LOCK_WAIT`.

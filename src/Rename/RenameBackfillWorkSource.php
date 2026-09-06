@@ -171,15 +171,25 @@ final class RenameBackfillWorkSource implements ReconcilerWorkSource
         ]);
 
         if ($result->isFinalChunk) {
+            // The lifecycle id, not the chunk's: this event closes the
+            // operation `rename_started` opened, possibly hours and
+            // certainly many chunks ago, and ADR 0020 requires the two
+            // join. The chunk id rides alongside under its own key so the
+            // tick that finished the drain is still findable — the same
+            // name `stardust_reconciler_dlq` uses for the same purpose.
+            // The `??` covers a checkpoint opened before the column
+            // existed, which keeps the previous behaviour rather than
+            // emitting null.
             $this->logger->info('field rename complete', [
-                'event'          => 'rename_complete',
-                'source'         => 'registry',
-                'correlation_id' => $chunkCorrelationId,
-                'tenant_id'      => $checkpoint->tenantId,
-                'model_id'       => $checkpoint->modelId,
-                'field_id'       => $checkpoint->fieldId,
-                'old_name'       => $checkpoint->previousName,
-                'new_name'       => $checkpoint->currentName,
+                'event'                => 'rename_complete',
+                'source'               => 'registry',
+                'correlation_id'       => $checkpoint->correlationId ?? $chunkCorrelationId,
+                'chunk_correlation_id' => $chunkCorrelationId,
+                'tenant_id'            => $checkpoint->tenantId,
+                'model_id'             => $checkpoint->modelId,
+                'field_id'             => $checkpoint->fieldId,
+                'old_name'             => $checkpoint->previousName,
+                'new_name'             => $checkpoint->currentName,
             ]);
         }
 

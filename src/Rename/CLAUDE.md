@@ -68,6 +68,16 @@ Nothing deletes a *rename* checkpoint, and `ux_backfill_job_name` is UNIQUE, so 
 
 **Correction, 2026-08-24.** This section used to open "Nothing in the engine ever deletes from `backfill_checkpoints`". That is no longer true: ADR 0037's `DeleteCheckpointRepository` deletes terminal rename/retype rows at deletion initiation, and deletes its own row on the purge's final chunk (`src/Delete/CLAUDE.md`). The conclusion is unaffected — a rename checkpoint is still only ever cleared by a *field deletion*, which refuses to start while a rename is running, so the upsert remains necessary.
 
+## One correlation id spans both halves
+
+`RenameInitiator` mints a v4 UUID at the operation boundary, stamps `rename_started` with it, and writes it to `backfill_checkpoints.correlation_id` in the same transaction. `RenameBackfillWorkSource` reads it back off the claimed checkpoint and emits `rename_complete` under it, with the per-tick id preserved beside it as `chunk_correlation_id`.
+
+**The `reconciler`-source `chunk_claimed` / `chunk_complete` events are untouched** — their operation genuinely is the chunk. Only the one `registry`-source event at the end of the drain switches, because that one closes what `rename_started` opened.
+
+`insertOrReset()` resets the column on the UPDATE branch, for the same reason it resets everything else: a *second* rename of the same field reuses the row, and inheriting the first id would join this drain's completion to a start that described a different rename. `LifecycleCorrelationTest::testASecondRenameDoesNotInheritTheFirstsId` pins it; both it and the join test were validated by neutering.
+
+The `??  $chunkCorrelationId` fallback covers a checkpoint opened before the column existed. That is not defensive padding — it is what makes the ALTER safe to run under a live fleet, and `testAPreExistingCheckpointFallsBackToTheChunkId` asserts the fallback is the chunk id rather than null, since ADR 0020 types the field non-nullable.
+
 ## Final-chunk atomicity
 
 `markCompleted()` + clearing `previous_name` + the schema-version bump commit **together**. A reader refreshing its snapshot between the clear and the bump would lose the fallback while un-migrated rows still existed.

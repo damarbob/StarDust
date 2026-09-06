@@ -174,13 +174,18 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
         ]);
 
         if ($finalising) {
+            // The lifecycle id, not the chunk's — this closes the
+            // operation `model_delete_started` opened. See the equivalent
+            // note in RenameBackfillWorkSource for the full rationale and
+            // for why the chunk id stays under its own key.
             $this->logger->info('model deletion complete', [
-                'event'          => 'model_delete_complete',
-                'source'         => 'registry',
-                'correlation_id' => $chunkCorrelationId,
-                'tenant_id'      => $checkpoint->tenantId,
-                'model_id'       => $checkpoint->modelId,
-                'fields_dropped' => $fieldsDropped,
+                'event'                => 'model_delete_complete',
+                'source'               => 'registry',
+                'correlation_id'       => $checkpoint->correlationId ?? $chunkCorrelationId,
+                'chunk_correlation_id' => $chunkCorrelationId,
+                'tenant_id'            => $checkpoint->tenantId,
+                'model_id'             => $checkpoint->modelId,
+                'fields_dropped'       => $fieldsDropped,
             ]);
         }
 

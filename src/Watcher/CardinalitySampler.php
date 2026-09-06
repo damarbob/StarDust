@@ -35,9 +35,15 @@ final class CardinalitySampler
     ) {
     }
 
-    public function sample(): void
+    /**
+     * `$correlationId` is the Watcher cycle this sweep runs inside, so
+     * every `cardinality_sampled` it emits joins that tick's
+     * `poll_started` / `poll_complete`. Null mints one, for a caller
+     * that is its own operation boundary.
+     */
+    public function sample(?string $correlationId = null): void
     {
-        $correlationId = UuidV4::generate();
+        $correlationId ??= UuidV4::generate();
 
         $slots = PdoQuery::run($this->pdo,
             "SELECT a.id AS slot_assignment_id, a.field_id, a.page_id, a.slot_column,"
@@ -65,8 +71,14 @@ final class CardinalitySampler
      * `ready` status at sample time. Pre-promotion `backfilling`
      * rows are intentionally not sampled — they have incomplete data
      * and would skew the baseline.
+     *
+     * `$correlationId` is the promotion's id — the same one
+     * `promote_to_ready` carries. This sample exists *because* that
+     * promotion happened and reports the state it produced, so under
+     * ADR 0020 it is a sub-event of the retype rather than an operation
+     * of its own.
      */
-    public function sampleSlot(int $slotAssignmentId): void
+    public function sampleSlot(int $slotAssignmentId, ?string $correlationId = null): void
     {
         $stmt = $this->pdo->prepare(
             'SELECT a.id AS slot_assignment_id, a.field_id, a.page_id, a.slot_column,'
@@ -80,7 +92,7 @@ final class CardinalitySampler
         if ($row === false) {
             return;
         }
-        $this->sampleSlotRow($row, UuidV4::generate(), 'post_backfill');
+        $this->sampleSlotRow($row, $correlationId ?? UuidV4::generate(), 'post_backfill');
     }
 
     /**

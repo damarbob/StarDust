@@ -43,7 +43,7 @@ final class RetypeCheckpointRepository
     public function loadOneClaimable(): ?RetypeCheckpoint
     {
         $stmt = $this->pdo->prepare(
-            'SELECT c.id, c.last_processed_id, c.source_declared_type,'
+            'SELECT c.id, c.last_processed_id, c.source_declared_type, c.correlation_id,'
             . ' f.id AS field_id, f.name AS field_name,'
             . ' f.declared_type AS target_declared_type,'
             . ' f.is_filterable AS target_is_filterable,'
@@ -71,6 +71,7 @@ final class RetypeCheckpointRepository
             targetDeclaredType: (string) $row['target_declared_type'],
             targetIsFilterable: (bool) $row['target_is_filterable'],
             fieldName: (string) $row['field_name'],
+            correlationId: $row['correlation_id'] === null ? null : (string) $row['correlation_id'],
         );
     }
 
@@ -191,19 +192,31 @@ final class RetypeCheckpointRepository
      * `lastInsertId()` reporting 0 on the UPDATE branch of an upsert —
      * a workaround for a value none of their callers read either.
      */
-    public function insertOrReset(int $fieldId, string $sourceDeclaredType, string $now): void
-    {
+    public function insertOrReset(
+        int $fieldId,
+        string $sourceDeclaredType,
+        string $now,
+        ?string $correlationId = null,
+    ): void {
         $stmt = $this->pdo->prepare(
             'INSERT INTO backfill_checkpoints'
-            . ' (job_name, last_processed_id, status, started_at, updated_at, source_declared_type)'
-            . " VALUES (?, 0, 'running', ?, ?, ?)"
+            . ' (job_name, last_processed_id, status, started_at, updated_at,'
+            . '  source_declared_type, correlation_id)'
+            . " VALUES (?, 0, 'running', ?, ?, ?, ?)"
             . ' ON DUPLICATE KEY UPDATE'
             . "     last_processed_id = 0, status = 'running',"
             . '     started_at = VALUES(started_at), updated_at = VALUES(updated_at),'
             . '     completed_at = NULL, last_error = NULL,'
-            . '     source_declared_type = VALUES(source_declared_type)'
+            . '     source_declared_type = VALUES(source_declared_type),'
+            . '     correlation_id = VALUES(correlation_id)'
         );
-        $stmt->execute([self::jobNameFor($fieldId), $now, $now, $sourceDeclaredType]);
+        $stmt->execute([
+            self::jobNameFor($fieldId),
+            $now,
+            $now,
+            $sourceDeclaredType,
+            $correlationId,
+        ]);
     }
 
     public function advance(int $checkpointId, int $newLastProcessedId, string $now): void

@@ -17,6 +17,7 @@ use StarDust\Exception\RetypeInProgressException;
 use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -111,12 +112,20 @@ final class RetypeInitiator
      * up front, so reaching this failure means the registry changed under
      * the plan — re-running replans against the new state.
      *
+     * `$correlationId` is compaction's operation id: a relocation is a
+     * sub-event of the `compaction_planned` that ordered it, so the
+     * retype it opens rides that id rather than minting its own.
+     *
      * @throws CompactionCapacityException when the pinned page has no indexed
      *                                     free slot of the field's family
      */
-    public function initiateRelocation(int $tenantId, int $fieldId, int $pinnedPageId): void
-    {
-        $this->runTuple($tenantId, $fieldId, null, null, $pinnedPageId);
+    public function initiateRelocation(
+        int $tenantId,
+        int $fieldId,
+        int $pinnedPageId,
+        ?string $correlationId = null,
+    ): void {
+        $this->runTuple($tenantId, $fieldId, null, null, $pinnedPageId, $correlationId);
     }
 
     public function initiate(
@@ -125,7 +134,7 @@ final class RetypeInitiator
         ?string $newDeclaredType,
         ?bool $newIsFilterable,
     ): void {
-        $this->runTuple($tenantId, $fieldId, $newDeclaredType, $newIsFilterable, null);
+        $this->runTuple($tenantId, $fieldId, $newDeclaredType, $newIsFilterable, null, null);
     }
 
     /**
@@ -134,6 +143,13 @@ final class RetypeInitiator
      * `$pinnedPageId` is the only behavioural fork: when set, the
      * reservation is page-pinned and a miss is fatal rather than
      * deferred.
+     *
+     * `$correlationId` is the enclosing operation's id when there is one
+     * (compaction), and `null` when this *is* the operation boundary
+     * (`initiate()`), in which case one is minted below. Either way the
+     * same id covers `retype_started` and the `slot_reserved` beside it,
+     * and is persisted onto the checkpoint so `promote_to_ready` joins
+     * them from the other side of the drain.
      */
     private function runTuple(
         int $tenantId,
@@ -141,7 +157,10 @@ final class RetypeInitiator
         ?string $newDeclaredType,
         ?bool $newIsFilterable,
         ?int $pinnedPageId,
+        ?string $correlationId,
     ): void {
+        $correlationId ??= UuidV4::generate();
+
         $newSlot = null;
         $newSlotEmittedStatus = 'backfilling';
         $oldSlotId = null;
@@ -303,7 +322,12 @@ final class RetypeInitiator
             //    authoritative (ADR 0013), so no checkpoint is written
             //    and the Reconciler has nothing to claim.
             if ($backfillRequired) {
-                $this->checkpointRepository->insertOrReset($fieldId, $oldDeclaredType, $now);
+                $this->checkpointRepository->insertOrReset(
+                    $fieldId,
+                    $oldDeclaredType,
+                    $now,
+                    $correlationId,
+                );
             }
 
             $this->pdo->commit();
@@ -315,12 +339,19 @@ final class RetypeInitiator
         }
 
         if ($newSlot !== null) {
-            $this->slotReserver->emitSlotReservedEvent($fieldId, $newSlot, $newSlotEmittedStatus);
+            $this->slotReserver->emitSlotReservedEvent(
+                $fieldId,
+                $newSlot,
+                $newSlotEmittedStatus,
+                $tenantId,
+                $correlationId,
+            );
         }
 
         $this->logger->info('retype started', [
             'event'                  => 'retype_started',
             'source'                 => 'registry',
+            'correlation_id'         => $correlationId,
             'tenant_id'              => $tenantId,
             'field_id'               => $fieldId,
             'old_declared_type'      => $oldDeclaredType,

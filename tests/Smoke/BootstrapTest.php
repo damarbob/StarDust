@@ -360,6 +360,60 @@ final class BootstrapTest extends TestCase
     }
 
     /**
+     * `backfill_checkpoints.correlation_id` carries an asynchronous
+     * lifecycle's ADR 0020 operation id across the process boundary
+     * between the initiator and the Reconciler work source that finishes
+     * the job.
+     *
+     * **Nullable is the load-bearing part.** A checkpoint already
+     * `running` when this ALTER lands under a live fleet has no id, and
+     * every reader falls back to the chunk id for exactly that row — so
+     * the column is safe to add without draining first. A NOT NULL
+     * column with a default would have to invent an id that joins
+     * nothing, which is worse than the honest null.
+     */
+    public function testBootstrapAddsBackfillCheckpointsCorrelationIdColumn(): void
+    {
+        (new Bootstrapper($this->pdo))->run();
+
+        $column = $this->pdo
+            ->query(
+                'SELECT IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH'
+                . ' FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'backfill_checkpoints'"
+                . " AND column_name = 'correlation_id'"
+            )
+            ->fetch(\PDO::FETCH_ASSOC);
+
+        self::assertIsArray($column, 'correlation_id column must be present after bootstrap.');
+        self::assertSame(
+            'YES',
+            $column['IS_NULLABLE'],
+            'correlation_id must be nullable — see the docblock above.',
+        );
+        self::assertSame('varchar', $column['DATA_TYPE']);
+        self::assertSame(
+            36,
+            (int) $column['CHARACTER_MAXIMUM_LENGTH'],
+            'correlation_id must hold a canonical hyphenated v4 UUID.',
+        );
+
+        (new Bootstrapper($this->pdo))->run();
+        (new Bootstrapper($this->pdo))->run();
+
+        $exists = (int) $this->pdo
+            ->query(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'backfill_checkpoints'"
+                . " AND column_name = 'correlation_id'"
+            )
+            ->fetchColumn();
+        self::assertSame(1, $exists, 'Re-running bootstrap must not duplicate the column.');
+    }
+
+    /**
      * ADR 0036 deliverable: `stardust_fields.previous_name` is
      * provisioned by the bootstrap runner and re-runs are
      * non-destructive. Nullable with no default, so existing rows stay

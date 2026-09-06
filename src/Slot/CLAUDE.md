@@ -43,6 +43,22 @@ Two of the three have production callers:
 
 Worth knowing while reading the candidate query: `ORDER BY a.page_id, a.id` means **a recycled slot is the preferred candidate, not a leftover.** A reclaimed column is a low inventory id on an old page, so it outranks every ADR 0042 headroom column on a newer page and every higher-id sibling on its own. Whatever invariant a reclaimed slot carries is therefore the common case for the next reservation, not a rare one.
 
+### `emitSlotReservedEvent()` takes the tenant and the operation id as parameters
+
+Both were missing. `slot_reserved` carried no `tenant_id` at all — which ADR 0020 requires "for any event tied to tenant-owned data", and a slot assignment is — and no explicit `correlation_id`, so every reservation appeared under an id the logger had synthesised for it and joined nothing. `resolveReservableField()` now joins `stardust_models` to carry `tenantId` alongside the model id it already read; the join is free in locking terms because that read runs *before* `beginTransaction()` on the own-transaction paths.
+
+**`tenantId` is a parameter rather than a field on `SlotAssignment`, which is the deliberate opposite of the `affinity` decision below.** Affinity is a property of the assignment and its post-commit callers would have to guess it; the tenant is a property of the *field*, and `RetypeInitiator` and `RetypeBackfillWorkSource` both hold it already. It is also non-nullable on purpose — an omittable parameter reopens exactly the hole it closes.
+
+**Which id a reservation carries depends on which operation reserved it**, and there are three:
+
+| Caller | Id it passes |
+| :-- | :-- |
+| `RetypeInitiator` (post-commit) | The retype's lifecycle id — or compaction's, when the retype is a relocation |
+| `RetypeBackfillWorkSource` (deferred reservation) | The **chunk's** id, not the lifecycle's — the chunk is what found the capacity and took the slot |
+| `UnmappedFieldReserver` → `reserveForExhaustionBackfill()` | The claiming chunk's id, threaded from `SyncQueueWorkSource` |
+
+That second row is the one worth not "correcting" for consistency: a deferred reservation and the `promote_to_ready` that eventually follows it belong to different operations, and collapsing them would lose the distinction between "the lifecycle finished" and "this tick unblocked it".
+
 ## `LiveSlotTombstoner`
 
 The shared `assigned|backfilling|ready → tombstoned` two-step, extracted from `RetypeInitiator` once `DeleteFieldInitiator` needed the identical sequence. **The caller owns the transaction** — every lifecycle that severs a slot does so as one step of a larger atomic tuple. Three invariants ride on it, all documented at length in the class docblock:

@@ -33,6 +33,14 @@ Locked by `tests/Smoke/Retype/SameTypeRelocationTest.php` — the premise everyt
 
 **Candidate pages are limited to those the model already occupies.** A deliberate v1 restriction: compaction *consolidates*, never migrating a model onto a page it has never touched. Bounds the blast radius and guarantees the search terminates, since the current layout is always feasible. The cost is that a large empty page elsewhere is not considered. Widening it needs a policy for how aggressively compaction may claim shared capacity.
 
+## The operation id threads all the way down
+
+`compact()` has minted a `correlation_id` at its boundary since ADR 0033, and it was the engine's model for what a `registry`-source id should be — but it only ever covered its own two events. It now goes into `RetypeInitiator::initiateRelocation()` as well, so each relocation's `retype_started` and `slot_reserved` carry it too, and the whole compaction is one joinable operation three levels deep.
+
+This is the widest span the engine has, and the reason it is worth having: a compaction is one thing an operator did, and without the threading each relocation reads in the log as an unrelated retype that happened to occur nearby. Read `src/Logging/CLAUDE.md` before concluding a missing id would have been visible — it would not have been, and that is the whole point of `RegistryCorrelationTest`.
+
+Note the id does **not** reach `promote_to_ready` by this route. It gets there through `backfill_checkpoints.correlation_id`, which the relocation's own checkpoint carries — so the drain that completes a relocation joins the compaction as well, across the process boundary.
+
 ## Pin-or-fail, not defer
 
 The one deliberate divergence from ADR 0016 commitment 4. `RetypeInitiator::initiateRelocation()` reserves on the planner's page via `SlotReserver::reserveForBackfillOnPageWithinTransaction()`, and a miss **throws inside the transaction** so the whole tuple rolls back — old slot un-tombstoned, no checkpoint, no version bump. A relocation that fails *at initiation* therefore leaves nothing to unpick.

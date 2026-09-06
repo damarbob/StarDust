@@ -10,6 +10,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Support\PdoQuery;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -116,9 +117,15 @@ final class PageProvisioner
      *                                      on the page and receives a composite
      *                                      `(tenant_id, slot_column)` index. Unknown column names
      *                                      and an empty list both throw `InvalidArgumentException`.
+     * @param ?string      $correlationId   The enclosing operation's id, per ADR 0020's
+     *                                      "carried through any sub-events emitted within the
+     *                                      same operation". The Watcher passes its cycle id so
+     *                                      `page_provisioned` joins the `provision_started` that
+     *                                      ordered it; `null` means no enclosing operation and
+     *                                      mints one.
      * @return int The new `stardust_pages.id`, equal to the X in `entry_slots_page_X`.
      */
-    public function provision(array $filterableSlots): int
+    public function provision(array $filterableSlots, ?string $correlationId = null): int
     {
         $filterableSlots = $this->validateFilterableSlots($filterableSlots);
 
@@ -174,6 +181,7 @@ final class PageProvisioner
         $this->logger->info('page provisioned', [
             'event'            => 'page_provisioned',
             'source'           => 'registry',
+            'correlation_id'   => $correlationId ?? UuidV4::generate(),
             'page_id'          => $pageNumber,
             'table_name'       => $tableName,
             // Already a normalised list — reassigned from

@@ -251,7 +251,11 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
                 // rather than in the loop is what keeps the chunk's
                 // shape unchanged and the schema_version bump out of a
                 // chunk transaction — see UnmappedFieldReserver.
-                if ($this->unmappedFieldReserver->reserveFor($stalledEntryId, $stalledFields) > 0) {
+                if ($this->unmappedFieldReserver->reserveFor(
+                    $stalledEntryId,
+                    $stalledFields,
+                    $chunkCorrelationId,
+                ) > 0) {
                     // Capacity now exists. Emitting `capacity_wait`
                     // here would report a resolved wait as an alert;
                     // the reserver's `slot_reserved` event already

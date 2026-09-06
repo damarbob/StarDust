@@ -191,10 +191,15 @@ final class CompactionService
         ]);
 
         foreach ($plan->relocations as $relocation) {
+            // The operation id goes down with each relocation, so the
+            // `retype_started` and `slot_reserved` it produces join the
+            // `compaction_planned` that ordered them rather than reading
+            // as unrelated retypes.
             $this->retypeInitiator->initiateRelocation(
                 $tenantId,
                 $relocation->fieldId,
                 $relocation->toPageId,
+                $correlationId,
             );
 
             $this->awaitRelocation($relocation);

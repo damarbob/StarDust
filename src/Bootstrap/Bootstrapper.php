@@ -45,6 +45,7 @@ final class Bootstrapper
         $this->ensureSlotAssignmentFieldLiveUniqueIndex();
         $this->ensureSlotAssignmentSweepGapColumn();
         $this->ensureBackfillCheckpointsSourceTypeColumn();
+        $this->ensureBackfillCheckpointsCorrelationIdColumn();
         $this->ensureFieldsPreviousNameColumn();
         $this->ensureFieldsDeletedAtColumn();
         $this->ensureModelsDeletedAtColumn();
@@ -426,6 +427,57 @@ final class Bootstrapper
             $this->pdo->exec(<<<'SQL'
                 ALTER TABLE backfill_checkpoints
                     ADD COLUMN source_declared_type VARCHAR(16) NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * ADR 0020's `correlation_id` must be "carried through any sub-events
+     * emitted within the same operation" — and for the four asynchronous
+     * lifecycles (rename, retype, field delete, model delete) the
+     * operation spans two processes. The initiator commits and returns;
+     * the Reconciler emits the completion event minutes or hours later.
+     *
+     * This column is what joins them. The initiator mints one id, writes
+     * it here in the same transaction that opens the checkpoint, and
+     * emits its `*_started` event under it; the work source reads it back
+     * and emits `rename_complete` / `promote_to_ready` / `delete_complete`
+     * / `model_delete_complete` under the same id. Before it, both halves
+     * carried ids that correlated to nothing across the seam — the
+     * completion events rode the *per-chunk* id, which changes every
+     * tick.
+     *
+     * Nullable, and every reader falls back to the chunk id when it is
+     * null. That is what makes the column safe to add under a running
+     * fleet: a checkpoint already `running` when the ALTER lands keeps
+     * the previous behaviour rather than emitting a null id. Backfill
+     * Pump CLI checkpoints never populate it either, for the same reason
+     * `source_declared_type` above is nullable.
+     *
+     * VARCHAR(36) is the canonical hyphenated v4 UUID width that
+     * {@see \StarDust\Support\UuidV4::generate()} emits.
+     */
+    private function ensureBackfillCheckpointsCorrelationIdColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'backfill_checkpoints'
+              AND column_name = 'correlation_id'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE backfill_checkpoints
+                    ADD COLUMN correlation_id VARCHAR(36) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
             if (! $this->isDuplicateFieldName($e)) {

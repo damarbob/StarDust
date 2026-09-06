@@ -149,6 +149,40 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
         }
     }
 
+    /**
+     * ADR 0020: the cycle id is "carried through any sub-events emitted
+     * within the same operation". `page_provisioned` is emitted by
+     * `PageProvisioner` from inside the provisioning window, so it must
+     * carry the tick's id rather than one of its own.
+     *
+     * This is the shape the logger hides: without the threading,
+     * `page_provisioned` still carries a well-formed UUID — a
+     * *synthesised* one — so the record looks correct and simply does
+     * not join the pair around it.
+     */
+    public function testPageProvisionedJoinsTheTickThatOrderedIt(): void
+    {
+        $modelId = $this->createModel(1);
+        $this->unmappedFilterableField($modelId, 'numeric');
+
+        $records = $this->tickAndReadLog();
+
+        $started     = $this->record($records, 'provision_started');
+        $provisioned = $this->record($records, 'page_provisioned');
+        $complete    = $this->record($records, 'provision_complete');
+
+        self::assertNotNull($provisioned, 'page_provisioned must fire.');
+        self::assertNotNull($started);
+        self::assertNotNull($complete);
+
+        self::assertSame(
+            $started['correlation_id'],
+            $provisioned['correlation_id'],
+            'page_provisioned must carry the Watcher cycle id, not a fresh one.',
+        );
+        self::assertSame($started['correlation_id'], $complete['correlation_id']);
+    }
+
     public function testPollStartedCarriesUsableCapacityAndPendingDemand(): void
     {
         $this->provisionPageWithIndexedFamily('str', 2);
