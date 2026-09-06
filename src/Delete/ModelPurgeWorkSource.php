@@ -281,11 +281,21 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
             // COALESCE so an already-tombstoned row keeps its original
             // stamp — resetting it would push the slot back in the
             // Liberator's `ORDER BY tombstoned_at` reclaim order.
+            //
+            // ADR 0045: clear both sweep annotations, exactly as
+            // `LiveSlotTombstoner` does — this is the engine's second
+            // tombstone site, and a reset in only one of them recycles
+            // stale cursors through the other. The status guard below is
+            // what makes it safe: an already-`tombstoned` slot, which
+            // the Liberator may be mid-sweep on, matches nothing here
+            // and keeps the cursor that is correct for its own sweep.
             $tombstone = $this->pdo->prepare(
                 'UPDATE stardust_slot_assignments'
                 . " SET status = 'tombstoned',"
                 . '     tombstoned_at = COALESCE(tombstoned_at, ?),'
-                . '     updated_at = ?'
+                . '     updated_at = ?,'
+                . '     sweep_cursor_id = NULL,'
+                . '     sweep_gap_count = 0'
                 . " WHERE id IN ({$placeholders})"
                 . "   AND status IN ('assigned','backfilling','ready')"
             );

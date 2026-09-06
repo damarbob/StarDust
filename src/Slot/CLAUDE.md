@@ -37,6 +37,24 @@ Two of the three have production callers:
 
 **The ADR 0007 path closed a gap this section used to warn about.** Before it, no production path reserved for a plain unmapped filterable field, so a field registered filterable through `schemaBuilder()` never acquired a slot and the Watcher's `pending_demand` gauge had nothing that drained it. `SyncQueueWorkSource` now reserves (see `src/Reconciler/CLAUDE.md`), so a perpetually non-zero `pending_demand` is once again a real signal worth investigating.
 
+### `reserveCore()` does **not** reset the sweep annotations, and that is now deliberate (ADR 0045)
+
+`SlotSweeper` used to carry a comment saying "the SlotReserver is the right place to reset `sweep_gap_count` on the next `free → assigned` transition". It never did, for that column or for `sweep_cursor_id`, and ADR 0045 withdrew the proposal rather than implementing it: the reset belongs on the *tombstone*, which fails closed — a sweep that starts too early costs one idempotent pass, one that starts too late leaves the previous occupant's data in a column this class is about to hand to a filter. See `LiveSlotTombstoner` below and `src/Liberator/CLAUDE.md`.
+
+Worth knowing while reading the candidate query: `ORDER BY a.page_id, a.id` means **a recycled slot is the preferred candidate, not a leftover.** A reclaimed column is a low inventory id on an old page, so it outranks every ADR 0042 headroom column on a newer page and every higher-id sibling on its own. Whatever invariant a reclaimed slot carries is therefore the common case for the next reservation, not a rare one.
+
+## `LiveSlotTombstoner`
+
+The shared `assigned|backfilling|ready → tombstoned` two-step, extracted from `RetypeInitiator` once `DeleteFieldInitiator` needed the identical sequence. **The caller owns the transaction** — every lifecycle that severs a slot does so as one step of a larger atomic tuple. Three invariants ride on it, all documented at length in the class docblock:
+
+1. `field_id` is cleared **before** the status flip, never after and never in one UPDATE, so `ux_slot_assignments_field_live` cannot collide with a later reservation taking the same field.
+2. The same clear releases the `RESTRICT` `fk_slot_assignments_field` *inside* the transaction, which is what lets ADR 0037's `deleteField()` hard-delete the field row in the same tuple instead of waiting on a sweep.
+3. **ADR 0045**: the status flip also sets `sweep_cursor_id = NULL, sweep_gap_count = 0`. A tombstone is the start of a sweep, and a sweep starts at the beginning of the page.
+
+The `status IN ('assigned','backfilling','ready')` filter on the opening SELECT is what makes (3) safe: a slot that is *already* `tombstoned` — one the Liberator may be sweeping right now — is never selected, so nothing here can restart a sweep in flight.
+
+`Delete\ModelPurgeWorkSource` inlines the same two-step to batch a whole model's slots in its final chunk, under the same status guard. **It is the one legitimate copy**, so all three invariants have to be maintained in two files; `RetryableLockFailure`'s history is the argument for not adding a third.
+
 ## Model affinity (ADR 0032)
 
 `reserveCore()` biases candidate selection toward pages already hosting a **live** slot of the same model, falling back to global-oldest when no affine candidate of the family exists. The model id rides along from `resolveReservableField()`'s existing row read, so no `reserve*()` signature gained a parameter. The outcome lands on `SlotAssignment::$affinity` (`co_located | fallback`) and in the existing `slot_reserved` event — additive, so no ADR 0020 change.

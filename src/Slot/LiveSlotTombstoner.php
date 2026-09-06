@@ -33,6 +33,28 @@ use PDO;
  *    of waiting on a Liberator sweep. Verified against MySQL 8.0.13: the
  *    same DELETE fails with errno 1451 before this runs and succeeds
  *    immediately after.
+ * 3. **ADR 0045** — the status flip also clears `sweep_cursor_id` and
+ *    `sweep_gap_count`. A tombstone is the *start* of a sweep, and a
+ *    sweep starts at the beginning of the page. Nothing else in `src/`
+ *    resets either column, so without this a recycled slot's second
+ *    sweep resumed from the first occupant's final cursor, completed
+ *    over an empty range, and returned to `free` still holding the
+ *    previous field's values — ADR 0009's data-bleeding hazard, reached
+ *    through the reuse ADR 0009 declares safe. Measured on MySQL
+ *    8.0.13 over a promote/demote cycle: twenty rows survived into
+ *    `free` with `sweep_chunk` and `sweep_complete` both honest for the
+ *    range actually walked. The reset rides on the status flip rather
+ *    than on the reserver's `free → assigned` because it must fail
+ *    *closed*: starting a sweep too early costs one idempotent pass,
+ *    starting it too late loses data.
+ *
+ * The `status IN ('assigned','backfilling','ready')` filter on the
+ * SELECT is what keeps reason 3 safe. A slot that is *already*
+ * `tombstoned` — one the Liberator may be sweeping right now — is never
+ * selected, so no path here can restart an in-flight sweep. The reclaim
+ * (`tombstoned → free`) still preserves both annotations, so an operator
+ * inspecting a reclaimed or re-reserved slot reads the gap count from
+ * the sweep that produced it.
  *
  * The orphaned tombstone stays fully sweepable with the field row gone,
  * because `TombstonedSlotRepository::loadBatch()` keys on `status` +
@@ -81,10 +103,12 @@ final class LiveSlotTombstoner
         );
         $clearField->execute([$now, $slotId]);
 
-        // Step 2 — hand the slot to the Liberator.
+        // Step 2 — hand the slot to the Liberator, with both sweep
+        // annotations cleared. See the class docblock, reason 3.
         $tombstone = $this->pdo->prepare(
             'UPDATE stardust_slot_assignments'
-            . " SET status = 'tombstoned', tombstoned_at = ?, updated_at = ?"
+            . " SET status = 'tombstoned', tombstoned_at = ?, updated_at = ?,"
+            . '     sweep_cursor_id = NULL, sweep_gap_count = 0'
             . ' WHERE id = ?'
         );
         $tombstone->execute([$now, $now, $slotId]);

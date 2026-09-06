@@ -339,4 +339,80 @@ final class ModelPurgeTest extends Phase6bTestCase
             self::assertNotNull($this->fetchEntryRowOrNull($id));
         }
     }
+
+    /**
+     * ADR 0045 at the engine's SECOND tombstone site. The final chunk
+     * re-asserts severance for a slot that regained a live status during
+     * the drain window, and that re-assertion must clear the sweep
+     * annotations exactly as `LiveSlotTombstoner` does — otherwise a
+     * model deletion is a route back to the stale-cursor exposure.
+     */
+    public function testTheFinalChunksReAssertedTombstoneClearsTheSweepAnnotations(): void
+    {
+        $this->provisionPage(['i_str_01']);
+        $modelId = $this->createModel(1, 'invoice');
+        $fieldId = $this->createField($modelId, 'string', true, 'shape');
+        $this->reserveSlotFor($fieldId);
+        $entryId = $this->seedEntry(1, $modelId, ['shape' => 'round']);
+
+        self::assertTrue($this->makeDeleteModelInitiator()->initiate(1, $modelId));
+
+        $slotId = (int) $this->pdo->query(
+            "SELECT id FROM stardust_slot_assignments WHERE slot_column = 'i_str_01'"
+        )->fetchColumn();
+
+        // Resurrect the slot to a live status with dirty annotations —
+        // the anomaly the final chunk exists to re-assert against.
+        $stmt = $this->pdo->prepare(
+            'UPDATE stardust_slot_assignments'
+            . " SET status = 'assigned', field_id = ?,"
+            . '     sweep_cursor_id = ?, sweep_gap_count = 9'
+            . ' WHERE id = ?'
+        );
+        $stmt->execute([$fieldId, $entryId, $slotId]);
+
+        $this->drainModelPurge(2);
+
+        $slot = $this->fetchSlotAssignment($slotId);
+        self::assertSame('tombstoned', $slot['status']);
+        self::assertNull($slot['sweep_cursor_id']);
+        self::assertSame(0, (int) $slot['sweep_gap_count']);
+    }
+
+    /**
+     * The other side of the same guard. A slot that is ALREADY
+     * `tombstoned` when the purge runs may be mid-sweep, and its cursor
+     * is correct for that sweep — the purge must not restart it. The
+     * `status IN ('assigned','backfilling','ready')` predicate is what
+     * makes the reset above safe, and this is the assertion that keeps
+     * someone from widening it.
+     */
+    public function testThePurgeDoesNotResetAnAlreadyTombstonedSlotsCursor(): void
+    {
+        $this->provisionPage(['i_str_01']);
+        $modelId = $this->createModel(1, 'invoice');
+        $fieldId = $this->createField($modelId, 'string', true, 'shape');
+        $this->reserveSlotFor($fieldId);
+        $entryId = $this->seedEntry(1, $modelId, ['shape' => 'round']);
+
+        $slotId = (int) $this->pdo->query(
+            "SELECT id FROM stardust_slot_assignments WHERE slot_column = 'i_str_01'"
+        )->fetchColumn();
+
+        self::assertTrue($this->makeDeleteModelInitiator()->initiate(1, $modelId));
+
+        // A sweep is under way: the slot is tombstoned and has walked
+        // as far as $entryId.
+        $stmt = $this->pdo->prepare(
+            'UPDATE stardust_slot_assignments SET sweep_cursor_id = ?, sweep_gap_count = 2 WHERE id = ?'
+        );
+        $stmt->execute([$entryId, $slotId]);
+
+        $this->drainModelPurge(2);
+
+        $slot = $this->fetchSlotAssignment($slotId);
+        self::assertSame('tombstoned', $slot['status']);
+        self::assertSame($entryId, (int) $slot['sweep_cursor_id']);
+        self::assertSame(2, (int) $slot['sweep_gap_count']);
+    }
 }

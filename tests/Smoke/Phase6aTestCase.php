@@ -32,9 +32,17 @@ abstract class Phase6aTestCase extends Phase5TestCase
     {
         // Two-step UPDATE so the partial unique constraint on field_id
         // (live statuses only) does not race with the field_id clear.
+        //
+        // ADR 0045: the sweep annotations reset here, as they do in
+        // `LiveSlotTombstoner`. This helper bypasses the tombstoner, so
+        // without the clause a fixture that recycles a slot would leave
+        // a stale cursor the engine no longer produces — and every test
+        // built on it would be asserting against a state that cannot
+        // occur. Tests that WANT a cursor set it after calling this.
         $stmt = $this->pdo->prepare(
             "UPDATE stardust_slot_assignments"
-            . " SET status = 'tombstoned', field_id = NULL, tombstoned_at = UTC_TIMESTAMP()"
+            . " SET status = 'tombstoned', field_id = NULL, tombstoned_at = UTC_TIMESTAMP(),"
+            . "     sweep_cursor_id = NULL, sweep_gap_count = 0"
             . " WHERE id = ?"
         );
         $stmt->execute([$slotAssignmentId]);

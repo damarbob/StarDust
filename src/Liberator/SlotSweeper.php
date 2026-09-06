@@ -27,10 +27,10 @@ use StarDust\Support\RetryableLockFailure;
  *      cannot have us mutate a slot that has been resurrected).
  *   4. On the final chunk (rows < chunkSize): same tx also flips
  *      `status='free', field_id=NULL` and bumps
- *      `stardust_schema_version.version`. `sweep_gap_count` is
- *      intentionally preserved (operators inspect it post-mortem; the
- *      SlotReserver is the right place to reset it on the next
- *      `free → assigned` transition).
+ *      `stardust_schema_version.version`. Both sweep annotations are
+ *      intentionally preserved here — operators inspect them
+ *      post-mortem, and per ADR 0045 they are cleared by the *next*
+ *      tombstone, not by the reclaim and not by the SlotReserver.
  *   5. COMMIT.
  *
  * Failure handling per ADR 0009 + blueprint AC#7/AC#8:
@@ -220,10 +220,15 @@ final class SlotSweeper
             if ($isLast) {
                 // ADR 0017 §4.6 invariant: every coordination-relevant
                 // status transition bumps schema_version in the same tx.
-                // sweep_gap_count is intentionally preserved across the
-                // reclaim — operators inspect it post-mortem; the
-                // SlotReserver is the right place to reset it on the
-                // next free → assigned transition.
+                //
+                // sweep_cursor_id and sweep_gap_count are intentionally
+                // preserved across the reclaim, so an operator reading a
+                // free or re-reserved slot still sees the annotations of
+                // the sweep that produced it. ADR 0045 clears both in
+                // the UPDATE that flips the NEXT tombstone — a sweep
+                // therefore always starts at the beginning of the page,
+                // and a recycled column can no longer resume from its
+                // previous occupant's cursor.
                 $stmt = $this->pdo->prepare(
                     "UPDATE stardust_slot_assignments SET status = 'free', field_id = NULL"
                     . " WHERE id = ? AND status = 'tombstoned'"
