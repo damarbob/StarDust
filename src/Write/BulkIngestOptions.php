@@ -28,9 +28,16 @@ final class BulkIngestOptions
      */
     public readonly int $chunkSize;
 
+    /**
+     * `$correlationId` belongs here rather than on each `EntryPayload`
+     * because a bulk ingest is one *call*: its N chunk events describe
+     * one operation, and per-payload ids could not express that. A
+     * payload's own id is ignored on this path for the same reason.
+     */
     public function __construct(
         int $chunkSize = 500,
         public readonly int $interChunkDelayMicros = 0,
+        public readonly ?string $correlationId = null,
     ) {
         if ($chunkSize < 1) {
             throw new InvalidArgumentException(

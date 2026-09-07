@@ -50,6 +50,10 @@ final class Bootstrapper
         $this->ensureFieldsDeletedAtColumn();
         $this->ensureModelsDeletedAtColumn();
         $this->ensureSyncQueueEntryIdIndex();
+        $this->ensureSyncQueueOriginCorrelationIdColumn();
+        $this->ensureDlqOriginCorrelationIdColumn();
+        $this->ensureImportJobsCorrelationIdColumn();
+        $this->ensureExportJobsCorrelationIdColumn();
         $this->seedSchemaVersionSingleton();
     }
 
@@ -477,6 +481,168 @@ final class Bootstrapper
         try {
             $this->pdo->exec(<<<'SQL'
                 ALTER TABLE backfill_checkpoints
+                    ADD COLUMN correlation_id VARCHAR(36) NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * The originating write's ADR 0020 operation id, carried on the
+     * ADR 0007 exhaustion-fallback queue row.
+     *
+     * `entry_written` and its paired `exhaustion_fallback` tell a
+     * consumer the value went to the JSON payload and is waiting on a
+     * slot. What happens next is a Reconciler chunk, and until this
+     * column existed there was no way back from that chunk to the write
+     * — so a dead-lettered backfill named the tick that failed it and
+     * nothing about its provenance.
+     *
+     * **A chunk cannot carry one write's id**, which is why this is a
+     * column here rather than a field on `chunk_complete`:
+     * `SyncQueueWorkSource::claimChunk()` takes N rows originating from N
+     * different writes. The reachable join is the failure path, so the
+     * value is copied onto the dead-letter row instead (see
+     * `ensureDlqOriginCorrelationIdColumn()`).
+     *
+     * Nullable, and every reader tolerates null: rows enqueued before
+     * this landed drain normally. **This is the third schema change to a
+     * table Phase 1 documented as PK-only**, after ADR 0038's
+     * `ix_sync_queue_entry`, and it is a column rather than an index for
+     * a reason — `EntryWriter`'s enqueue sits on ADR 0007's
+     * write-availability path, so widening the row is acceptable where
+     * adding a second index to maintain per INSERT would not be.
+     */
+    private function ensureSyncQueueOriginCorrelationIdColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_sync_queue'
+              AND column_name = 'origin_correlation_id'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_sync_queue
+                    ADD COLUMN origin_correlation_id VARCHAR(36) NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * The provenance half of the pair above: which write produced the
+     * row that ended up quarantined.
+     *
+     * It sits **beside** `chunk_correlation_id`, which is NOT NULL and
+     * unchanged, because the two answer different questions — "which
+     * tick failed this" and "which write created it". An operator
+     * triaging ADR 0018 dead letters needs both, and before this only
+     * the first was recordable.
+     *
+     * Nullable because the `bulk_import` source has no single
+     * originating write, and because a row quarantined from a queue
+     * entry enqueued before the column existed has nothing to copy.
+     */
+    private function ensureDlqOriginCorrelationIdColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_reconciler_dlq'
+              AND column_name = 'origin_correlation_id'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_reconciler_dlq
+                    ADD COLUMN origin_correlation_id VARCHAR(36) NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * The submitting call's ADR 0020 operation id, so `bulk_accepted`
+     * and the Reconciler chunks that drain the job join up.
+     *
+     * `ImportJobWorkSource` has no per-job completion event — only chunk
+     * events, whose operation genuinely is the chunk. So those keep
+     * their own `correlation_id` and name this one as
+     * `job_correlation_id` alongside, which is the same
+     * companion-field shape `chunk_correlation_id` established.
+     *
+     * Nullable: a job submitted before this landed drains normally with
+     * the field simply absent.
+     */
+    private function ensureImportJobsCorrelationIdColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_import_jobs'
+              AND column_name = 'correlation_id'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_import_jobs
+                    ADD COLUMN correlation_id VARCHAR(36) NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * The export counterpart, and the cleanest of the three: the
+     * Chronicler emits a genuine per-job pair (`job_claimed` →
+     * `job_complete` / `job_failed`), so those take this id directly
+     * rather than through a companion field. It is the closest analogue
+     * in the engine to the four registry lifecycles.
+     *
+     * Nullable for the same in-flight reason as the others.
+     */
+    private function ensureExportJobsCorrelationIdColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_export_jobs'
+              AND column_name = 'correlation_id'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_export_jobs
                     ADD COLUMN correlation_id VARCHAR(36) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {

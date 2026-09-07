@@ -39,8 +39,9 @@ final class DlqWriter
         $stmt = $this->pdo->prepare(
             'INSERT INTO stardust_reconciler_dlq'
             . ' (source, entry_id, tenant_id, model_id, reason,'
-            . '  error_message, failed_at, retry_count, chunk_correlation_id)'
-            . ' VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)'
+            . '  error_message, failed_at, retry_count, chunk_correlation_id,'
+            . '  origin_correlation_id)'
+            . ' VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)'
         );
         $stmt->execute([
             $entry->source,
@@ -51,17 +52,23 @@ final class DlqWriter
             $entry->errorMessage,
             $now,
             $entry->chunkCorrelationId,
+            $entry->originCorrelationId,
         ]);
 
+        // `correlation_id` stays the CHUNK's: this event reports a
+        // quarantine performed by this tick, so the tick is its
+        // operation. The originating write rides alongside under its own
+        // key — the same two-id shape the registry completion events use.
         $this->logger->warning('reconciler dlq inserted', [
-            'event'                => 'dlq_inserted',
-            'source'               => 'reconciler',
-            'correlation_id'       => $entry->chunkCorrelationId,
-            'dlq_source'           => $entry->source,
-            'entry_id'             => $entry->entryId,
-            'tenant_id'            => $entry->tenantId,
-            'model_id'             => $entry->modelId,
-            'reason'               => $entry->reason,
+            'event'                 => 'dlq_inserted',
+            'source'                => 'reconciler',
+            'correlation_id'        => $entry->chunkCorrelationId,
+            'origin_correlation_id' => $entry->originCorrelationId,
+            'dlq_source'            => $entry->source,
+            'entry_id'              => $entry->entryId,
+            'tenant_id'             => $entry->tenantId,
+            'model_id'              => $entry->modelId,
+            'reason'                => $entry->reason,
         ]);
     }
 }

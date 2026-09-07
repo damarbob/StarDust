@@ -18,10 +18,15 @@ use StarDust\Read\SortSpec;
  * inherit Phase 4's append-only DTO baggage; the two convert via
  * {@see SearchRequest::fromEntryQuery()} / {@see SearchResult::toEntryPage()}.
  *
- * `$filter === null` is the normative match-all signal. `$correlationId`
- * is allocated by the {@see SearchService} orchestrator so drivers can
- * thread the same id through their own log emissions; tests construct
- * an instance with a fixed id to make assertions reproducible.
+ * `$filter === null` is the normative match-all signal.
+ *
+ * `$correlationId` is the operation's id, threaded so drivers and
+ * pre-flight stages emit under the same one. Empty string means "not
+ * supplied", and {@see SearchService} mints a UUID on that — it is the
+ * sentinel rather than null because this parameter predates the
+ * caller-supplied contract, when the orchestrator was its only source
+ * and tests set a fixed value for reproducible assertions. A consumer
+ * may now pass their own request id, here or via `EntryQuery`.
  */
 final class SearchRequest
 {
@@ -94,6 +99,10 @@ final class SearchRequest
             pageSize:     $query->pageSize,
             cursor:       $query->cursor,
             sort:         $query->sort,
+            // `''` rather than null is this class's "no id" sentinel —
+            // see the constructor. SearchService mints one on that value,
+            // so a query with no id behaves exactly as read() always has.
+            correlationId: $query->correlationId ?? '',
         );
     }
 }

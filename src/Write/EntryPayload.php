@@ -44,12 +44,20 @@ use StarDust\Exception\MalformedEntryPayloadException;
 final class EntryPayload
 {
     /**
-     * @param array<string, mixed> $fields Field name → value map.
+     * @param array<string, mixed> $fields        Field name → value map.
+     * @param ?string              $correlationId The caller's own request id,
+     *     stamped onto every event this write emits so `entry_written` and the
+     *     `exhaustion_fallback` beside it join whatever produced them upstream
+     *     — an HTTP request id, a queue message id, a CLI invocation. Null
+     *     mints one at the write boundary, which is what every caller got
+     *     implicitly before this existed. Trailing and optional so no
+     *     construction site breaks.
      */
     public function __construct(
         public readonly int $tenantId,
         public readonly int $modelId,
         public readonly array $fields,
+        public readonly ?string $correlationId = null,
     ) {
     }
 
@@ -132,6 +140,13 @@ final class EntryPayload
     }
 
     /**
+     * `correlationId` is read leniently rather than through
+     * `requireString()`: it is optional by design, and this class's
+     * documented posture is that unknown top-level keys are ignored, so
+     * a malformed one must not turn a valid envelope into a
+     * `MalformedEntryPayloadException`. A non-string is dropped and the
+     * write mints its own, which is the same outcome as omitting it.
+     *
      * @param array<array-key, mixed> $data
      */
     private static function build(array $data, ?string $keyPrefix): self
@@ -140,7 +155,14 @@ final class EntryPayload
         $modelId  = self::requireInt($data, 'modelId', $keyPrefix);
         $fields   = self::requireFields($data, $keyPrefix);
 
-        return new self($tenantId, $modelId, $fields);
+        $correlationId = $data['correlationId'] ?? null;
+
+        return new self(
+            $tenantId,
+            $modelId,
+            $fields,
+            is_string($correlationId) && $correlationId !== '' ? $correlationId : null,
+        );
     }
 
     /**

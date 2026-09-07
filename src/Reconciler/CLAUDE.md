@@ -103,6 +103,22 @@ Four rules, each of which a plausible refactor would get wrong:
 
 `completed` with the manifest above, or `failed` with `failed_reason` (`malformed_json` for artifact failures, `entry_write_failed` for per-entry failures) plus a DLQ row.
 
+## Write provenance on the sync queue
+
+`stardust_sync_queue.origin_correlation_id` carries the id of the write that enqueued the row, and `claimChunk()` selects it unconditionally — the failure path has no second chance to read it, because the queue row is deleted in the same transaction that quarantines it.
+
+**A chunk cannot carry one write's id.** A claim takes N rows originating from N unrelated writes, so `chunk_complete` is untouched and must stay that way. The reachable join is the failure path: the value lands on the dead-letter row beside `chunk_correlation_id`, which stays NOT NULL. The two answer different questions — *which tick failed this* and *which write created it* — and a reviewer tempted to consolidate them should read `DlqEntry` first.
+
+**Successful drains stay silent per row, deliberately.** Closing the loop with a per-row success event would be a volume explosion against ADR 0018's chunk-level design, and the value it would add is already available from sync-queue depth, which ADR 0007 designates as the signal to monitor.
+
+`ImportJobWorkSource` gets the same provenance from the other direction: `bulk_import` dead letters carry the submitting call's id, since there *is* a single originating call on that path.
+
+## The import job's chunk events name their submission
+
+`stardust_import_jobs.correlation_id` is the submitting `bulk_accepted` call's id, and the chunk events carry it as **`job_correlation_id` alongside their own `correlation_id`**, never instead of it. That is the same rule as everywhere else here: a chunk genuinely is its own operation.
+
+This path has **no per-job completion event** — only chunk events — so the companion field is the entire join mechanism. Adding a `job_complete` would need an ADR 0020 vocabulary entry and an `EventVocabularyTest` change, which is a separate decision and was deliberately not taken.
+
 ## DLQ (ADR 0018)
 
 `DlqWriter::quarantine(DlqEntry)` inserts a row and emits `dlq_inserted` with the same `chunk_correlation_id` persisted in the column.

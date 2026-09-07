@@ -36,15 +36,20 @@ use SplFileInfo;
  * {@see \StarDust\Tests\Smoke\EventVocabularyTest} and
  * {@see BootstrapperTableAllowlistTest}.
  */
-final class RegistryCorrelationTest extends TestCase
+final class EventCorrelationTest extends TestCase
 {
     private const SRC = __DIR__ . '/../../../src';
 
     /**
-     * Sites emitting `source: registry` at the time of writing — the
-     * real count, verified against a manual grep, not a round number.
-     * A floor rather than an allowlist: adding a registry event is fine,
-     * losing the ability to see them is not.
+     * Every emit site carrying a `source` at the time of writing — the
+     * real count, verified by enumeration, not a round number. A floor
+     * rather than an allowlist: adding an event is fine, losing the
+     * ability to see them is not.
+     *
+     * Distribution when this was set, as a sanity check for whoever
+     * next has to reconcile a drift: reconciler 29, registry 15,
+     * api 12, chronicler 11, watcher 6, bulk_api 6, liberator 5,
+     * export_api 1.
      *
      * **This test cannot tell a threaded id from a freshly minted one**,
      * because both put the literal key at the emit site. That gap is
@@ -54,11 +59,11 @@ final class RegistryCorrelationTest extends TestCase
      * {@see \StarDust\Tests\Smoke\LifecycleCorrelationTest} can see
      * that, so a new registry event needs a behavioural test there too.
      */
-    private const MINIMUM_EXPECTED_SITES = 15;
+    private const MINIMUM_EXPECTED_SITES = 85;
 
-    public function testEveryRegistrySourceEventNamesItsCorrelationId(): void
+    public function testEveryEventNamesItsCorrelationId(): void
     {
-        $blocks = $this->registryEmitBlocks();
+        $blocks = $this->emitBlocks();
 
         self::assertGreaterThanOrEqual(
             self::MINIMUM_EXPECTED_SITES,
@@ -97,7 +102,7 @@ final class RegistryCorrelationTest extends TestCase
      *
      * @return array<string,string>
      */
-    private function registryEmitBlocks(): array
+    private function emitBlocks(): array
     {
         $blocks = [];
 
@@ -106,7 +111,7 @@ final class RegistryCorrelationTest extends TestCase
             $relative = str_replace('\\', '/', substr($path, strlen(realpath(self::SRC)) + 1));
 
             foreach ($lines as $i => $line) {
-                if (preg_match("/'source'\s*=>\s*'registry'/", $line) !== 1) {
+                if (preg_match("/'source'\s*=>\s*'[a-z_]+'/", $line) !== 1) {
                     continue;
                 }
 

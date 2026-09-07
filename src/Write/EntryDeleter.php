@@ -8,6 +8,7 @@ use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -57,7 +58,7 @@ final class EntryDeleter
     /**
      * @return bool `true` iff this call performed the transition
      */
-    public function delete(int $tenantId, int $entryId): bool
+    public function delete(int $tenantId, int $entryId, ?string $correlationId = null): bool
     {
         TenantId::assertValid($tenantId);
 
@@ -105,10 +106,11 @@ final class EntryDeleter
 
         if ($deleted) {
             $this->logger->info('entry deleted', [
-                'event'     => 'entry_deleted',
-                'source'    => 'api',
-                'tenant_id' => $tenantId,
-                'entry_id'  => $entryId,
+                'event'          => 'entry_deleted',
+                'source'         => 'api',
+                'correlation_id' => $correlationId ?? UuidV4::generate(),
+                'tenant_id'      => $tenantId,
+                'entry_id'       => $entryId,
             ]);
         }
 

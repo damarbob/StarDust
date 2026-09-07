@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace StarDust\Tests\Smoke;
 
+use StarDust\Export\ExportJobRequest;
 use StarDust\Reconciler\TickOutcome;
+use StarDust\Write\BulkIngestOptions;
+use StarDust\Write\EntryPayload;
 
 /**
  * ADR 0020: one `correlation_id` per operation, carried through every
@@ -24,11 +27,11 @@ use StarDust\Reconciler\TickOutcome;
  * would satisfy "the ids match" if the code simply reused the chunk id
  * for both keys.
  *
- * See {@see Conventions\RegistryCorrelationTest} for the static guard on
+ * See {@see Conventions\EventCorrelationTest} for the static guard on
  * the emit sites themselves, and why the logger's own synthesised id
  * makes that guard necessary.
  */
-final class LifecycleCorrelationTest extends Phase6bTestCase
+final class LifecycleCorrelationTest extends Phase7TestCase
 {
     public function testRenameStartAndCompleteShareOneId(): void
     {
@@ -196,7 +199,7 @@ final class LifecycleCorrelationTest extends Phase6bTestCase
      * **This is the case the static scan cannot see, and it was missed
      * on the first pass for exactly that reason.** `CardinalitySampler`
      * and `SpreadSampler` both name `correlation_id` at their emit
-     * sites, so `RegistryCorrelationTest` passed them — while they
+     * sites, so `EventCorrelationTest` passed them — while they
      * minted fresh ids inside a promotion that already had one. Only an
      * assertion that two events share a *value* can tell the difference.
      */
@@ -308,6 +311,212 @@ final class LifecycleCorrelationTest extends Phase6bTestCase
             $complete['correlation_id'],
             'With no stored id the event must fall back to the chunk id, not to null.',
         );
+    }
+
+    // ---------------------------------------------------------------
+    // The consumer-facing sources: api, bulk_api, export_api
+    // ---------------------------------------------------------------
+
+    /**
+     * `entry_written` and `exhaustion_fallback` are one write by
+     * construction — the second fires only when that same result set
+     * `enqueuedForBackfill`. Under independent ids an operator alerting
+     * on exhaustion could not reach the write that caused it.
+     */
+    public function testWriteAndItsExhaustionFallbackShareOneId(): void
+    {
+        // A filterable field with every string slot already taken is
+        // what forces the ADR 0007 path.
+        $this->provisionPage(['i_str_01']);
+        $this->fillAllFreeStringSlots();
+
+        $modelId = $this->createModel(1);
+        $this->createField($modelId, 'string', true, 'title');
+
+        $log = $this->makeRecordingLogger();
+        $this->makeEntryWriter($log)->write(new EntryPayload(1, $modelId, ['title' => 'v1']));
+
+        $written  = $this->soleEvent($log->records(), 'entry_written');
+        $fallback = $this->soleEvent($log->records(), 'exhaustion_fallback');
+
+        self::assertTrue($written['enqueued'], 'Fixture must actually exhaust capacity.');
+        self::assertSame(
+            $written['correlation_id'],
+            $fallback['correlation_id'],
+            'The fallback belongs to the write that triggered it.',
+        );
+    }
+
+    /**
+     * The caller-supplied half of the contract. Until `EntryPayload`
+     * carried an id, ADR 0020's "per-request UUID for API events" was
+     * aspirational — a consumer behind an HTTP API had no way to get
+     * their request id into the engine's log.
+     */
+    public function testACallerSuppliedIdReachesTheWriteEvents(): void
+    {
+        $modelId = $this->createModel(1);
+        $this->createField($modelId, 'string', false, 'title');
+
+        $log = $this->makeRecordingLogger();
+        $this->makeEntryWriter($log)->write(
+            new EntryPayload(1, $modelId, ['title' => 'v1'], correlationId: 'req-abc'),
+        );
+
+        self::assertSame(
+            'req-abc',
+            $this->soleEvent($log->records(), 'entry_written')['correlation_id'],
+        );
+    }
+
+    /**
+     * The N chunk events of one `bulkWrite()` describe one operation.
+     * Without a shared id, "did this load partially roll back" is
+     * unanswerable from the log without matching on timestamps.
+     */
+    public function testBulkChunksOfOneCallShareOneId(): void
+    {
+        $modelId = $this->createModel(1);
+        $this->createField($modelId, 'string', false, 'title');
+
+        $payloads = [];
+        for ($i = 0; $i < 5; $i++) {
+            $payloads[] = new EntryPayload(1, $modelId, ['title' => "v{$i}"]);
+        }
+
+        $log = $this->makeRecordingLogger();
+        $this->makeBulkIngestor($log)->ingest(
+            $payloads,
+            new BulkIngestOptions(chunkSize: 2, correlationId: 'bulk-xyz'),
+        );
+
+        $committed = $this->recordsWithEvent($log->records(), 'bulk_chunk_committed');
+        self::assertCount(3, $committed, 'chunkSize 2 over 5 payloads is three chunks.');
+
+        foreach ($committed as $record) {
+            self::assertSame('bulk-xyz', $record['context']['correlation_id']);
+        }
+    }
+
+    /**
+     * The cleanest cross-process join in the engine: the Chronicler
+     * emits a genuine per-job pair, so those events take the
+     * submission's id directly rather than through a companion field.
+     */
+    public function testExportSubmissionAndCompletionShareOneId(): void
+    {
+        $modelId = $this->createModel(1);
+        $this->createField($modelId, 'string', false, 'title');
+        $this->seedEntry(1, $modelId, ['title' => 'v1']);
+
+        $submitLog = $this->makeRecordingLogger();
+        $this->makeExportSubmitter($submitLog)->submit(new ExportJobRequest(
+            tenantId: 1,
+            modelId: $modelId,
+            format: ExportJobRequest::FORMAT_CSV,
+            correlationId: 'exp-123',
+        ));
+
+        $drainLog = $this->makeRecordingLogger();
+        $this->makeChronicler($drainLog)->tick();
+
+        self::assertSame(
+            'exp-123',
+            $this->soleEvent($submitLog->records(), 'export_accepted')['correlation_id'],
+        );
+        self::assertSame(
+            'exp-123',
+            $this->soleEvent($drainLog->records(), 'job_claimed')['correlation_id'],
+            'The Chronicler must adopt the submission id, not mint its own.',
+        );
+        self::assertSame(
+            'exp-123',
+            $this->soleEvent($drainLog->records(), 'job_complete')['correlation_id'],
+        );
+    }
+
+    /**
+     * The import side has **no per-job completion event** — only chunk
+     * events, whose operation genuinely is the chunk. So the submission
+     * id rides as a companion field rather than replacing
+     * `correlation_id`, and the companion is the entire join mechanism
+     * here. Do not "simplify" it by overwriting the chunk id: the same
+     * rule keeps every other Reconciler work source on its own.
+     */
+    public function testImportChunksNameTheSubmission(): void
+    {
+        $modelId = $this->createModel(1);
+        $this->createField($modelId, 'string', false, 'title');
+
+        // One directory for both halves: the fixture writes the artifact
+        // there and the work source resolves the bare filename against it.
+        $artifactDir = $this->makeTempArtifactDir();
+
+        [$jobId] = $this->writePendingImportJob(
+            1,
+            [['tenant_id' => 1, 'model_id' => $modelId, 'fields' => ['title' => 'v1']]],
+            $artifactDir,
+            'sub-789',
+        );
+
+        $log = $this->makeRecordingLogger();
+        $this->makeImportJobWorkSource($log, $artifactDir)->tickOne('tick-1');
+
+        $claimed = $this->soleEvent($log->records(), 'chunk_claimed');
+
+        self::assertSame($jobId, $claimed['job_id'], 'Fixture must claim the job it seeded.');
+        self::assertSame('tick-1', $claimed['correlation_id'], 'The chunk keeps its own id.');
+        self::assertSame(
+            'sub-789',
+            $claimed['job_correlation_id'],
+            'and names the submission alongside it.',
+        );
+    }
+
+    /**
+     * A dead letter names both the tick that failed it and the write
+     * that created it. The second is the new half, and it is the only
+     * route back from a quarantined row to its origin: the queue row is
+     * deleted in the same transaction that quarantines it.
+     */
+    public function testADeadLetterNamesTheWriteThatCreatedIt(): void
+    {
+        // No entry_data row for this id, so the drain quarantines with
+        // `missing_entry_data` — the cheapest reachable DLQ path.
+        $this->enqueueSyncRow(999_999, 'write-abc');
+
+        $log = $this->makeRecordingLogger();
+        $this->makeSyncQueueWorkSource($log)->tickOne('tick-1');
+
+        $dlq = $this->pdo
+            ->query('SELECT chunk_correlation_id, origin_correlation_id FROM stardust_reconciler_dlq')
+            ->fetch(\PDO::FETCH_ASSOC);
+
+        self::assertIsArray($dlq, 'The fixture must actually produce a dead letter.');
+        self::assertSame('tick-1', $dlq['chunk_correlation_id']);
+        self::assertSame('write-abc', $dlq['origin_correlation_id']);
+    }
+
+    /**
+     * A queue row enqueued before the column existed still drains and
+     * still quarantines; the provenance is simply absent. This is what
+     * makes the `ALTER` safe to apply under a running fleet, and it is
+     * the reason the column is nullable rather than defaulted.
+     */
+    public function testAQueueRowWithNoOriginIdStillQuarantines(): void
+    {
+        $this->enqueueSyncRow(999_999);
+
+        $log = $this->makeRecordingLogger();
+        $this->makeSyncQueueWorkSource($log)->tickOne('tick-1');
+
+        $dlq = $this->pdo
+            ->query('SELECT chunk_correlation_id, origin_correlation_id FROM stardust_reconciler_dlq')
+            ->fetch(\PDO::FETCH_ASSOC);
+
+        self::assertIsArray($dlq);
+        self::assertSame('tick-1', $dlq['chunk_correlation_id']);
+        self::assertNull($dlq['origin_correlation_id']);
     }
 
     /**

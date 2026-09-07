@@ -26,6 +26,12 @@ It lives here rather than in `ExportJobRequest`'s constructor because that valid
 
 **No ADR governs this.** ADR 0010 and `blueprints/async_exports.md` were both relocated to StarGate in May 2026 and neither mentions filters, predicates or QueryFilter. Implementing filtering later is undesigned work, not a resumption.
 
+## The submission id is persisted, not just emitted
+
+`ExportJobRequest::$correlationId` lets a consumer pass their own request id; null mints one. It is written to `stardust_export_jobs.correlation_id` inside the same transaction as the INSERT, so the Chronicler — a different process, possibly hours later — emits `job_claimed` / `job_complete` / `job_failed` under it rather than under an id of its own.
+
+This is the closest analogue in the engine to the four registry lifecycles: a genuine per-job event pair on both sides of a process boundary. It is also the **only** one of the three async handoffs where the drain side can take the submission id *directly*; the import path has no per-job event and needs a companion field, and the sync queue cannot join at all on the success path. See `src/Reconciler/CLAUDE.md` for both.
+
 ## The `{model_id, filter}` envelope
 
 The submitter wraps the consumer's QueryFilter inside a `{model_id, filter}` envelope before storing. This preserves the schema_reference §5.2 intent ("`filter` holds the consumer QueryFilter") while letting the Chronicler hydrate `model_id` on claim without an extra column.

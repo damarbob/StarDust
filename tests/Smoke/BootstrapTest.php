@@ -414,6 +414,82 @@ final class BootstrapTest extends TestCase
     }
 
     /**
+     * The four columns that carry an ADR 0020 operation id across a
+     * process boundary on the consumer-facing sources.
+     *
+     * All four are nullable for the same reason
+     * `backfill_checkpoints.correlation_id` is: work already in flight
+     * when the `ALTER` lands has no id, and every reader falls back
+     * rather than emitting null. That is what makes them safe to add
+     * without draining first.
+     *
+     * `stardust_sync_queue` is the one worth noticing — Phase 1
+     * documented it as PK-only, and this is its third schema change
+     * after ADR 0038's `ix_sync_queue_entry`. It is a column rather than
+     * an index deliberately: `EntryWriter`'s enqueue is on ADR 0007's
+     * write-availability path, so a wider row is acceptable where a
+     * second index to maintain per INSERT would not be.
+     *
+     * @dataProvider correlationColumnProvider
+     */
+    public function testBootstrapAddsCorrelationColumns(string $table, string $column): void
+    {
+        (new Bootstrapper($this->pdo))->run();
+
+        $stmt = $this->pdo->prepare(
+            'SELECT IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH'
+            . ' FROM information_schema.COLUMNS'
+            . ' WHERE table_schema = DATABASE()'
+            . ' AND table_name = ? AND column_name = ?'
+        );
+        $stmt->execute([$table, $column]);
+        $meta = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+        self::assertIsArray($meta, "{$table}.{$column} must be present after bootstrap.");
+        self::assertSame('YES', $meta['IS_NULLABLE'], "{$table}.{$column} must be nullable.");
+        self::assertSame('varchar', $meta['DATA_TYPE']);
+        self::assertSame(
+            36,
+            (int) $meta['CHARACTER_MAXIMUM_LENGTH'],
+            "{$table}.{$column} must hold a canonical hyphenated v4 UUID.",
+        );
+
+        (new Bootstrapper($this->pdo))->run();
+        (new Bootstrapper($this->pdo))->run();
+
+        $count = $this->pdo->prepare(
+            'SELECT COUNT(*) FROM information_schema.COLUMNS'
+            . ' WHERE table_schema = DATABASE()'
+            . ' AND table_name = ? AND column_name = ?'
+        );
+        $count->execute([$table, $column]);
+        self::assertSame(
+            1,
+            (int) $count->fetchColumn(),
+            'Re-running bootstrap must not duplicate the column.',
+        );
+    }
+
+    /**
+     * `stardust_reconciler_dlq.origin_correlation_id` sits BESIDE the
+     * existing NOT NULL `chunk_correlation_id` rather than replacing it.
+     * The two answer different questions — which tick failed this row,
+     * and which submission created it — so a reviewer tempted to
+     * consolidate them should read `DlqEntry` first.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function correlationColumnProvider(): array
+    {
+        return [
+            'sync queue origin' => ['stardust_sync_queue', 'origin_correlation_id'],
+            'dlq origin'        => ['stardust_reconciler_dlq', 'origin_correlation_id'],
+            'import job'        => ['stardust_import_jobs', 'correlation_id'],
+            'export job'        => ['stardust_export_jobs', 'correlation_id'],
+        ];
+    }
+
+    /**
      * ADR 0036 deliverable: `stardust_fields.previous_name` is
      * provisioned by the bootstrap runner and re-runs are
      * non-destructive. Nullable with no default, so existing rows stay

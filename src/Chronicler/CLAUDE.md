@@ -63,6 +63,14 @@ The reconnect heals only the in-flight job's connection. A disconnect that outli
 
 So a re-claimer continues charging from the previous worker's count. Otherwise a dying worker could let a re-claimer charge another full cap before tripping.
 
+## The job's correlation id comes from the submission
+
+`Chronicler::tick()` adopts `ClaimedJob::$correlationId` — read from `stardust_export_jobs.correlation_id`, written by `ExportJobSubmitter` — instead of minting one, so `export_accepted` and every event this worker emits about the job join across the two processes. It falls back to a fresh id for a job submitted before the column existed.
+
+**This deliberately covers `chunk_written` too**, which is the opposite of the Reconciler's rule and not an inconsistency. There, one tick claims rows from many unrelated operations, so a chunk is its own operation. Here the Chronicler processes one job across all its chunks in a single continuous `process()` call, so the job *is* the operation and every event of it shares the id.
+
+**An abandoned re-claim reuses the same id**, for the same reason: it is the same job. `worker_identity` is what separates the two attempts, and it is already on every one of these events.
+
 ## `GcSweeper`
 
 Scans two buckets:

@@ -77,7 +77,7 @@ final class ExportJobClaimer
             // a tenant the inner created_at preserves FIFO.
             $select = $this->pdo->prepare(
                 'SELECT j.id, j.tenant_id, j.filter, j.format,'
-                . '       j.last_cursor, j.skip_count'
+                . '       j.last_cursor, j.skip_count, j.correlation_id'
                 . '  FROM stardust_export_jobs j'
                 . " WHERE j.status = 'pending'"
                 . ' ORDER BY ('
@@ -113,6 +113,9 @@ final class ExportJobClaimer
                 workerIdentity: $workerIdentity,
                 claimKind: ClaimKind::Pending,
                 skipCount: (int) $row['skip_count'],
+                correlationId: $row['correlation_id'] === null
+                    ? null
+                    : (string) $row['correlation_id'],
             );
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -136,7 +139,7 @@ final class ExportJobClaimer
             // and falsely identify fresh leases as abandoned.
             $select = $this->pdo->prepare(
                 'SELECT j.id, j.tenant_id, j.filter, j.format,'
-                . '       j.last_cursor, j.skip_count, j.artifact_path'
+                . '       j.last_cursor, j.skip_count, j.artifact_path, j.correlation_id'
                 . '  FROM stardust_export_jobs j'
                 . " WHERE j.status = 'processing'"
                 . '   AND j.heartbeat_at IS NOT NULL'
@@ -183,6 +186,9 @@ final class ExportJobClaimer
                 workerIdentity: $workerIdentity,
                 claimKind: ClaimKind::Abandoned,
                 skipCount: (int) $row['skip_count'],
+                correlationId: $row['correlation_id'] === null
+                    ? null
+                    : (string) $row['correlation_id'],
             );
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

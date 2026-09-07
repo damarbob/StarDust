@@ -75,7 +75,20 @@ final class Chronicler implements Tickable
             return;
         }
 
-        $correlationId = UuidV4::generate();
+        // The submission's id when the job carries one, so
+        // `export_accepted` and everything this worker emits about the
+        // job join across the two processes. Falls back to a fresh id
+        // for a job submitted before `correlation_id` existed.
+        //
+        // This deliberately covers `chunk_written` too. Unlike the
+        // Reconciler — where one tick claims rows from many unrelated
+        // operations — the Chronicler processes one job across all its
+        // chunks in a single continuous `process()` call, so the job IS
+        // the operation and every event of it shares the id. An
+        // abandoned re-claim reuses the same id for the same reason:
+        // it is the same job, and `worker_identity` is what separates
+        // the two attempts.
+        $correlationId = $claim->correlationId ?? UuidV4::generate();
         $this->logger->info('chronicler job claimed', [
             'event'           => 'job_claimed',
             'source'          => 'chronicler',

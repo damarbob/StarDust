@@ -232,9 +232,15 @@ final class StarDust
         int $tenantId,
         array $payloads,
         ?string $idempotencyKey = null,
+        ?string $correlationId = null,
     ): ImportJobId {
         TenantId::assertValid($tenantId);
-        return $this->bulkSubmitter()->submit($tenantId, $payloads, $idempotencyKey);
+        return $this->bulkSubmitter()->submit(
+            $tenantId,
+            $payloads,
+            $idempotencyKey,
+            $correlationId,
+        );
     }
 
     /**
@@ -1088,10 +1094,14 @@ final class StarDust
      * @throws \StarDust\Exception\InvalidTenantIdException
      * @throws \StarDust\Exception\UncoercibleSlotValueException
      */
-    public function updateEntry(int $tenantId, int $entryId, array $fields): EntryWriteResult
-    {
+    public function updateEntry(
+        int $tenantId,
+        int $entryId,
+        array $fields,
+        ?string $correlationId = null,
+    ): EntryWriteResult {
         TenantId::assertValid($tenantId);
-        return $this->entryWriter()->update($tenantId, $entryId, $fields);
+        return $this->entryWriter()->update($tenantId, $entryId, $fields, $correlationId);
     }
 
     /**
@@ -1111,10 +1121,13 @@ final class StarDust
      *
      * @throws \StarDust\Exception\InvalidTenantIdException
      */
-    public function deleteEntry(int $tenantId, int $entryId): bool
-    {
+    public function deleteEntry(
+        int $tenantId,
+        int $entryId,
+        ?string $correlationId = null,
+    ): bool {
         TenantId::assertValid($tenantId);
-        return $this->entryDeleter()->delete($tenantId, $entryId);
+        return $this->entryDeleter()->delete($tenantId, $entryId, $correlationId);
     }
 
     private function entryDeleter(): EntryDeleter

@@ -65,8 +65,18 @@ final class BulkIngestSubmitter
         int $tenantId,
         array $payloads,
         ?string $idempotencyKey = null,
+        ?string $correlationId = null,
     ): ImportJobId {
         TenantId::assertValid($tenantId);
+
+        // Minted before the idempotency fast path so all three
+        // `bulk_accepted` branches report one, and persisted on the job
+        // row so the Reconciler chunks that drain it can name the
+        // submission. Note an idempotency *hit* emits this call's id
+        // against the ORIGINAL job's row — deliberately: the event
+        // describes this submission attempt, and `job_id` is what ties
+        // it to the work already queued.
+        $correlationId ??= UuidV4::generate();
 
         $count = count($payloads);
         if ($count < self::ASYNC_LOWER_BOUND_INCLUSIVE) {
@@ -115,6 +125,7 @@ final class BulkIngestSubmitter
             if ($existingId !== null) {
                 $this->logger->info('bulk submission idempotency hit', [
                     'event'           => 'bulk_accepted',
+                    'correlation_id'  => $correlationId,
                     'source'          => 'bulk_api',
                     'tenant_id'       => $tenantId,
                     'job_id'          => $existingId,
@@ -140,10 +151,18 @@ final class BulkIngestSubmitter
         try {
             $insert = $this->pdo->prepare(
                 'INSERT INTO stardust_import_jobs'
-                . ' (tenant_id, status, idempotency_key, artifact_path, entry_count, created_at)'
-                . " VALUES (?, 'pending', ?, ?, ?, ?)"
+                . ' (tenant_id, status, idempotency_key, artifact_path, entry_count,'
+                . '  created_at, correlation_id)'
+                . " VALUES (?, 'pending', ?, ?, ?, ?, ?)"
             );
-            $insert->execute([$tenantId, $idempotencyKey, $artifactPath, $count, $now]);
+            $insert->execute([
+                $tenantId,
+                $idempotencyKey,
+                $artifactPath,
+                $count,
+                $now,
+                $correlationId,
+            ]);
             $jobId = (int) $this->pdo->lastInsertId();
         } catch (PDOException $e) {
             // Concurrent retry with the same idempotency_key may race
@@ -157,6 +176,7 @@ final class BulkIngestSubmitter
                 if ($existingId !== null) {
                     $this->logger->info('bulk submission idempotency race resolved', [
                         'event'           => 'bulk_accepted',
+                        'correlation_id'  => $correlationId,
                         'source'          => 'bulk_api',
                         'tenant_id'       => $tenantId,
                         'job_id'          => $existingId,
@@ -177,6 +197,7 @@ final class BulkIngestSubmitter
 
         $this->logger->info('bulk submission accepted', [
             'event'           => 'bulk_accepted',
+            'correlation_id'  => $correlationId,
             'source'          => 'bulk_api',
             'tenant_id'       => $tenantId,
             'job_id'          => $jobId,

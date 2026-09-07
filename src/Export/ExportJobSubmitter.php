@@ -14,6 +14,7 @@ use StarDust\Exception\ExportJobActiveCapExceededException;
 use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Support\ModelDeletionProbe;
 use StarDust\Write\TenantId;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -112,6 +113,12 @@ final class ExportJobSubmitter
 
         $now = $this->utcNow();
 
+        // Persisted on the job row, not just emitted: the Chronicler
+        // that finishes this export runs in another process, and
+        // `job_claimed` / `job_complete` are per-job events whose
+        // operation IS this submission.
+        $correlationId = $request->correlationId ?? UuidV4::generate();
+
         $this->pdo->beginTransaction();
         try {
             // Lock the tenant's pending/processing range. InnoDB
@@ -136,10 +143,16 @@ final class ExportJobSubmitter
 
             $insert = $this->pdo->prepare(
                 'INSERT INTO stardust_export_jobs'
-                . ' (tenant_id, status, filter, format, created_at)'
-                . " VALUES (?, 'pending', ?, ?, ?)"
+                . ' (tenant_id, status, filter, format, created_at, correlation_id)'
+                . " VALUES (?, 'pending', ?, ?, ?, ?)"
             );
-            $insert->execute([$request->tenantId, $filterJson, $request->format, $now]);
+            $insert->execute([
+                $request->tenantId,
+                $filterJson,
+                $request->format,
+                $now,
+                $correlationId,
+            ]);
             $jobId = (int) $this->pdo->lastInsertId();
 
             $this->pdo->commit();
@@ -153,12 +166,13 @@ final class ExportJobSubmitter
         }
 
         $this->logger->info('export submission accepted', [
-            'event'     => 'export_accepted',
-            'source'    => 'export_api',
-            'tenant_id' => $request->tenantId,
-            'job_id'    => $jobId,
-            'model_id'  => $request->modelId,
-            'format'    => $request->format,
+            'event'          => 'export_accepted',
+            'source'         => 'export_api',
+            'correlation_id' => $correlationId,
+            'tenant_id'      => $request->tenantId,
+            'job_id'         => $jobId,
+            'model_id'       => $request->modelId,
+            'format'         => $request->format,
         ]);
 
         return new ExportJobId($jobId);

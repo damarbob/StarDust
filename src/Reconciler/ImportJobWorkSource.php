@@ -146,11 +146,23 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         // durable regardless of which worker wrote them.
         $priorRecords = $checkpoint['chunk_manifest'];
 
+        // The submitting call's id, when the job carries one. It rides
+        // as a COMPANION field rather than replacing `correlation_id`:
+        // these are chunk events, and a chunk genuinely is their
+        // operation — the same rule that keeps the Reconciler's other
+        // work sources on their own chunk ids. There is no per-job
+        // completion event on this path to take the job id directly,
+        // which is exactly why the companion is the whole mechanism.
+        $jobCorrelationId = $job['correlation_id'] === null
+            ? null
+            : (string) $job['correlation_id'];
+
         $this->logger->info('import_job chunk claimed', [
-            'event'          => 'chunk_claimed',
-            'source'         => 'reconciler',
-            'correlation_id' => $chunkCorrelationId,
-            'queue'          => 'import_jobs',
+            'event'                => 'chunk_claimed',
+            'source'               => 'reconciler',
+            'correlation_id'       => $chunkCorrelationId,
+            'job_correlation_id'   => $jobCorrelationId,
+            'queue'                => 'import_jobs',
             'job_id'         => (int) $job['id'],
             'tenant_id'      => (int) $job['tenant_id'],
             'claim_kind'     => $claimKind,
@@ -166,6 +178,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
                 failedReason: 'malformed_json',
                 chunkCorrelationId: $chunkCorrelationId,
                 errorMessage: $e->getMessage(),
+                jobCorrelationId: $jobCorrelationId,
             );
             return TickOutcome::WORK_DONE;
         }
@@ -179,6 +192,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             resumeOffset: $resumeOffset,
             priorChunks: $priorChunks,
             priorRecords: $priorRecords,
+            jobCorrelationId: $jobCorrelationId,
         );
 
         if ($manifest instanceof TickOutcome) {
@@ -198,6 +212,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             jobId: (int) $job['id'],
             manifest: $manifest,
             chunkCorrelationId: $chunkCorrelationId,
+            jobCorrelationId: $jobCorrelationId,
         );
 
         return TickOutcome::WORK_DONE;
@@ -303,12 +318,13 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     }
 
     /**
-     * @return array{id: int|string, tenant_id: int|string, artifact_path: string, manifest: string|null}|null
+     * @return array{id: int|string, tenant_id: int|string, artifact_path: string, manifest: string|null, correlation_id: string|null}|null
      */
     private function loadJob(int $jobId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, tenant_id, artifact_path, manifest FROM stardust_import_jobs WHERE id = ?'
+            'SELECT id, tenant_id, artifact_path, manifest, correlation_id'
+            . ' FROM stardust_import_jobs WHERE id = ?'
         );
         $stmt->execute([$jobId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -454,6 +470,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         int $resumeOffset,
         int $priorChunks,
         array $priorRecords,
+        ?string $jobCorrelationId = null,
     ): array|TickOutcome|null {
         $entries = $payload['entries'];
         $totalEntries = count($entries);
@@ -502,6 +519,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
                     entriesWritten: $entriesWritten,
                     attempt: $attempt,
                     records: $records,
+                    jobCorrelationId: $jobCorrelationId,
                 );
 
                 if ($windowOutcome !== self::WINDOW_RETRY) {
@@ -526,8 +544,12 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     /**
      * @param array{chunks: int, entries_written: int, chunk_manifest: list<array<string, mixed>>} $manifest
      */
-    private function completeJob(int $jobId, array $manifest, string $chunkCorrelationId): void
-    {
+    private function completeJob(
+        int $jobId,
+        array $manifest,
+        string $chunkCorrelationId,
+        ?string $jobCorrelationId = null,
+    ): void {
         $now = $this->utcNow();
         $manifestJson = json_encode($manifest, JSON_THROW_ON_ERROR);
 
@@ -539,10 +561,11 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         $stmt->execute([$manifestJson, $now, $now, $jobId]);
 
         $this->logger->info('import_job complete', [
-            'event'           => 'chunk_complete',
-            'source'          => 'reconciler',
-            'correlation_id'  => $chunkCorrelationId,
-            'queue'           => 'import_jobs',
+            'event'              => 'chunk_complete',
+            'source'             => 'reconciler',
+            'correlation_id'     => $chunkCorrelationId,
+            'job_correlation_id' => $jobCorrelationId,
+            'queue'              => 'import_jobs',
             'job_id'          => $jobId,
             'chunks'          => $manifest['chunks'],
             'entries_written' => $manifest['entries_written'],
@@ -586,6 +609,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         int &$entriesWritten,
         int $attempt,
         array &$records,
+        ?string $jobCorrelationId = null,
     ): string {
         $this->pdo->beginTransaction();
         try {
@@ -709,6 +733,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
                 failedReason: 'entry_write_failed',
                 chunkCorrelationId: $chunkCorrelationId,
                 errorMessage: $e->getMessage(),
+                jobCorrelationId: $jobCorrelationId,
                 // The terminal record. Its id range is null because the
                 // window rolled back above, so the chunk owns no
                 // `entry_data` rows and the ids it would have taken were
@@ -751,6 +776,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         string $chunkCorrelationId,
         string $errorMessage,
         ?array $failedRecord = null,
+        ?string $jobCorrelationId = null,
     ): void {
         $now = $this->utcNow();
 
@@ -803,13 +829,15 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             reason: $failedReason === 'malformed_json' ? 'malformed_json' : 'other',
             errorMessage: substr($errorMessage, 0, 1024),
             chunkCorrelationId: $chunkCorrelationId,
+            originCorrelationId: $jobCorrelationId,
         ));
 
         $this->logger->warning('import_job chunk failed', [
-            'event'           => 'chunk_partial',
-            'source'          => 'reconciler',
-            'correlation_id'  => $chunkCorrelationId,
-            'queue'           => 'import_jobs',
+            'event'              => 'chunk_partial',
+            'source'             => 'reconciler',
+            'correlation_id'     => $chunkCorrelationId,
+            'job_correlation_id' => $jobCorrelationId,
+            'queue'              => 'import_jobs',
             'job_id'          => $jobId,
             'failed_reason'   => $failedReason,
         ]);

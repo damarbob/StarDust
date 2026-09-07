@@ -15,7 +15,8 @@ Injecting a custom PSR-3 logger transfers ADR 0020 conformance to the caller.
 Two things follow, and neither is optional:
 
 - **A "correlation_id is a UUID" assertion proves nothing.** `PageProvisionerTest`, `SlotReserverTest` and `EntryWriterTest` all contained one throughout. What earns its keep is asserting that two events of one operation carry the *same* id — see `tests/Smoke/LifecycleCorrelationTest`.
-- **The enforcement is a source scan, not a runtime check.** `tests/Smoke/Conventions/RegistryCorrelationTest` requires the id be **passed** at every `source: registry` emit site. It is scoped to that source because the daemon sources mint per-cycle or per-chunk ids at the top of the tick and thread them everywhere, so they have never had this failure mode; `registry` is the source with no owning loop.
+- **The enforcement is a source scan, not a runtime check.** `tests/Smoke/Conventions/EventCorrelationTest` requires the id be **passed** at every emit site carrying a `source`, on all eight of them. It began scoped to `registry` — the source with no owning loop, and the one that drifted — and was widened when the consumer-facing sources turned out to have the same defect.
+- **And the scan is necessary but not sufficient.** It cannot tell a threaded id from one the site minted itself, so a site can satisfy it completely and still correlate nothing. Both advisory samplers did exactly that. Only a behavioural assertion that two events of one operation share a *value* catches it, which is `tests/Smoke/LifecycleCorrelationTest`'s job; a new event needs both.
 
 ## The closed event vocabulary
 

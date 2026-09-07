@@ -30,6 +30,16 @@ There is deliberately **no** `updateWithinTransaction()` — no bulk-update path
 
 There is no hard delete and no restore — `deleted_at` is the only lifecycle transition the schema models, and purging would additionally have to reclaim slot columns.
 
+### One correlation id per write, and it is minted before the transaction
+
+`entry_written` and `exhaustion_fallback` are **one write by construction** — the second fires only when that same result set `enqueuedForBackfill` — and until they shared an id, an operator alerting on exhaustion could not reach the write that caused it.
+
+**The mint happens before `beginTransaction()`, not at emit time, and that ordering is load-bearing.** The ADR 0007 enqueue inside the transaction stamps the id onto the `stardust_sync_queue` row, so a dead letter produced by a failed backfill can name the write that created it. Deriving the id afterwards would be too late for the row that has already been written.
+
+`EntryPayload::$correlationId` lets a consumer supply their own request id; null mints one. The envelope factories read an optional `correlationId` key **leniently** — a non-string is dropped rather than raising, because this class's documented posture is that unknown top-level keys are ignored, and a malformed optional id must not turn a valid envelope into a `MalformedEntryPayloadException`.
+
+**`BulkIngestOptions` carries the bulk id, not each payload**, because a bulk ingest is one *call*: its N chunk events describe one operation, and per-payload ids could not express that. `writeWithinTransaction()` therefore takes the ingest id explicitly and a payload's own is ignored on that path.
+
 ### ADR 0036: inbound keys are canonicalised before anything else
 
 Both `writeWithinTransaction()` and `update()` load `LiveSlotMap` **before** `json_encode`, then run `$map->canonicalise($fields)`. That ordering is load-bearing, not stylistic — the canonicalised payload is what gets persisted, not just what gets planned.

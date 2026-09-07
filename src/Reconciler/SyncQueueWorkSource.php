@@ -182,6 +182,9 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
             foreach ($rows as $row) {
                 $queueId = (int) $row['id'];
                 $entryId = (int) $row['entry_id'];
+                $originCorrelationId = $row['origin_correlation_id'] === null
+                    ? null
+                    : (string) $row['origin_correlation_id'];
 
                 try {
                     $result = $this->backfillExecutor->backfill($entryId);
@@ -191,6 +194,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
                         entryId: $entryId,
                         reason: 'missing_entry_data',
                         errorMessage: $e->getMessage(),
+                        originCorrelationId: $originCorrelationId,
                     );
                     $processedQueueIds[] = $queueId;
                     $dlqCount++;
@@ -201,6 +205,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
                         entryId: $entryId,
                         reason: 'schema_incompatibility',
                         errorMessage: $e->getMessage(),
+                        originCorrelationId: $originCorrelationId,
                     );
                     $processedQueueIds[] = $queueId;
                     $dlqCount++;
@@ -226,6 +231,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
                         entryId: $entryId,
                         reason: 'other',
                         errorMessage: $e->getMessage(),
+                        originCorrelationId: $originCorrelationId,
                     );
                     $processedQueueIds[] = $queueId;
                     $dlqCount++;
@@ -296,11 +302,19 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
         }
     }
 
-    /** @return list<array{id: int|string, entry_id: int|string}> */
+    /**
+     * `origin_correlation_id` rides along so a row that has to be
+     * quarantined can name the write that enqueued it. It is selected
+     * unconditionally rather than only on the failure path because the
+     * failure path has no second chance to read it: the queue row is
+     * deleted in the same transaction.
+     *
+     * @return list<array{id: int|string, entry_id: int|string, origin_correlation_id: string|null}>
+     */
     private function claimChunk(): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, entry_id FROM stardust_sync_queue'
+            'SELECT id, entry_id, origin_correlation_id FROM stardust_sync_queue'
             . ' ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED'
         );
         $stmt->bindValue(1, $this->chunkSize, PDO::PARAM_INT);
@@ -318,6 +332,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
         int $entryId,
         string $reason,
         string $errorMessage,
+        ?string $originCorrelationId = null,
     ): void {
         // Best-effort tenant/model resolution. When the entry_data row
         // is missing the source row is gone, so we record `0/0`; the
@@ -338,6 +353,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
             reason: $reason,
             errorMessage: $errorMessage,
             chunkCorrelationId: $chunkCorrelationId,
+            originCorrelationId: $originCorrelationId,
         ));
     }
 

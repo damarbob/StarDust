@@ -69,15 +69,23 @@ abstract class Phase5TestCase extends ReadPathTestCase
         return $this->createField($modelId, $declaredType, true, 'waiting_' . bin2hex(random_bytes(4)));
     }
 
-    protected function enqueueSyncRow(int $entryId): void
+    /**
+     * `$originCorrelationId` seeds the ADR 0020 provenance column that
+     * `EntryWriter` normally writes. Left null it reproduces a row
+     * enqueued before that column existed, which is the fallback case
+     * the drain has to tolerate — so the default is not merely
+     * convenience, it is one of the two states worth testing.
+     */
+    protected function enqueueSyncRow(int $entryId, ?string $originCorrelationId = null): void
     {
         $now = (new SystemClock())->now()
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
         $stmt = $this->pdo->prepare(
-            'INSERT INTO stardust_sync_queue (entry_id, created_at) VALUES (?, ?)'
+            'INSERT INTO stardust_sync_queue (entry_id, created_at, origin_correlation_id)'
+            . ' VALUES (?, ?, ?)'
         );
-        $stmt->execute([$entryId, $now]);
+        $stmt->execute([$entryId, $now, $originCorrelationId]);
     }
 
     /**
@@ -87,8 +95,12 @@ abstract class Phase5TestCase extends ReadPathTestCase
      * @param list<array{tenant_id: int, model_id: int, fields: array<string, mixed>}> $entries
      * @return array{0: int, 1: string}
      */
-    protected function writePendingImportJob(int $tenantId, array $entries, ?string $artifactDir = null): array
-    {
+    protected function writePendingImportJob(
+        int $tenantId,
+        array $entries,
+        ?string $artifactDir = null,
+        ?string $correlationId = null,
+    ): array {
         $artifactDir ??= sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'stardust';
         if (!is_dir($artifactDir)) {
             mkdir($artifactDir, 0777, true);
@@ -110,10 +122,10 @@ abstract class Phase5TestCase extends ReadPathTestCase
 
         $stmt = $this->pdo->prepare(
             'INSERT INTO stardust_import_jobs'
-            . ' (tenant_id, status, artifact_path, entry_count, created_at)'
-            . " VALUES (?, 'pending', ?, ?, ?)"
+            . ' (tenant_id, status, artifact_path, entry_count, created_at, correlation_id)'
+            . " VALUES (?, 'pending', ?, ?, ?, ?)"
         );
-        $stmt->execute([$tenantId, $filename, count($entries), $now]);
+        $stmt->execute([$tenantId, $filename, count($entries), $now, $correlationId]);
 
         return [(int) $this->pdo->lastInsertId(), $path];
     }

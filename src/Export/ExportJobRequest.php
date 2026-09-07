@@ -44,6 +44,14 @@ final class ExportJobRequest
         public readonly int $modelId,
         public readonly string $format,
         public readonly array $filter = [],
+        /**
+         * The caller's own request id. Stamped onto `export_accepted`
+         * and persisted to `stardust_export_jobs.correlation_id`, so the
+         * Chronicler's `job_claimed` / `job_complete` — emitted from a
+         * different process, possibly hours later — carry it too. Null
+         * mints one at submission.
+         */
+        public readonly ?string $correlationId = null,
     ) {
         if ($format !== self::FORMAT_CSV && $format !== self::FORMAT_JSON) {
             throw new RuntimeException(

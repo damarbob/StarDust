@@ -13,6 +13,9 @@ use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
+use StarDust\Write\BulkIngestor;
+use StarDust\Write\EntryWriter;
+use StarDust\Write\SlotRowUpserter;
 
 /**
  * Shared scaffolding for Phase 3 write-path smoke tests.
@@ -179,6 +182,38 @@ abstract class WritePathTestCase extends TestCase
      *
      * @return array{0: int, 1: int, 2: int, 3: string} [modelId, fieldId, pageId, fieldName]
      */
+    /**
+     * The real write path, bound to the test PDO.
+     *
+     * `EntryWriterTest` and `BulkIngestorTest` each build their own; this
+     * exists because the correlation tests need both, and duplicating the
+     * construction a third and fourth time is how the two drift.
+     */
+    protected function makeEntryWriter(?\Psr\Log\LoggerInterface $logger = null): EntryWriter
+    {
+        return new EntryWriter(
+            pdo: $this->pdo,
+            clock: new SystemClock(),
+            logger: $logger ?? new NullLogger(),
+            slotRowUpserter: new SlotRowUpserter($this->pdo),
+        );
+    }
+
+    protected function makeBulkIngestor(?\Psr\Log\LoggerInterface $logger = null): BulkIngestor
+    {
+        $log = $logger ?? new NullLogger();
+
+        return new BulkIngestor(
+            pdo: $this->pdo,
+            entryWriter: $this->makeEntryWriter($log),
+            logger: $log,
+            // No real wall-clock delay in tests; the inter-chunk pacing
+            // is BulkIngestorTest's subject, not this helper's.
+            sleepFn: static function (int $micros): void {
+            },
+        );
+    }
+
     protected function setupModelWithReservedField(
         int $tenantId = 1,
         string $declaredType = 'string',

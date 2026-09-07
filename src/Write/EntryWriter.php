@@ -10,6 +10,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\EntryNotFoundException;
 use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -76,9 +77,15 @@ final class EntryWriter
     {
         TenantId::assertValid($payload->tenantId);
 
+        // Minted BEFORE the transaction, not at emit time: the ADR 0007
+        // enqueue inside it stamps this id onto the queue row, so the
+        // dead letter a failed backfill produces can name the write that
+        // created it. Deriving it afterwards would be too late.
+        $correlationId = $payload->correlationId ?? UuidV4::generate();
+
         $this->pdo->beginTransaction();
         try {
-            $result = $this->writeWithinTransaction($payload);
+            $result = $this->writeWithinTransaction($payload, $correlationId);
             $this->pdo->commit();
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -87,7 +94,7 @@ final class EntryWriter
             throw $e;
         }
 
-        $this->emitWriteEvents($payload, $result);
+        $this->emitWriteEvents($payload, $result, $correlationId);
         return $result;
     }
 
@@ -101,9 +108,17 @@ final class EntryWriter
      * Returns the result so the bulk caller can stitch the per-chunk
      * manifest from each entity's outcome.
      */
-    public function writeWithinTransaction(EntryPayload $payload): EntryWriteResult
-    {
+    public function writeWithinTransaction(
+        EntryPayload $payload,
+        ?string $correlationId = null,
+    ): EntryWriteResult {
         TenantId::assertValid($payload->tenantId);
+
+        // The id stamped on any ADR 0007 queue row this write enqueues.
+        // The bulk caller passes its *ingest* id here rather than the
+        // payload's, because a bulk load is the operation its consumer
+        // knows about.
+        $correlationId ??= $payload->correlationId;
 
         $now = $this->clock->now()
             ->setTimezone(new DateTimeZone('UTC'))
@@ -170,9 +185,10 @@ final class EntryWriter
         $enqueued = $plan->hasMissingSlotFields();
         if ($enqueued) {
             $enqueue = $this->pdo->prepare(
-                'INSERT INTO stardust_sync_queue (entry_id, created_at) VALUES (?, ?)'
+                'INSERT INTO stardust_sync_queue (entry_id, created_at, origin_correlation_id)'
+                . ' VALUES (?, ?, ?)'
             );
-            $enqueue->execute([$entryId, $now]);
+            $enqueue->execute([$entryId, $now, $correlationId]);
         }
 
         return new EntryWriteResult(
@@ -213,14 +229,20 @@ final class EntryWriter
      * @throws EntryNotFoundException when the row does not exist, belongs
      *                                to another tenant, or is soft-deleted
      */
-    public function update(int $tenantId, int $entryId, array $fields): EntryWriteResult
-    {
+    public function update(
+        int $tenantId,
+        int $entryId,
+        array $fields,
+        ?string $correlationId = null,
+    ): EntryWriteResult {
         TenantId::assertValid($tenantId);
+
+        $correlationId ??= UuidV4::generate();
 
         $this->pdo->beginTransaction();
         try {
             $modelId = $this->lockEntryForUpdate($tenantId, $entryId);
-            $result = $this->applyUpdate($tenantId, $entryId, $modelId, $fields);
+            $result = $this->applyUpdate($tenantId, $entryId, $modelId, $fields, $correlationId);
             $this->pdo->commit();
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -229,7 +251,7 @@ final class EntryWriter
             throw $e;
         }
 
-        $this->emitUpdateEvents($tenantId, $modelId, $result);
+        $this->emitUpdateEvents($tenantId, $modelId, $result, $correlationId);
         return $result;
     }
 
@@ -258,8 +280,13 @@ final class EntryWriter
     /**
      * @param array<string, mixed> $fields
      */
-    private function applyUpdate(int $tenantId, int $entryId, int $modelId, array $fields): EntryWriteResult
-    {
+    private function applyUpdate(
+        int $tenantId,
+        int $entryId,
+        int $modelId,
+        array $fields,
+        ?string $correlationId = null,
+    ): EntryWriteResult {
         $now = $this->clock->now()
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d H:i:s');
@@ -315,9 +342,10 @@ final class EntryWriter
         $enqueued = $plan->hasMissingSlotFields();
         if ($enqueued) {
             $enqueue = $this->pdo->prepare(
-                'INSERT INTO stardust_sync_queue (entry_id, created_at) VALUES (?, ?)'
+                'INSERT INTO stardust_sync_queue (entry_id, created_at, origin_correlation_id)'
+                . ' VALUES (?, ?, ?)'
             );
-            $enqueue->execute([$entryId, $now]);
+            $enqueue->execute([$entryId, $now, $correlationId]);
         }
 
         return new EntryWriteResult(
@@ -363,45 +391,68 @@ final class EntryWriter
      * including those cleared to NULL — for an update, clearing is a
      * write.
      */
-    private function emitUpdateEvents(int $tenantId, int $modelId, EntryWriteResult $result): void
-    {
+    private function emitUpdateEvents(
+        int $tenantId,
+        int $modelId,
+        EntryWriteResult $result,
+        string $correlationId,
+    ): void {
         $this->logger->info('entry updated', [
-            'event'         => 'entry_updated',
-            'source'        => 'api',
-            'tenant_id'     => $tenantId,
-            'entry_id'      => $result->entryId,
-            'model_id'      => $modelId,
-            'slots_written' => count($result->slotsWritten),
-            'enqueued'      => $result->enqueuedForBackfill,
-        ]);
-
-        if ($result->enqueuedForBackfill) {
-            $this->logger->info('exhaustion fallback engaged', [
-                'event'     => 'exhaustion_fallback',
-                'source'    => 'api',
-                'tenant_id' => $tenantId,
-                'entry_id'  => $result->entryId,
-                'model_id'  => $modelId,
-            ]);
-        }
-    }
-
-    public function emitWriteEvents(EntryPayload $payload, EntryWriteResult $result): void
-    {
-        $this->logger->info('entry written', [
-            'event'         => 'entry_written',
-            'source'        => 'api',
-            'tenant_id'     => $payload->tenantId,
-            'entry_id'      => $result->entryId,
-            'model_id'      => $payload->modelId,
-            'slots_written' => count($result->slotsWritten),
-            'enqueued'      => $result->enqueuedForBackfill,
+            'event'          => 'entry_updated',
+            'source'         => 'api',
+            'correlation_id' => $correlationId,
+            'tenant_id'      => $tenantId,
+            'entry_id'       => $result->entryId,
+            'model_id'       => $modelId,
+            'slots_written'  => count($result->slotsWritten),
+            'enqueued'       => $result->enqueuedForBackfill,
         ]);
 
         if ($result->enqueuedForBackfill) {
             $this->logger->info('exhaustion fallback engaged', [
                 'event'          => 'exhaustion_fallback',
                 'source'         => 'api',
+                'correlation_id' => $correlationId,
+                'tenant_id'      => $tenantId,
+                'entry_id'       => $result->entryId,
+                'model_id'       => $modelId,
+            ]);
+        }
+    }
+
+    /**
+     * `$correlationId` is the write's operation id — the caller's own
+     * when `EntryPayload` carried one, otherwise minted here.
+     *
+     * Both events take it, and that is the whole point: they are one
+     * write by construction, since `exhaustion_fallback` fires only when
+     * this same result set `enqueuedForBackfill`. Under independent ids
+     * an operator alerting on exhaustion could not get back to the write
+     * that caused it.
+     */
+    public function emitWriteEvents(
+        EntryPayload $payload,
+        EntryWriteResult $result,
+        ?string $correlationId = null,
+    ): void {
+        $correlationId ??= $payload->correlationId ?? UuidV4::generate();
+
+        $this->logger->info('entry written', [
+            'event'          => 'entry_written',
+            'source'         => 'api',
+            'correlation_id' => $correlationId,
+            'tenant_id'      => $payload->tenantId,
+            'entry_id'       => $result->entryId,
+            'model_id'       => $payload->modelId,
+            'slots_written'  => count($result->slotsWritten),
+            'enqueued'       => $result->enqueuedForBackfill,
+        ]);
+
+        if ($result->enqueuedForBackfill) {
+            $this->logger->info('exhaustion fallback engaged', [
+                'event'          => 'exhaustion_fallback',
+                'source'         => 'api',
+                'correlation_id' => $correlationId,
                 'tenant_id'      => $payload->tenantId,
                 'entry_id'       => $result->entryId,
                 'model_id'       => $payload->modelId,

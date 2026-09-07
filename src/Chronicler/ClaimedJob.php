@@ -35,6 +35,17 @@ final class ClaimedJob
         public readonly string $workerIdentity,
         public readonly ClaimKind $claimKind,
         public readonly int $skipCount,
+        /**
+         * The submitting call's id, from
+         * `stardust_export_jobs.correlation_id`.
+         *
+         * `job_claimed` / `job_complete` / `job_failed` are per-*job*
+         * events, so under ADR 0020 their operation is the submission
+         * and they carry this directly rather than through a companion
+         * field. Null for a job submitted before the column existed, in
+         * which case the worker mints one and behaves as before.
+         */
+        public readonly ?string $correlationId = null,
     ) {
     }
 }

@@ -56,6 +56,15 @@ final class EntryQuery
         public readonly int $pageSize = self::DEFAULT_PAGE_SIZE,
         public readonly ?Cursor $cursor = null,
         public readonly ?SortSpec $sort = null,
+        /**
+         * The caller's own request id, forwarded to `SearchRequest` by
+         * {@see \StarDust\Search\SearchRequest::fromEntryQuery()} and
+         * stamped onto `cache_miss`, `pre_flight_rejected` and
+         * `search_request`. Null mints one, which is what `read()` did
+         * unconditionally before this existed — until then a Phase 4
+         * caller had no way to supply one at all, while `search()` did.
+         */
+        public readonly ?string $correlationId = null,
     ) {
     }
 

@@ -29,6 +29,18 @@ final class DlqEntry
         public readonly string $reason,
         public readonly ?string $errorMessage,
         public readonly string $chunkCorrelationId,
+        /**
+         * The originating write's correlation id, read off the
+         * `stardust_sync_queue` row this quarantine came from.
+         *
+         * **Not a duplicate of `$chunkCorrelationId`, which stays
+         * required.** They answer different questions — "which tick
+         * failed this" and "which write created it" — and only the first
+         * was recordable before. Null for the `bulk_import` source,
+         * which has no single originating write, and for a queue row
+         * enqueued before the column existed.
+         */
+        public readonly ?string $originCorrelationId = null,
     ) {
     }
 }

@@ -9,6 +9,7 @@ use Psr\Log\LoggerInterface;
 use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Exception\PayloadTooLargeException;
 use StarDust\Support\ModelDeletionProbe;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -66,12 +67,21 @@ final class BulkIngestor
         $options ??= new BulkIngestOptions();
         $count = count($payloads);
 
+        // One id for the whole call. A bulk ingest is a single operation
+        // from the consumer's side, so its N chunk events must share an
+        // id — otherwise "did this load partially roll back" is
+        // unanswerable from the log without matching on timestamps.
+        // Minted before the threshold guard so even the rejection is
+        // attributable.
+        $correlationId = $options->correlationId ?? UuidV4::generate();
+
         if ($count > self::SYNC_THRESHOLD) {
             $this->logger->info('payload too large for sync bulk ingest', [
-                'event'        => 'payload_too_large',
-                'source'       => 'bulk_api',
-                'entry_count'  => $count,
-                'threshold'    => self::SYNC_THRESHOLD,
+                'event'          => 'payload_too_large',
+                'source'         => 'bulk_api',
+                'correlation_id' => $correlationId,
+                'entry_count'    => $count,
+                'threshold'      => self::SYNC_THRESHOLD,
             ]);
             throw new PayloadTooLargeException(
                 'Synchronous bulk ingest accepts at most ' . self::SYNC_THRESHOLD
@@ -115,7 +125,7 @@ final class BulkIngestor
         $totalCommitted = 0;
 
         foreach ($chunks as $i => $chunk) {
-            $result = $this->processChunk($i, $chunk);
+            $result = $this->processChunk($i, $chunk, $correlationId);
             $results[] = $result;
             if ($result->outcome === BulkChunkResult::OUTCOME_COMMITTED) {
                 $totalCommitted += count($result->entryIds);
@@ -133,15 +143,18 @@ final class BulkIngestor
     /**
      * @param list<EntryPayload> $chunk
      */
-    private function processChunk(int $index, array $chunk): BulkChunkResult
-    {
+    private function processChunk(
+        int $index,
+        array $chunk,
+        string $correlationId,
+    ): BulkChunkResult {
         $chunkSize = count($chunk);
         $entryIds = [];
 
         $this->pdo->beginTransaction();
         try {
             foreach ($chunk as $payload) {
-                $result = $this->entryWriter->writeWithinTransaction($payload);
+                $result = $this->entryWriter->writeWithinTransaction($payload, $correlationId);
                 $entryIds[] = $result->entryId;
             }
             $this->pdo->commit();
@@ -155,6 +168,7 @@ final class BulkIngestor
             $this->logger->info('bulk chunk rolled back', [
                 'event'          => 'bulk_chunk_rolled_back',
                 'source'         => 'bulk_api',
+                'correlation_id' => $correlationId,
                 'chunk_index'    => $index,
                 'chunk_size'     => $chunkSize,
                 'failure_reason' => $failureReason,
@@ -170,8 +184,9 @@ final class BulkIngestor
         }
 
         $this->logger->info('bulk chunk committed', [
-            'event'         => 'bulk_chunk_committed',
-            'source'        => 'bulk_api',
+            'event'          => 'bulk_chunk_committed',
+            'source'         => 'bulk_api',
+            'correlation_id' => $correlationId,
             'chunk_index'   => $index,
             'chunk_size'    => $chunkSize,
             'entry_id_first' => $entryIds[0] ?? null,
