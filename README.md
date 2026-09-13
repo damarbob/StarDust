@@ -125,6 +125,8 @@ Four background daemons keep the slot machinery healthy. They never talk to each
    low            and retypes                         artifacts
 ```
 
+Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *backfill window*. **[GLOSSARY.md](GLOSSARY.md)** defines every term in plain language and opens with a short walkthrough that threads them together, if you would rather get the whole model in one pass before reading on.
+
 ---
 
 ## Is StarDust a fit?
