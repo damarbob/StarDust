@@ -48,28 +48,35 @@ StarDust ships as a **framework-neutral Composer library** with zero runtime fra
 
 ## Contents
 
+### In this README
+
+- [Try it in five minutes](#try-it-in-five-minutes)
 - [Architecture at a glance](#architecture-at-a-glance)
 - [Is StarDust a fit?](#is-stardust-a-fit)
 - [Status](#status)
 - [Requirements](#requirements)
-- [Deployment Requirements](#deployment-requirements)
 - [Installation](#installation)
 - [Complete example](#complete-example)
-- [Construction & schema bootstrap](#construction--schema-bootstrap)
-- [Writing entries](#writing-entries)
-- [Updating and deleting entries](#updating-and-deleting-entries)
-- [Reading entries](#reading-entries)
-- [Searching with the JSON wire format](#searching-with-the-json-wire-format)
-- [Custom search drivers](#custom-search-drivers)
-- [Changing a field's type or filterability](#changing-a-fields-type-or-filterability)
-- [Async exports](#async-exports)
-- [Slot maintenance](#slot-maintenance)
-- [Errors](docs/errors.md)
-- [CLI](docs/cli.md)
 - [Testing](#testing)
 - [Contributing](#contributing)
 - [Legacy](#legacy)
 - [License](#license)
+
+### Reference docs
+
+- [Deployment requirements](docs/deployment.md)
+- [Construction & schema bootstrap](docs/configuration.md)
+- [Writing entries](docs/writing-entries.md)
+- [Updating and deleting entries](docs/writing-entries.md#updating-and-deleting-entries)
+- [Reading entries](docs/reading-entries.md)
+- [Searching with the JSON wire format](docs/query-filter.md)
+- [Custom search drivers](docs/custom-search-drivers.md)
+- [Changing a field's type or filterability](docs/schema-changes.md)
+- [Async exports](docs/exports.md)
+- [Slot maintenance](docs/slot-maintenance.md)
+- [Tracing a request through the logs](docs/observability.md)
+- [Errors](docs/errors.md)
+- [CLI](docs/cli.md)
 
 ---
 
@@ -197,22 +204,7 @@ The 8.0.13 floor is firm: StarDust leans on functional/conditional unique indexe
 
 ## Deployment Requirements
 
-StarDust v0.3.0 ships with four background daemons (Watcher, Reconciler, Liberator, Chronicler), all implemented and runnable today via `bin/stardust`. A supported deployment target MUST provide all of the following.
-
-1. **Persistent background processes or long-running containers** — systemd, supervisor, Docker / Kubernetes / ECS, or equivalent. Cron-only invocation is not supported in v1; a future `--once` mode is under consideration but not committed.
-2. **MySQL 8.0.13+ or Percona 8.0.13+** (also covered by the Requirements section above).
-3. **PHP 8.x with CLI access** for the `bin/stardust` entry point.
-4. **Local filesystem write access** for the Chronicler's async export artifacts (a mounted volume in container deployments).
-5. **PID-file or orchestrator-level singleton enforcement for the Watcher and Liberator** — for the Watcher the in-database advisory lock is a safety net, not the primary enforcement mechanism. The Liberator relies on the PID file alone (it issues DML only, never DDL).
-
-**Supported deployment tiers:**
-
-| Tier | Verdict |
-| :--- | :--- |
-| Free shared hosting (no shell, no cron, no persistent processes) | Unsupported. |
-| Paid shared hosting (cron only) | Unsupported in v1; a future `--once` mode is under consideration. |
-| VPS with systemd / supervisor | Supported — reference deployment. |
-| Containerized (Docker Compose, Kubernetes, ECS) | Supported — recommended for production at scale. |
+What a supported deployment must provide — persistent processes, the MySQL floor, CLI access, artifact disk, and singleton enforcement for the Watcher and Liberator — plus which hosting tiers qualify: [docs/deployment.md](docs/deployment.md).
 
 ---
 
@@ -376,611 +368,45 @@ echo $entry?->fields['name']; // Acme Corp
 
 ## Construction & schema bootstrap
 
-```php
-use StarDust\Config\Config;
-use StarDust\StarDust;
-
-$pdo = new PDO('mysql:host=127.0.0.1;dbname=app', $user, $pass, [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-]);
-
-$engine = new StarDust(new Config(pdo: $pdo));
-
-// $engine->logger() returns StarDust\Logging\StdoutNdjsonLogger
-// (NDJSON to stdout) unless you inject your own
-// PSR-3 logger via Config. Optional Config::$artifactDir overrides
-// where async bulk-ingest payloads are persisted (defaults to
-// sys_get_temp_dir() . '/stardust').
-
-// Phase 1: idempotently provision every physical table the engine
-// needs (data plane, schema registry, operational/coordination).
-// Safe to call on an already-bootstrapped database.
-$engine->bootstrap();
-```
-
-Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`); Phase 5's Watcher daemon (`bin/stardust watcher`) wires them automatically.
-
-> ℹ️ **Defining models and fields.** Use `StarDust::schemaBuilder()` to register models and fields without hand-writing registry SQL. It's get-or-create (safe to re-run) and returns the ids you'll need:
->
-> ```php
-> use StarDust\Schema\FieldDefinition;
->
-> $model = $engine->schemaBuilder()->createModel(tenantId: 1, name: 'company', fields: [
->     new FieldDefinition('name',      'string', isFilterable: true),
->     new FieldDefinition('employees', 'int',    isFilterable: true),
-> ]);
-> // $model->modelId, $model->fieldId('name')
-> ```
->
-> This is a stopgap, not the first-class definition API. Registering a field isn't enough to filter on it — its value has to reach an indexed slot column. The Watcher daemon provisions that capacity in a running deployment; for one-off setup, call `PageProvisioner` + `SlotReserver` (see the [Complete example](#complete-example)). Until a field has a reserved indexed slot it's still stored and point-readable from the JSON payload — just not on the indexed filter path.
-
-To read the registry back — for a settings screen, a field picker, or anything else that has to render a tenant's schema — use the introspection pair rather than querying `stardust_fields` yourself:
-
-```php
-foreach ($engine->listModels(tenantId: 1) as $model) {
-    echo "{$model->modelId}: {$model->name}\n";
-}
-
-// null when the model doesn't exist, or isn't this tenant's — the two
-// are deliberately indistinguishable.
-$company = $engine->describeModel(tenantId: 1, modelId: $modelId);
-
-foreach ($company?->fields ?? [] as $field) {
-    echo "{$field->name} ({$field->declaredType})"
-       . ($field->isIndexed ? " — filterable now\n" : "\n");
-}
-
-// Only the fields a filter will actually accept today:
-$company?->indexedFields();
-```
-
-Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
-
-Phases 5, 6a, 7, model deletion, and index headroom add thirty-seven optional `Config` parameters for daemon tuning:
-
-```php
-$engine = new StarDust(new Config(
-    pdo:                                 $pdo,
-    watcherPollIntervalSeconds:          60,        // default
-    watcherCapacityThreshold:            0.20,      // spare-capacity floor; a field waiting on an
-                                                    // index provisions regardless of this
-    watcherProvisionLockTimeoutSeconds:  10,        // GET_LOCK wait — production stays at 10
-    cardinalityIntervalSeconds:          86_400,    // 24 h cadence
-    cardinalityJitterSeconds:            8_640,     // randomized ± window around the cadence (de-correlates a fleet)
-    cardinalitySelectivityThreshold:     0.01,
-    cardinalityRowFloor:                 10_000,
-    cardinalityDistinctFloor:            10,
-    reconcilerChunkSize:                 500,       // SKIP LOCKED LIMIT N
-    reconcilerInterChunkDelayMicros:     0,         // pace drain throughput (0 = no pacing)
-    reconcilerCapacityWaitMillis:        5_000,     // sleep after a capacity_wait tick
-    reconcilerImportLeaseTimeoutSeconds: 30,        // import-job abandoned-claim sweep threshold
-    pidFileDir:                          '/var/run/stardust',  // watcher.pid, liberator.pid + *.shutdown flag files
-    liberatorIdleIntervalSeconds:        10,        // poll interval when nothing is tombstoned
-    liberatorBatchSize:                  50,        // max tombstoned slots per Liberator tick
-    liberatorChunkSize:                  500,       // per-chunk LIMIT on the slot-column nullification
-    liberatorInterChunkDelayMicros:      0,         // pace sweep throughput (0 = no pacing)
-    liberatorDeadlockRetryBudget:        3,         // consecutive 40001 retries before sweep_gap path
-    chroniclerIdleIntervalSeconds:       10,        // PollLoop sleep when no claim available
-    chroniclerLeaseTimeoutSeconds:       30,        // abandoned-claim sweep threshold
-    chroniclerPageSize:                  500,       // entry_data pagination chunk
-    chroniclerInterChunkDelayMicros:     0,         // between-chunk pacing
-    chroniclerDeadlockRetryBudget:       3,         // per-chunk 40001 retries before skip
-    chroniclerSkipCountCap:              1_000,     // combined per-row + per-chunk skip cap
-    chroniclerArtifactSizeCapBytes:      5 * 1024 * 1024 * 1024,  // 5 GB per-artifact cap
-    chroniclerArtifactTtlSeconds:        86_400,    // 24 h GC TTL for completed artifacts
-    chroniclerOrphanedPartialTtlSeconds: 3_600,     // 1 h GC TTL for failed-job partials
-    chroniclerLowDiskThresholdPct:       0.10,      // pre-claim disk gate (0..1)
-    chroniclerPerTenantActiveCap:        3,         // submission cap on pending+processing
-    chroniclerDbDisconnectBackoffSeconds:[1, 4, 16],// fixed backoff schedule
-    pdoConnector:                        null,      // reconnect factory for mid-export DB drops (CLI wires one automatically)
-    spreadExcessPageThreshold:           2,         // avoidable pages before a model is flagged as over-spread
-    modelPurgeChunkSize:                 200,       // entry_data deletes per model-purge transaction (own knob — see below)
-    modelPurgeLockRetryBudget:           3,         // consecutive 1205/1213 retries before the purge rethrows
-    reconcilerLockRetryBudget:           3,         // consecutive 1205/1213 retries on the other five work sources
-    reconcilerLockRetryDelayMicros:      0,         // pace between those retries (0 = no pacing)
-    pageIndexHeadroom:                   4,         // indexed columns per slot family on each new page —
-                                                    // fixed when the page is created and never widened after
-));
-```
+Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the thirty-seven optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
 
 ## Writing entries
 
-```php
-use StarDust\Write\BulkIngestOptions;
-use StarDust\Write\EntryPayload;
-
-// Single-entry write. Atomic INSERT into entry_data + per-page
-// INSERT … ON DUPLICATE KEY UPDATE into entry_slots_page_N for
-// each field with a live slot; falls back to stardust_sync_queue
-// (in the same transaction) if any *filterable* field lacks a
-// live slot (exhaustion fallback — the call still succeeds).
-// Non-filterable fields live in the JSON payload only, so they
-// never occupy a slot and never queue.
-$result = $engine->write(new EntryPayload(
-    tenantId: 42,
-    modelId:  $modelId,
-    fields:   ['name' => 'Acme', 'employees' => 120],
-));
-// $result->entryId, $result->enqueuedForBackfill, $result->slotsWritten
-
-// Synchronous chunked bulk ingest (≤ 1 000 entities). Each chunk
-// (default 500) commits in its own transaction so InnoDB lock
-// duration stays bounded. Returns a per-chunk manifest.
-$bulk = $engine->bulkWrite(
-    payloads: $listOfEntryPayloads,
-    options:  new BulkIngestOptions(chunkSize: 500, interChunkDelayMicros: 0),
-);
-
-// Async submission (> 1 000 entities, or smaller batches you want
-// processed off-thread). Writes the payload to Config::$artifactDir,
-// inserts a stardust_import_jobs row, returns the Import Job ID.
-// A running Reconciler (bin/stardust reconciler) drains the job.
-$jobId = $engine->submitBulkWrite(
-    tenantId:        42,
-    payloads:        $largeBatch,
-    idempotencyKey:  'monthly-import-2026-05',
-);
-
-// Poll status. Returns null when the job does not exist for this
-// tenant (tenant isolation is enforced by the WHERE clause).
-$job = $engine->getImportJob(tenantId: 42, jobId: $jobId->jobId);
-
-// entriesWritten against entryCount is the progress fraction. Both
-// entriesWritten and chunks are null until the first chunk commits.
-if ($job?->status === 'completed') {
-    echo "{$job->entriesWritten} of {$job->entryCount} entries written";
-}
-if ($job?->status === 'failed') {
-    // A failed job stops where it broke: entries already written stay
-    // written, and later ones are never attempted. entriesWritten is
-    // the durable boundary between the two, so a retry resubmits from
-    // there. It is null when the job failed before writing anything.
-    echo "failed ({$job->failedReason}); resume from " . ($job->entriesWritten ?? 0);
-}
-
-// chunkManifest enumerates the chunks the job has processed, in order:
-// each record carries its size, its outcome, and the range of entry ids
-// it wrote. This is the same per-chunk detail a synchronous bulkWrite()
-// returns, so crossing the size threshold does not cost you visibility.
-// A failed job ends with one 'failed' record naming the chunk that
-// broke; its id range is null, because that chunk was rolled back.
-foreach ($job?->chunkManifest ?? [] as $chunk) {
-    echo "chunk {$chunk->index}: {$chunk->outcome}, {$chunk->size} entries";
-    if ($chunk->entryIdFirst !== null) {
-        echo " (ids {$chunk->entryIdFirst}-{$chunk->entryIdLast})";
-    }
-}
-
-// Build payloads from JSON / arrays instead of the typed constructor —
-// handy when entries arrive off a wire (CMS, HTTP, queue). The envelope
-// is {tenantId, modelId, fields} (camelCase). These are *convergent*
-// factories: they validate envelope shape and return an ordinary
-// EntryPayload, so the value flows through the identical write path.
-$engine->write(EntryPayload::fromArray([
-    'tenantId' => 42, 'modelId' => $modelId,
-    'fields'   => ['name' => 'Acme', 'employees' => 120],
-]));
-$engine->write(EntryPayload::fromJson($rawJsonObjectBody));
-
-// Bulk: a JSON array (or PHP list) of envelopes:
-$engine->bulkWrite(EntryPayload::listFromJson($rawJsonArrayBody));
-$engine->submitBulkWrite(tenantId: 42,
-    payloads: EntryPayload::listFromArray($decodedEnvelopes));
-```
-
-Envelope-shape errors raise `MalformedEntryPayloadException` (carrying the
-offending `$key`, e.g. `'tenantId'` or `'[3].modelId'`). The `tenant_id >= 1`
-rule and per-field type coercion stay on the write path — identical to the typed
-constructor — so a factory-built payload behaves exactly like `new EntryPayload(...)`.
-Pair this with [Searching with the JSON wire format](#searching-with-the-json-wire-format)
-for an end-to-end JSON loop: JSON in, JSON-filtered out.
-
-`tenant_id` is validated at every entry point (must be `>= 1`) before any SQL executes. All write-path operations emit structured NDJSON log events — `entry_written`, `entry_updated`, `entry_deleted`, `exhaustion_fallback`, `bulk_chunk_committed`, `bulk_chunk_rolled_back`, `bulk_accepted`, `payload_too_large`.
+Single writes, chunked bulk ingest, async submission, and building payloads from JSON or array envelopes: [docs/writing-entries.md](docs/writing-entries.md).
 
 ## Updating and deleting entries
 
-```php
-// Update is a full replace, not a patch: $fields becomes the entry's
-// complete payload. A field you omit is removed from the JSON *and*
-// its indexed slot column is cleared, so a filter can never match a
-// value the entry no longer carries.
-$engine->updateEntry(tenantId: 42, entryId: $entryId, fields: [
-    'name'      => 'Acme Holdings',
-    'employees' => 141,
-]);
-
-// Soft delete. One timestamp, and the entry is gone from read(),
-// get(), search(), and exports alike.
-$deleted = $engine->deleteEntry(tenantId: 42, entryId: $entryId);
-// true on the transition; false if it was already deleted or not yours
-```
-
-`model_id` is immutable — an update never moves an entry between models. Coercion, tenant isolation, and the capacity fallback all behave exactly as they do on `write()`: an update that introduces a filterable field with no free slot still succeeds, storing the value in the JSON payload and queueing it for backfill.
-
-`updateEntry()` throws `EntryNotFoundException` when the entry does not exist, belongs to another tenant, or is already deleted — silently discarding an update would lose data the caller believed it had written. `deleteEntry()` takes the opposite stance and returns `false` in those same cases, because a repeated delete has already achieved what the caller asked for. There is no hard delete and no restore.
+Why `updateEntry()` is a full replace rather than a patch, and why `deleteEntry()` returns `false` where `updateEntry()` throws: [docs/writing-entries.md#updating-and-deleting-entries](docs/writing-entries.md#updating-and-deleting-entries).
 
 ## Reading entries
 
-```php
-use StarDust\Filter\Ast\AndNode;
-use StarDust\Filter\Ast\LeafNode;
-use StarDust\Filter\Ast\NotNode;
-use StarDust\Filter\Ast\OrNode;
-use StarDust\Read\EntryQuery;
-
-// Cursor-paginated read. Two-query bounded sequence:
-//   1) Paginated Probe selects entry_data.id with LIMIT pageSize+1
-//      (the extra row is the sole next-page signal — no COUNT(*),
-//      no OFFSET).
-//   2) Bounded Fetch materialises only those IDs plus the indexed
-//      slot columns needed to assemble the caller's selectFields.
-// Filters on fields with is_filterable=false or whose slot is
-// backfilling/tombstoned/unmapped are rejected pre-flight with a
-// typed exception — no SQL is issued.
-//
-// Filters are AST trees: leaves carry (operator, field, value);
-// composites are AndNode / OrNode / NotNode. Pure-AND chains keep
-// the original INNER-JOIN-per-page execution shape; trees that
-// contain OR or NOT switch to EXISTS subqueries automatically.
-$page = $engine->read(new EntryQuery(
-    tenantId:     42,
-    modelId:      $modelId,
-    filter:       LeafNode::local('name', 'eq', 'Acme'),
-    selectFields: ['name', 'employees'],
-    pageSize:     100,
-));
-
-// Multiple AND-composed leaves:
-$page = $engine->read(new EntryQuery(
-    tenantId: 42,
-    modelId:  $modelId,
-    filter:   new AndNode([
-        LeafNode::local('status', 'eq', 'active'),
-        LeafNode::local('employees', 'gt', 100),
-    ]),
-));
-
-// Full boolean composition:
-$filter = new AndNode([
-    new OrNode([
-        LeafNode::local('region', 'eq', 'eu'),
-        LeafNode::local('region', 'eq', 'us'),
-    ]),
-    new NotNode(LeafNode::local('status', 'eq', 'archived')),
-]);
-// $page->rows           — list<Entry>
-// $page->nextCursor     — Cursor|null; null means last page
-// $page->pageSize       — echo of the requested size
-
-// Page through to exhaustion. The cursor is opaque — pass it back
-// unchanged; do not inspect it.
-$cursor = $page->nextCursor;
-while ($cursor !== null) {
-    $next = $engine->read(new EntryQuery(
-        tenantId: 42,
-        modelId:  $modelId,
-        pageSize: 100,
-        cursor:   $cursor,
-    ));
-    // ...
-    $cursor = $next->nextCursor;
-}
-
-// Point read by (tenant_id, entry_id). Returns null when the entry
-// does not exist for this tenant (or has been soft-deleted).
-$entry = $engine->get(tenantId: 42, entryId: $someEntryId);
-// $entry?->id, $entry?->fields, $entry?->createdAt
-```
-
-Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This preserves write-availability on the read side: a field that lacks an indexed slot still surfaces, just without filter or sort capability. The read path emits NDJSON events `search_request`, `pre_flight_rejected`, and `capability_unsupported`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
-
-### Sorting
-
-Reads are ordered by insertion order unless you say otherwise. Pass a `SortSpec` to order by an entry's creation, or by any field that currently has an indexed slot:
-
-```php
-use StarDust\Read\{EntryQuery, SortSpec, SortDirection};
-
-// Newest first — the common case, and the cheapest: it resolves to a
-// backward index scan, no sorting work at all.
-$page = $engine->read(new EntryQuery(
-    tenantId: 42,
-    modelId:  $modelId,
-    sort:     SortSpec::byId(SortDirection::Desc),
-));
-
-// By creation time, or by one of your own fields.
-SortSpec::byCreatedAt(SortDirection::Desc);
-SortSpec::byField('title');                        // ascending
-SortSpec::byField('price', SortDirection::Desc);
-```
-
-Sorting composes with filters and with cursor pagination — keep passing the `nextCursor` back as usual.
-
-Three things worth knowing:
-
-- **Only indexed fields are sortable.** A field must be declared filterable and hold a live slot, the same requirement filtering has. Sorting on anything else raises `FieldNotSortableException`, and on an unregistered name `UnknownFieldException`. `describeModel()` reports which fields qualify right now via `ModelDescription::indexedFields()`.
-- **Entries with no value for the sort field sort first ascending, last descending** — they are not dropped from the page.
-- **A cursor belongs to the ordering that produced it.** Change the sort key or its direction and the old cursor is refused with `InvalidCursorException`; start again from the first page. This is a guard, not a limitation to work around — reusing it would silently walk a different sequence.
-
-Sorting by `id` or by creation time costs nothing extra. Sorting by one of your own fields makes the database order the whole matching set on each page, so it is measurably more expensive on large models — prefer the built-in orderings when either will do.
+Cursor-paginated reads, the AST filter shape, point reads, JSON-payload fallback, and sorting: [docs/reading-entries.md](docs/reading-entries.md).
 
 ## Searching with the JSON wire format
 
-Consumers (HTTP gateways, RPC layers) typically receive filters as JSON. Decode them with `JsonFilterDecoder`, then call `search()` with the resulting AST:
-
-```php
-use StarDust\Filter\Json\JsonFilterDecoder;
-use StarDust\Search\SearchRequest;
-
-$decoder = new JsonFilterDecoder($engine->config()->queryFilterLimits);
-$filter  = $decoder->decode($requestBody);
-$result  = $engine->search(new SearchRequest(
-    tenantId: 42,
-    modelId:  $modelId,
-    filter:   $filter,
-    pageSize: 100,
-));
-```
-
-A typical wire payload:
-
-```json
-{
-  "version": "1",
-  "filter": {
-    "op": "and",
-    "args": [
-      { "op": "eq",    "field": { "model": "invoice", "name": "status" }, "value": "paid" },
-      { "op": "gt",    "field": { "model": "invoice", "name": "amount" }, "value": 100   },
-      { "op": "is_not_null", "field": { "model": "invoice", "name": "due_date" } }
-    ]
-  }
-}
-```
-
-The decoder enforces a closed 13-code error taxonomy (`envelope_malformed`, `node_malformed`, `operator_unknown`, `value_count_mismatch`, `value_unexpected`, `value_out_of_bounds`, `nesting_too_deep`, `node_count_exceeded`, `version_unsupported`, plus pre-flight `field_unknown`, `field_not_filterable`, `capability_unsupported`, `value_type_mismatch`). Every rejection carries an RFC 6901 JSON Pointer to the offending node.
-
-**A `datetime` value must carry an explicit UTC offset** — either a trailing `Z` or `±HH:MM`. A naive `2026-01-01T10:00:00` is rejected with `value_type_mismatch`, because a stored datetime is always UTC and guessing what zone the caller meant is not the engine's to do. The offset you send is then *applied*: the engine converts the bound to the instant it names before matching, so filtering `2026-01-01T10:00:00+07:00` finds the entry you wrote as `2026-01-01T10:00:00+07:00`, whatever offset either was expressed in. Fractional seconds are accepted and honoured at comparison time, though slot columns store whole seconds.
-
-The wire format also ships as a normative JSON Schema (draft 2020-12) at [`schemas/queryfilter.schema.json`](schemas/queryfilter.schema.json), for consumer-side validation in any language and for CI cross-checks. A smoke test (`QueryFilterSchemaConformanceTest`) runs a payload corpus through both the schema and `JsonFilterDecoder` and fails if their accept/reject verdicts ever diverge, keeping the two in lockstep.
+Decoding a JSON filter payload into the AST, the 13-code error taxonomy, the datetime-offset rule, and the normative JSON Schema: [docs/query-filter.md](docs/query-filter.md).
 
 ## Custom search drivers
 
-`StarDust\Search\EntrySearchInterface` is the swappable seam. The engine ships with a `MysqlNativeDriver` that wraps the bounded-read path; inject any other implementation through `Config`:
-
-```php
-use StarDust\Config\Config;
-use StarDust\Search\EntrySearchInterface;
-
-final class MeilisearchDriver implements EntrySearchInterface { /* ... */ }
-
-$engine = new StarDust(new Config(
-    pdo:          $pdo,
-    searchDriver: new MeilisearchDriver(/* ... */),
-));
-```
-
-A driver implements seven methods: `list()` and `get()` do the actual read work; `supportedOperators()`, `supportsFilterOn(int $fieldId)`, and `supportsSortOn(int $fieldId)` (the one breaking addition to this interface in the v0.3.0 build) declare per-request and per-field capability; `supportsFuzzySearch()` and `consistencyModel(): 'strong' | 'eventual'` are static self-description the pre-flight pipeline and callers can inspect. The pre-flight pipeline rejects unsupported requests — including an unsortable field — before the driver is invoked. Writes always go to MySQL — drivers are read-only.
+`EntrySearchInterface`, the seven methods a driver implements, and how capability is declared to the pre-flight pipeline: [docs/custom-search-drivers.md](docs/custom-search-drivers.md).
 
 ## Changing a field's type or filterability
 
-```php
-// Change a field's declared type. Atomic registry transaction:
-//   - stardust_fields.declared_type updates;
-//   - the field's current live slot tombstones (Liberator reclaims it);
-//   - a new slot of the target type flips free → backfilling (or the
-//     reservation defers until capacity is restored);
-//   - stardust_schema_version bumps;
-//   - a backfill_checkpoints row inserts as `running`.
-// Reads fall back to JSON_EXTRACT throughout the backfill window;
-// filter queries against the field throw FieldNotIndexedException
-// until the slot promotes to `ready`. Uncoercible values store NULL
-// (with a per-row `coercion_null` audit event); the JSON payload
-// remains authoritative.
-$engine->retypeField(
-    tenantId:        42,
-    fieldId:         $fieldId,
-    newDeclaredType: 'int',
-);
-
-// Promote an existing unfiltered field to filterable. A fresh
-// indexed slot is reserved and backfilled from the JSON payload;
-// declared_type stays the same so no coercion is attempted. There
-// is normally no old slot to tombstone — the field held none while
-// it was non-filterable.
-$engine->promoteFieldToFilterable(
-    tenantId: 42,
-    fieldId:  $fieldId,
-);
-
-// Turn indexing back off. Registry-only and effective on return:
-// the slot tombstones for the Liberator to reclaim, no backfill
-// window, and reads fall straight back to the JSON payload. From
-// here on, filters against the field raise
-// FieldNotFilterableException.
-$engine->demoteFieldFromFilterable(
-    tenantId: 42,
-    fieldId:  $fieldId,
-);
-```
-
-Only filterable fields occupy slots, so only a filterable field has anything to backfill. Retyping a field that is not filterable — or demoting one back to non-filterable — is a registry-only change: the metadata updates, any slot the field held is released, and the operation is complete when the call returns. There is no backfill window and nothing for the Reconciler to do, because the JSON payload was already the authoritative copy. A demoted field keeps reading correctly and immediately stops being a valid filter target.
-
-Retypes between numeric / int and datetime are categorically rejected at registry-write time (`IncompatibleRetypeException`) — epoch interpretation is a caller policy, not engine behaviour; bridge through a `string` intermediate field if you need it. Initiating a second retype for the same field while one is already running throws `RetypeInProgressException`. The Reconciler picks up `running` retype checkpoints on every tick (alongside `stardust_sync_queue` and `stardust_import_jobs`); when the partition is exhausted it promotes the slot to `ready`, bumps `stardust_schema_version`, emits `promote_to_ready`, and triggers two one-shot advisory samples — `cardinality_sampled` for the new slot, and `spread_sampled` for the model, since a retype can move a field onto a page its model did not previously occupy.
-
-### Renaming a field or model
-
-```php
-// Rename a model. Immediate and complete when it returns — a model
-// name is a label, not an identity, so entries, slots, filters and
-// exports all keep working untouched and there is no background
-// catch-up to wait for. Throws ModelNameConflictException on a
-// collision with another model in the same tenant.
-$engine->renameModel(tenantId: 42, modelId: $modelId, newName: 'organization');
-
-// Rename a field. Returns as soon as the registry is updated; the
-// stored data catches up in the background and NEEDS A RUNNING
-// RECONCILER. Because entry_data.fields is keyed by field name, this
-// rewrites every entry in the model — not a registry-only change like
-// promote/demote above.
-$engine->renameField(tenantId: 42, fieldId: $fieldId, newName: 'company_size');
-```
-
-Nothing breaks while a field rename runs: reads return the value under the new name for every entry, migrated or not; a client still sending the old name keeps working, because inbound writes are rewritten to the new name before they are stored; and filters on the new name work from the moment the call returns, since a rename never disturbs the index. Filters using the *old* name are rejected outright (`UnknownFieldException`) rather than silently returning nothing, and the new name is not available for reuse elsewhere until the rewrite finishes (`FieldNameConflictException`). A field being renamed cannot be retyped, promoted, demoted, deleted, or compacted until the rewrite finishes.
-
-### Removing a field
-
-```php
-// Delete a field and its stored values. Returns as soon as the
-// registry is updated; clearing the values out of already-stored
-// entries happens in the background and NEEDS A RUNNING RECONCILER.
-//
-// Returns false — rather than throwing — when there is nothing to
-// do: the field doesn't exist for this tenant, or a deletion is
-// already in flight. A repeated delete has already achieved what
-// you asked for.
-$deleted = $engine->deleteField(tenantId: 42, fieldId: $fieldId);
-```
-
-The field disappears from everything you can observe the moment the call returns: `read()`, `search()`, `get()` and `describeModel()` stop reporting it, filters against it raise `UnknownFieldException`, new CSV exports drop its column, writes still sending its name have the value dropped, and any index slot it held is released for the Liberator to reclaim.
-
-What lags is the stored data. Each entry's JSON payload is keyed by field name, so removing a field rewrites every entry in the model. Until the Reconciler finishes that pass the values are still physically in `entry_data` — unreachable through the API, but visible in a raw table dump and in the JSON artifact of an export that happens to run during the window. The field's registry row is removed last, as the final step of that pass; that is the signal the deletion is complete.
-
-**The name is not reusable until then.** Registering a new field with the same name on the same model raises `FieldDeletionInProgressException` instead of silently handing you back the field being deleted. A field cannot be deleted while it is being renamed or retyped, and once deletion starts it cannot be renamed, retyped, promoted, demoted or compacted. There is no undelete.
-
-### Deleting a model
-
-```php
-// Removes a model, every field it owns, and every entry belonging to
-// it. Returns as soon as the registry is updated — the data itself is
-// destroyed in the background, so this needs a running Reconciler.
-//
-// Returns false — rather than throwing — when there is nothing to do:
-// the model doesn't exist for this tenant, or a deletion is already in
-// flight.
-$deleted = $engine->deleteModel(tenantId: 42, modelId: $modelId);
-```
-
-**This is the only call in the library that physically deletes entry rows, and there is no undelete.** Entries, their indexed values, their queued writes, the field definitions and the model itself are all destroyed, and nothing keeps a copy. Export first if you might want the data back.
-
-The model disappears from everything you can observe the moment the call returns: `listModels()` and `describeModel()` stop reporting it, and `read()`, `search()` and `get()` go dark — an empty page and `null`, exactly as if the model had never been registered.
-
-**Writes are refused rather than ignored**, which is the one place this differs from deleting a field. `write()`, `updateEntry()`, `bulkWrite()` and `submitBulkWrite()` raise `ModelDeletionInProgressException`; `deleteEntry()` returns `false`. A field deletion quietly drops the deleted key from an incoming write because the rest of the entry is still worth storing — but an entry written to a model being erased has nowhere to live, so accepting it would either be a lie or leave a row stranded. `compactModel()` and `submitExport()` are refused for the same reason.
-
-What lags is the data itself. The Reconciler deletes the entries in bounded chunks and drops the model's registry row as the final step; that is the signal the deletion is complete. Until then the rows are still physically in `entry_data` — unreachable through the API, but visible in a raw table dump, and an export already claimed by the Chronicler when you called this will produce an empty artifact rather than failing.
-
-**The model's name is not reusable until then.** `createModel()` / `defineModel()` raise `ModelDeletionInProgressException` instead of silently handing you back the model being deleted — worth knowing if a seed script re-runs during the window. A model cannot be deleted while any of its fields is being renamed, retyped or deleted; conversely, once model deletion starts, none of those can be started on its fields.
+Retype, filterability promotion and demotion, renaming a field or model, removing a field, and deleting a model — with what is immediate and what needs a running Reconciler: [docs/schema-changes.md](docs/schema-changes.md).
 
 ## Async exports
 
-```php
-use StarDust\Export\ExportJobRequest;
-
-// Submit an async export. The call enforces a per-tenant active-job
-// cap (default ≤ 3 pending+processing) inside one transaction; a 4th
-// concurrent submission throws ExportJobActiveCapExceededException.
-// Format is 'csv' or 'json'. An export always covers every
-// (non-deleted) entry in the model: predicate filtering is not
-// implemented, so a non-empty filter is rejected outright with
-// ExportFilterNotSupportedException rather than silently ignored.
-// The argument stays on the DTO for a future implementation.
-$jobId = $engine->submitExport(new ExportJobRequest(
-    tenantId: 42,
-    modelId:  $modelId,
-    format:   'csv',
-    filter:   [],
-));
-// $jobId->jobId — pass back to getExportJob() to poll status
-
-// Poll status. Returns null when the job does not exist for this
-// tenant (tenant isolation is enforced by the WHERE clause).
-$job = $engine->getExportJob(tenantId: 42, jobId: $jobId->jobId);
-if ($job?->status === 'completed') {
-    // $job->artifactPath holds the absolute path to the CSV/JSON
-    // file under Config::$artifactDir. Serve it to the caller,
-    // then trust the Chronicler's idle-cycle GC to clean it up
-    // after the configured TTL (24 h default).
-    serveDownload($job->artifactPath);
-}
-```
-
-Run one or more Chronicler workers (multi-worker safe — no PID guard):
-
-```bash
-vendor/bin/stardust chronicler   # scale by spawning more processes
-```
-
-The Chronicler claims one job per tick — pending first (per-tenant round-robin so a single tenant cannot starve others), then abandoned jobs whose heartbeat lapsed beyond `chroniclerLeaseTimeoutSeconds`. On a re-claim it best-effort-deletes the prior partial artifact and resumes from `last_cursor`. Lease loss is self-detected at every chunk commit through a `WHERE worker_identity = self` predicate — a worker whose row was overwritten by a re-claimer emits `lease_lost`, deletes its partial, and bails without mutating the row (the re-claimer owns terminal state). Failure semantics: 3-deadlock budget per chunk before `chunk_skipped`, combined skip cap of 1 000 before `failed:excessive_skips`, fixed `[1, 4, 16]`-second DB-disconnect backoff before `failed:query_failure` (with `last_cursor` preserved for restart), `ENOSPC` mid-write yields `failed:disk_full`, and bytes-exceeding-5 GB emits `artifact_oversized` (a distinct event from `job_failed`) and marks `failed:artifact_size_exceeded`. Idle ticks GC TTL'd completed artifacts and orphaned failed-job partials; a pre-claim disk-pressure gate emits `low_disk` and skips new claims when free space falls below `chroniclerLowDiskThresholdPct` (in-flight jobs continue).
+Submitting and polling an export, the per-tenant active-job cap, and the Chronicler's claim, resume and failure semantics: [docs/exports.md](docs/exports.md).
 
 ---
 
 ## Slot maintenance
 
-`spread:report` and `compact:model` (below, under [CLI](#cli)) are convenience wrappers over public PHP entry points — call them directly for a settings dashboard or an automated maintenance job:
-
-```php
-use StarDust\Exception\RetypeInProgressException;
-
-// Read-only, registry-only, safe against production at any time.
-// One SpreadSample per (tenant, model) that has a live filterable slot.
-foreach ($engine->spreadSampler()->report(tenantId: 42) as $sample) {
-    // $sample->pagesOccupied, $sample->theoreticalMinPages, $sample->excessPages()
-    if ($sample->excessPages() > 0) {
-        echo "model {$sample->modelId}: {$sample->excessPages()} avoidable page(s)\n";
-    }
-}
-
-// Plan without mutating anything.
-$plan = $engine->compactModel(tenantId: 42, modelId: $modelId, dryRun: true);
-// $plan->relocationCount(), $plan->pagesAfter(), $plan->excessPagesRemoved(), $plan->isNoop()
-
-// Long-running and operator-initiated: moves one field at a time and
-// blocks until a running Reconciler drains each relocation. Never call
-// this from a request path.
-try {
-    $plan = $engine->compactModel(tenantId: 42, modelId: $modelId);
-} catch (RetypeInProgressException $e) {
-    // Refused — dry run included — while any field of the model is
-    // still being retyped, promoted, demoted or relocated. Wait for
-    // the Reconciler and re-run; spread:report stays available.
-}
-```
-
----
+`spreadSampler()->report()` and `compactModel()` — the PHP entry points behind `spread:report` and `compact:model`: [docs/slot-maintenance.md](docs/slot-maintenance.md).
 
 ## Tracing a request through the logs
 
-Every event StarDust emits carries a `correlation_id`. By default the engine mints one per operation, but **you can supply your own** — pass your HTTP request id and it flows through every event that operation produces, including the ones a background daemon emits minutes later in a different process.
-
-```php
-$payload = new EntryPayload($tenantId, $modelId, $fields, correlationId: $requestId);
-$engine->write($payload);
-
-$query = new EntryQuery($tenantId, $modelId, correlationId: $requestId);
-$engine->read($query);
-
-$engine->submitExport(new ExportJobRequest(
-    tenantId: $tenantId,
-    modelId: $modelId,
-    format: ExportJobRequest::FORMAT_CSV,
-    correlationId: $requestId,
-));
-
-$engine->bulkWrite($payloads, new BulkIngestOptions(correlationId: $requestId));
-$engine->submitBulkWrite($tenantId, $payloads, $idempotencyKey, $requestId);
-$engine->updateEntry($tenantId, $entryId, $fields, $requestId);
-$engine->deleteEntry($tenantId, $entryId, $requestId);
-```
-
-Every parameter is optional and appended, so existing code keeps working and simply gets a generated id.
-
-**Where this earns its keep is the asynchronous work.** A write that outruns the available index capacity logs `entry_written` and `exhaustion_fallback` under your id, and if the background backfill later gives up on that entry, the dead-letter row records your id alongside the id of the worker cycle that failed it — so a support ticket quoting one request id is answerable. Likewise an export you submit and a `job_complete` emitted by a separate daemon process share the id you passed.
-
-Two details worth knowing when you read the output:
-
-- **A background worker processes many requests in one batch.** Where that happens, the batch's own `correlation_id` describes the batch, and your id appears under a second key — `job_correlation_id` for bulk imports, `origin_correlation_id` on dead-letter rows.
-- **Successful background backfills are not logged per entry**, only per batch. The absence of a per-entry record is normal; the queue depth is the signal to watch.
+Supplying your own `correlation_id` and following it across process boundaries into background daemon events: [docs/observability.md](docs/observability.md).
 
 ## Errors
 

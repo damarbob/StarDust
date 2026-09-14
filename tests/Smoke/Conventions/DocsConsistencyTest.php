@@ -81,4 +81,30 @@ final class DocsConsistencyTest extends TestCase
             . ' with it. See CLAUDE.md, "Working conventions".',
         );
     }
+
+    /**
+     * `docs/` must stay a flat directory — no subdirectories.
+     *
+     * This guard and `Conventions\DocLinkIntegrityTest` both glob
+     * `docs/*.md` one level deep, while CI's markdownlint step globs
+     * `docs/**\/*.md`. A page placed under a subdirectory would pass
+     * markdownlint but be invisible to both PHP guards — free to cite
+     * an ADR and free to link nowhere.
+     */
+    public function testDocsDirectoryIsFlat(): void
+    {
+        foreach (scandir(self::DOCS_DIR) ?: [] as $name) {
+            if ($name === '.' || $name === '..') {
+                continue;
+            }
+
+            self::assertFalse(
+                is_dir(self::DOCS_DIR . '/' . $name),
+                "docs/{$name} is a subdirectory. docs/ must stay flat — both"
+                . ' DocsConsistencyTest and DocLinkIntegrityTest glob docs/*.md one level deep,'
+                . ' so a nested page would be unguarded by either. Keep docs/ flat, or make both'
+                . ' globs recursive in the same change.',
+            );
+        }
+    }
 }
