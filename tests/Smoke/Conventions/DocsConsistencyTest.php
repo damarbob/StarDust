@@ -19,23 +19,37 @@ final class DocsConsistencyTest extends TestCase
 {
     private const README    = __DIR__ . '/../../../README.md';
     private const CHANGELOG = __DIR__ . '/../../../CHANGELOG.md';
+    private const DOCS_DIR  = __DIR__ . '/../../../docs';
 
     /**
-     * The README is consumer-facing; ADRs are internal design records
-     * that ship in a separate repo. A reader who follows "per ADR 0013"
-     * finds nothing, so the README must explain behaviour on its own
-     * terms.
+     * The README, and anything split out of it under docs/, are
+     * consumer-facing; ADRs are internal design records that ship in a
+     * separate repo. A reader who follows "per ADR 0013" finds nothing,
+     * so these docs must explain behaviour on their own terms.
+     *
+     * `docs/` is scanned as a directory rather than named file-by-file
+     * for the same reason `EventVocabularyTest::scanDir()` is — a
+     * hardcoded list stays green the moment a new doc is split out of
+     * the README and forgotten here.
      */
-    public function testReadmeCitesNoAdrs(): void
+    public function testReadmeAndDocsCiteNoAdrs(): void
     {
-        $readme = (string) file_get_contents(self::README);
+        $files = [self::README => 'README.md'];
 
-        self::assertSame(
-            0,
-            preg_match('/\bADR\b/', $readme),
-            'README.md cites an ADR. ADRs are internal — state the behaviour directly'
-            . ' instead. See CLAUDE.md, "Sibling docs and what each owns".',
-        );
+        foreach (glob(self::DOCS_DIR . '/*.md') ?: [] as $path) {
+            $files[$path] = 'docs/' . basename($path);
+        }
+
+        foreach ($files as $path => $label) {
+            $contents = (string) file_get_contents($path);
+
+            self::assertSame(
+                0,
+                preg_match('/\bADR\b/', $contents),
+                "{$label} cites an ADR. ADRs are internal — state the behaviour directly"
+                . ' instead. See CLAUDE.md, "Sibling docs and what each owns".',
+            );
+        }
     }
 
     /**

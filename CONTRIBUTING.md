@@ -40,7 +40,7 @@ Three commands, identical to what CI runs:
 
 ```bash
 vendor/bin/phpstan analyse
-npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md" ".agent/**/*.md"
+npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md" ".agent/**/*.md" "docs/**/*.md"
 vendor/bin/phpunit --testsuite Smoke
 ```
 
@@ -69,7 +69,7 @@ immediately rather than in review. You do not need to memorise them.
 | `Conventions/BootstrapperTableAllowlistTest` | `SchemaFixture::CORE_TABLES` matches the tables the bootstrapper creates |
 | `Conventions/ConfigAppendOnlyTest` | `Config`'s constructor is append-only; reordering silently rebinds positional callers |
 | `Conventions/FinalClassGuardTest` | Every class under `src/` is `final` — this engine composes rather than inherits |
-| `Conventions/DocsConsistencyTest` | The README stays free of internal design-record citations, and the version constant matches the changelog |
+| `Conventions/DocsConsistencyTest` | The README and `docs/` stay free of internal design-record citations, and the version constant matches the changelog |
 | `EventVocabularyTest` | Structured-log event names stay inside the documented closed vocabulary |
 | `Slot/IndexedSlotPredicateTest` | The "is this slot indexed?" predicate has exactly one definition |
 
