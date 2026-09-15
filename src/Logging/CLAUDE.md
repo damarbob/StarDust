@@ -38,6 +38,7 @@ Two things follow, and neither is optional:
 | 8 | `search_request`, `capability_unsupported` | `api` |
 | — | `rename_started`, `rename_complete` (ADR 0036), `model_renamed` | `registry` |
 | — | `delete_started`, `delete_complete` (ADR 0037) | `registry` |
+| — | `artifact_resumed` (ADR 0047) | `chronicler` |
 
 ### Names deliberately shared across sources
 

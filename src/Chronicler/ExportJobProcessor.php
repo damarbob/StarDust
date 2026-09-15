@@ -14,14 +14,22 @@ use StarDust\Exception\ChroniclerRowEncodingException;
 use Throwable;
 
 /**
- * Per-job chunk-commit loop. Owns ADR 0025's commitments end-to-end:
+ * Per-job chunk-commit loop. Owns ADR 0025's commitments end-to-end,
+ * as corrected by ADR 0047's resume-anchor invariant:
  *
  *   - Cursor-paginated probe via {@see EntryDataPager} (LIMIT N+1 shape).
  *   - Per-row encode via {@see ArtifactStream} (CSV or JSON).
+ *   - `open()` attempts a verified resume when the claim carried an
+ *     anchor (ADR 0047); `resumedFromByte()` — not the claim kind —
+ *     decides whether `last_cursor` is trusted for the first probe.
  *   - Atomic chunk-commit transaction with the lease-loss detector:
  *     `UPDATE … WHERE id = ? AND worker_identity = ?`; `rowCount() == 0`
- *     ⇒ re-claimer overwrote our row ⇒ emit `lease_lost`, delete
- *     partial artifact, return {@see JobOutcome::LeaseLost}.
+ *     ⇒ re-claimer overwrote our row ⇒ emit `lease_lost`, close (but do
+ *     NOT delete) the artifact — the re-claimer may already be resuming
+ *     from it — return {@see JobOutcome::LeaseLost}.
+ *   - `artifact_path` / `artifact_bytes` are written on every commit,
+ *     after an explicit `flush()`, so the row is always a usable
+ *     resume anchor for the next abandoned re-claim.
  *   - Deadlock retry budget (3 by default) per chunk. On exhaustion:
  *     emit `chunk_skipped`, advance cursor by `pageSize`, charge
  *     `skip_count += pageSize`, continue.
@@ -33,12 +41,18 @@ use Throwable;
  *     `[1, 4, 16]` s); on exhaustion → `failed:query_failure`,
  *     `last_cursor` preserved.
  *   - `ENOSPC` on append → `failed:disk_full`.
+ *   - Every terminal-failure path deletes the artifact AND NULLs
+ *     `artifact_path` / `artifact_bytes` in the same transaction — the
+ *     anchor dies with the file (ADR 0047).
  *
  * The `skip_count` is persisted in every chunk-commit transaction so a
  * re-claimer continues charging from the previous worker's count
  * rather than starting fresh — otherwise a dying worker could let a
  * re-claimer charge another full cap before tripping
- * `excessive_skips`.
+ * `excessive_skips`. On a fallback restart-from-zero (any anchor
+ * verification failure), the same rows can be re-probed and
+ * re-charged; this is accepted rather than special-cased, since it
+ * fails closed (ADR 0047 Commitment 5).
  */
 final class ExportJobProcessor
 {
@@ -85,23 +99,34 @@ final class ExportJobProcessor
         $aliases = $this->headerResolver->resolveAliases($job->tenantId, $job->modelId);
         $stream  = $this->streamFactory->from($job, $header, $aliases);
 
-        // A re-claim rebuilds the artifact from scratch — the claimer
-        // deletes the prior partial and both streams open truncating
-        // ('wb'), so resuming the cursor would skip rows the new file
-        // does not contain. Only a fresh pending claim (never
-        // re-claimed) may trust its stored cursor; an abandoned
-        // re-claim always starts the probe at 0, matching what the
-        // file on disk actually holds.
-        $cursor = $job->claimKind === ClaimKind::Abandoned ? 0 : ($job->lastCursor ?? 0);
-
         // open() may write the format prelude (CSV header / JSON `[`),
-        // which can trip ENOSPC. Treat header-write disk-full
-        // identically to per-row disk-full per ADR 0025.
+        // or — with a resume anchor — attempt to verify and re-open the
+        // prior attempt's artifact in place. Either way it can trip
+        // ENOSPC; treat header-write disk-full identically to per-row
+        // disk-full per ADR 0025. A resumed cursor is only trustworthy
+        // once the stream itself confirms it adopted the anchor (ADR
+        // 0047) — resumedFromByte() > 0 — not from the claim kind or
+        // the stored last_cursor alone.
         try {
             $stream->open();
         } catch (ChroniclerArtifactDiskFullException) {
+            $cursor = $job->lastCursor ?? 0;
             return $this->failDiskFull($job, $stream, $correlationId, $cursor, $job->skipCount, $startTime);
         }
+
+        $cursor = $stream->resumedFromByte() > 0 ? ($job->lastCursor ?? 0) : 0;
+
+        $this->logger->info('chronicler artifact resumed', [
+            'event'              => 'artifact_resumed',
+            'source'             => 'chronicler',
+            'correlation_id'     => $correlationId,
+            'tenant_id'          => $job->tenantId,
+            'job_id'             => $job->id,
+            'worker_identity'    => $job->workerIdentity,
+            'resumed_from_byte'  => $stream->resumedFromByte(),
+            'last_cursor'        => $cursor,
+            'restart_cause'      => $stream->restartCause(),
+        ]);
 
         $skipCount       = $job->skipCount;
         $rowsTotal       = 0;
@@ -222,6 +247,12 @@ final class ExportJobProcessor
             }
 
             // === Atomic chunk commit + lease-loss detector ===
+            // Flush before the DB write, not after: the row must never
+            // promise bytes the filesystem has not actually taken, or a
+            // future re-claim's verification/ftruncate would work
+            // against bytes that only ever existed in a PHP stream
+            // buffer (ADR 0047).
+            $stream->flush();
             $outcome = $this->commitChunk(
                 jobId: $job->id,
                 workerIdentity: $job->workerIdentity,
@@ -229,7 +260,8 @@ final class ExportJobProcessor
                 rowsStreamed: $rowsStreamed,
                 skipCount: $skipCount,
                 isFinal: $isFinal,
-                artifactPath: $isFinal ? $stream->path() : null,
+                artifactPath: $stream->path(),
+                artifactBytes: $stream->bytesWritten(),
             );
 
             if ($outcome->leaseLost) {
@@ -242,8 +274,11 @@ final class ExportJobProcessor
                     'worker_identity' => $job->workerIdentity,
                     'last_cursor'     => $outcome->newCursor,
                 ]);
+                // Per ADR 0047, a lease-losing worker does NOT delete
+                // its artifact — the re-claimer now owns the row and
+                // may already be resuming from these exact bytes.
+                // close() releases the file lock and handle only.
                 $stream->close();
-                $stream->delete();
                 return JobOutcome::LeaseLost;
             }
 
@@ -290,6 +325,12 @@ final class ExportJobProcessor
      * carries the new cursor, rows streamed, finality flag, AND the
      * lease-loss verdict (`UPDATE … WHERE worker_identity = self`
      * affecting zero rows ⇒ another worker overwrote our row).
+     *
+     * `artifactPath` / `artifactBytes` are written on EVERY commit, not
+     * only the final one — per ADR 0047 this is what makes an in-flight
+     * job's row a usable resume anchor for an abandoned re-claim, and
+     * incidentally makes a mid-flight crash's partial discoverable by
+     * {@see GcSweeper}'s orphan bucket for the first time.
      */
     private function commitChunk(
         int $jobId,
@@ -298,7 +339,8 @@ final class ExportJobProcessor
         int $rowsStreamed,
         int $skipCount,
         bool $isFinal,
-        ?string $artifactPath,
+        string $artifactPath,
+        int $artifactBytes,
     ): ChunkOutcome {
         $now = $this->utcNow();
         $this->pdo->beginTransaction();
@@ -307,20 +349,21 @@ final class ExportJobProcessor
                 $stmt = $this->pdo->prepare(
                     'UPDATE stardust_export_jobs'
                     . " SET last_cursor = ?, heartbeat_at = ?, skip_count = ?,"
-                    . "     status = 'completed', artifact_path = ?, completed_at = ?"
+                    . "     status = 'completed', artifact_path = ?, artifact_bytes = ?, completed_at = ?"
                     . ' WHERE id = ? AND worker_identity = ?'
                 );
                 $stmt->execute([
-                    $newCursor, $now, $skipCount, $artifactPath, $now, $jobId, $workerIdentity,
+                    $newCursor, $now, $skipCount, $artifactPath, $artifactBytes, $now, $jobId, $workerIdentity,
                 ]);
             } else {
                 $stmt = $this->pdo->prepare(
                     'UPDATE stardust_export_jobs'
-                    . ' SET last_cursor = ?, heartbeat_at = ?, skip_count = ?'
+                    . ' SET last_cursor = ?, heartbeat_at = ?, skip_count = ?,'
+                    . '     artifact_path = ?, artifact_bytes = ?'
                     . ' WHERE id = ? AND worker_identity = ?'
                 );
                 $stmt->execute([
-                    $newCursor, $now, $skipCount, $jobId, $workerIdentity,
+                    $newCursor, $now, $skipCount, $artifactPath, $artifactBytes, $jobId, $workerIdentity,
                 ]);
             }
             $affected = $stmt->rowCount();
@@ -409,6 +452,13 @@ final class ExportJobProcessor
         return JobOutcome::FailedArtifactSizeExceeded;
     }
 
+    /**
+     * Marks the job terminally `failed`. Every caller has already
+     * called `$stream->delete()` before reaching here — this UPDATE
+     * also NULLs `artifact_path` / `artifact_bytes` in the same
+     * transaction, so a `failed` row never advertises a resume anchor
+     * to bytes that no longer exist on disk (ADR 0047).
+     */
     private function markFailed(
         ClaimedJob $job,
         string $failedReason,
@@ -423,7 +473,8 @@ final class ExportJobProcessor
                 $stmt = $this->pdo->prepare(
                     'UPDATE stardust_export_jobs'
                     . " SET status = 'failed', failed_reason = ?, completed_at = ?,"
-                    . '     heartbeat_at = ?, last_cursor = ?, skip_count = ?'
+                    . '     heartbeat_at = ?, last_cursor = ?, skip_count = ?,'
+                    . '     artifact_path = NULL, artifact_bytes = NULL'
                     . ' WHERE id = ? AND worker_identity = ?'
                 );
                 $stmt->execute([
@@ -432,7 +483,8 @@ final class ExportJobProcessor
             } else {
                 $stmt = $this->pdo->prepare(
                     'UPDATE stardust_export_jobs'
-                    . " SET status = 'failed', failed_reason = ?, completed_at = ?, heartbeat_at = ?"
+                    . " SET status = 'failed', failed_reason = ?, completed_at = ?, heartbeat_at = ?,"
+                    . '     artifact_path = NULL, artifact_bytes = NULL'
                     . ' WHERE id = ? AND worker_identity = ?'
                 );
                 $stmt->execute([$failedReason, $now, $now, $job->id, $job->workerIdentity]);

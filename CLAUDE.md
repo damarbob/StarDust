@@ -197,7 +197,7 @@ The engine ships as a framework-neutral Composer library. Zero framework / ORM /
 | [src/Rename/](src/Rename/) | ADR 0036 field rename (+ `ModelRenamer`): registry flip + chunked `entry_data` payload rewrite. Touches no slot. | — |
 | [src/Delete/](src/Delete/) | ADR 0037 field deletion **and ADR 0038 model deletion**: immediate severance + chunked purge; the registry row dies last. The model half deletes rows rather than keys. | — |
 | [src/Export/](src/Export/) | Synchronous export submission with the atomic per-tenant cap. | 7 |
-| [src/Chronicler/](src/Chronicler/) | Multi-worker export drain, artifact streaming, ADR 0025 failure semantics, GC. | 7 |
+| [src/Chronicler/](src/Chronicler/) | Multi-worker export drain, artifact streaming, ADR 0025 failure semantics, the ADR 0047 verified-resume anchor, GC. | 7 |
 | [src/Filter/](src/Filter/) | Filter AST, JSON wire decoder, the 13-code validation taxonomy. Registry-free. | 8 |
 | [src/Compaction/](src/Compaction/) | ADR 0033 operator-initiated model compaction: pure planner, registry projection, sequential orchestrator. | — |
 | [src/Search/](src/Search/) | Driver contract, four-stage pre-flight pipeline (stage 3 validates **and normalises** — `ValueTypeValidator::validate()` returns a node), `SearchService`, MySQL driver + adaptive SQL compiler. | 8 |

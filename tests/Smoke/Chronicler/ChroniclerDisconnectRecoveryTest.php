@@ -105,6 +105,11 @@ final class ChroniclerDisconnectRecoveryTest extends Phase7TestCase
         $connector = new CountingPdoConnector(null); // connect() throws
 
         // last_cursor=5 lets us prove the cursor is PRESERVED (not reset).
+        // Per ADR 0047, that only happens when the claim carries a real,
+        // verifiable resume anchor — a header-only artifact is the
+        // minimal one: it satisfies the stream's size + header checks
+        // without needing to fabricate matching row content this test
+        // never inspects.
         $jobId = $this->seedExportJob(
             1, $modelId, 'processing', 'csv',
             lastCursor: 5,
@@ -112,6 +117,9 @@ final class ChroniclerDisconnectRecoveryTest extends Phase7TestCase
             heartbeatAt: $this->utcNowString(),
             claimedAt: $this->utcNowString(),
         );
+
+        $priorArtifact = $this->makeTempArtifactDir() . DIRECTORY_SEPARATOR . 'export_prior.csv';
+        file_put_contents($priorArtifact, "k\r\n");
 
         $claim = new ClaimedJob(
             id: $jobId,
@@ -121,8 +129,10 @@ final class ChroniclerDisconnectRecoveryTest extends Phase7TestCase
             filter: ['model_id' => $modelId],
             lastCursor: 5,
             workerIdentity: 'host:test:exhaust',
-            claimKind: ClaimKind::Pending,
+            claimKind: ClaimKind::Abandoned,
             skipCount: 0,
+            artifactPath: $priorArtifact,
+            artifactBytes: strlen("k\r\n"),
         );
 
         $logger = $this->makeRecordingLogger();
@@ -161,6 +171,12 @@ final class ChroniclerDisconnectRecoveryTest extends Phase7TestCase
             claimedAt: $this->utcNowString(),
         );
 
+        // See testBackoffExhaustionFailsWithPreservedCursor: a header-only
+        // artifact is the minimal ADR 0047 resume anchor needed to make
+        // last_cursor=7 trustworthy for this claim.
+        $priorArtifact = $this->makeTempArtifactDir() . DIRECTORY_SEPARATOR . 'export_prior.csv';
+        file_put_contents($priorArtifact, "k\r\n");
+
         $claim = new ClaimedJob(
             id: $jobId,
             tenantId: 1,
@@ -169,8 +185,10 @@ final class ChroniclerDisconnectRecoveryTest extends Phase7TestCase
             filter: ['model_id' => $modelId],
             lastCursor: 7,
             workerIdentity: 'host:test:noconn',
-            claimKind: ClaimKind::Pending,
+            claimKind: ClaimKind::Abandoned,
             skipCount: 0,
+            artifactPath: $priorArtifact,
+            artifactBytes: strlen("k\r\n"),
         );
 
         $logger = $this->makeRecordingLogger();

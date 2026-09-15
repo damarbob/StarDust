@@ -54,6 +54,7 @@ final class Bootstrapper
         $this->ensureDlqOriginCorrelationIdColumn();
         $this->ensureImportJobsCorrelationIdColumn();
         $this->ensureExportJobsCorrelationIdColumn();
+        $this->ensureExportJobsArtifactBytesColumn();
         $this->seedSchemaVersionSingleton();
     }
 
@@ -644,6 +645,43 @@ final class Bootstrapper
             $this->pdo->exec(<<<'SQL'
                 ALTER TABLE stardust_export_jobs
                     ADD COLUMN correlation_id VARCHAR(36) NULL DEFAULT NULL
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * ADR 0047: the export resume anchor is the artifact file's verified
+     * byte count, not `last_cursor` alone. Written on **every** chunk
+     * commit (not only the final one) alongside `artifact_path`, so an
+     * abandoned re-claim can attempt to adopt the prior worker's partial
+     * in place rather than deleting it and restarting from zero.
+     *
+     * Nullable for the same in-flight reason as the other `ensureXxx`
+     * columns: a job already `processing` when the ALTER lands has no
+     * anchor and the processor's stream-open verification simply fails
+     * closed (`restart_cause: 'no_anchor'`), same as a fresh pending claim.
+     */
+    private function ensureExportJobsArtifactBytesColumn(): void
+    {
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_export_jobs'
+              AND column_name = 'artifact_bytes'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_export_jobs
+                    ADD COLUMN artifact_bytes BIGINT NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
             if (! $this->isDuplicateFieldName($e)) {

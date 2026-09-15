@@ -11,7 +11,10 @@ namespace StarDust\Chronicler;
  * The `lastCursor` is non-null on an abandoned-claim resumption (the
  * previous worker had committed at least one chunk before its lease
  * expired); fresh pending claims see it as `null` and the processor
- * treats null as `0` (`WHERE id > 0`).
+ * treats null as `0` (`WHERE id > 0`). Per ADR 0047, `lastCursor` alone
+ * is not trustworthy — it is only honored once {@see ArtifactStream}
+ * reports a verified re-open of `artifactPath` at `artifactBytes`; see
+ * `artifactPath` / `artifactBytes` below.
  *
  * `skipCount` is the cumulative skip charge persisted by the previous
  * worker (zero on a fresh pending claim). Per the design plan, the
@@ -46,6 +49,16 @@ final class ClaimedJob
          * which case the worker mints one and behaves as before.
          */
         public readonly ?string $correlationId = null,
+        /**
+         * ADR 0047 resume anchor. Both null on a fresh pending claim —
+         * there is no prior attempt to adopt. On an abandoned re-claim,
+         * both are read from the row as the previous worker last
+         * committed them (their absence, e.g. a job claimed before this
+         * column existed, is handled identically to a fresh claim: the
+         * stream has nothing to verify and starts fresh).
+         */
+        public readonly ?string $artifactPath = null,
+        public readonly ?int $artifactBytes = null,
     ) {
     }
 }

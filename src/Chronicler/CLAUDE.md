@@ -1,6 +1,6 @@
 # Chronicler daemon
 
-Phase 7 multi-worker async export drain (ADR 0010, ADR 0025, ADR 0027). Eight `final` collaborators plus the orchestrator, SOLID-decomposed. The synchronous submission half is `src/Export/`.
+Phase 7 multi-worker async export drain (ADR 0010, ADR 0025, ADR 0027, ADR 0047). Eight `final` collaborators plus the orchestrator, SOLID-decomposed. The synchronous submission half is `src/Export/`.
 
 **Multi-worker by design**: no PID guard; `SELECT … FOR UPDATE SKIP LOCKED` is the only coordination primitive. Horizontal scaling = more `bin/stardust chronicler` processes.
 
@@ -24,22 +24,30 @@ LIMIT 1 FOR UPDATE SKIP LOCKED
 
 The subquery materialises per-tenant round-robin (chronicler_daemon.md §4 AC#3) at claim time, without a separate column. Then `UPDATE … SET status='processing', worker_identity=?, claimed_at=?, heartbeat_at=?` in the same transaction.
 
-**Abandoned path on idle:** `WHERE status='processing' AND heartbeat_at < (UTC_TIMESTAMP() - INTERVAL leaseTimeout SECOND) FOR UPDATE SKIP LOCKED`. Best-effort `@unlink` of the prior `artifact_path` happens AFTER the claim commits, then `UPDATE … SET worker_identity=?, heartbeat_at=?` — **claimed_at preserved**, so operators still see the original claim time.
+**Abandoned path on idle:** `WHERE status='processing' AND heartbeat_at < (UTC_TIMESTAMP() - INTERVAL leaseTimeout SECOND) FOR UPDATE SKIP LOCKED`. **Per ADR 0047 the claimer does NOT unlink the prior `artifact_path`** — it hands `artifact_path`/`artifact_bytes` forward on the `ClaimedJob` so `ExportJobProcessor`'s stream can attempt a verified re-open (see below). `UPDATE … SET worker_identity=?, heartbeat_at=?` — **claimed_at preserved**, so operators still see the original claim time.
 
 Worker identity = `host:pid:UuidV4` via `WorkerIdentity::mint()`.
 
 ## `ExportJobProcessor::process(ClaimedJob, correlationId)`
 
-Resolves the deterministic CSV header via `HeaderResolver::resolve($tenantId, $modelId)` (alphabetically-sorted union of `stardust_fields.name` for the model), opens an `ArtifactStream` via `ArtifactStreamFactory::from()` (single dispatch on `$job->format`), then loops:
+Resolves the deterministic CSV header via `HeaderResolver::resolve($tenantId, $modelId)` (alphabetically-sorted union of `stardust_fields.name` for the model), opens an `ArtifactStream` via `ArtifactStreamFactory::from()` (single dispatch on `$job->format`), reads `$stream->resumedFromByte()` to decide the starting cursor (see below), emits `artifact_resumed`, then loops:
 
 1. `EntryDataPager::fetchChunk()` runs `SELECT id, fields FROM entry_data WHERE tenant_id=? AND model_id=? AND deleted_at IS NULL AND id > :cursor ORDER BY id ASC LIMIT pageSize+1` — the `+1` is the next-page signal per ADR 0005.
 2. Per row, `ArtifactStream::appendRow()` encodes and writes. CSV: RFC 4180 quoting, `\r\n` line ending, header derived from `stardust_fields`. JSON: single-document array streamed with a leading `[`, a `,`-prefix for subsequent rows, and a trailing `]` on close.
 3. Checks `bytesWritten() > artifactSizeCapBytes`.
-4. Commits the chunk atomically: `UPDATE stardust_export_jobs SET last_cursor=?, heartbeat_at=?, skip_count=? [, status='completed', artifact_path=?, completed_at=? if isFinal] WHERE id=? AND worker_identity=?`.
+4. `$stream->flush()`, THEN commits the chunk atomically: `UPDATE stardust_export_jobs SET last_cursor=?, heartbeat_at=?, skip_count=?, artifact_path=?, artifact_bytes=? [, status='completed', completed_at=? if isFinal] WHERE id=? AND worker_identity=?`. **`artifact_path`/`artifact_bytes` are written on EVERY commit now, not only the final one** — that's what makes the row a usable resume anchor for the next abandoned re-claim, per ADR 0047. The flush-before-write ordering matters: the DB must never promise bytes the OS hasn't taken yet, or a future resume's verification could work against phantom bytes.
+
+### The resume anchor (ADR 0047)
+
+**`ArtifactStreamFactory::from()` always mints a fresh, never-before-used path**, and — when the claim carries `artifactPath`/`artifactBytes` — ALSO passes the anchor path/bytes separately. `open()` tries the anchor first: `fopen($anchor, 'c+b')`, `flock(LOCK_EX|LOCK_NB)`, verify the file **exists** (checked explicitly — `'c+b'` would otherwise silently CREATE a missing one, masking `missing` as a 0-byte `short`), holds ≥ the anchored bytes, and — CSV only — that its first line still matches today's resolved header (a rename between attempts changes it). On success: `ftruncate()` to exactly the anchored bytes (discarding anything a crashed chunk wrote past that point), `fseek()` there, skip the prelude, return `resumedFromByte() > 0`.
+
+**On ANY verification failure it opens the FRESH path instead — never the rejected anchor path.** This is deliberate, not incidental: a `locked` rejection specifically can mean another live process (a zombie worker that hasn't yet self-detected its lease loss) is still writing the anchor file, and reusing that exact path would risk two writers on one file — verified empirically on this project's Windows dev environment, where `fopen(..., 'wb')` on a path another handle holds `flock(LOCK_EX)` on SUCCEEDS but the subsequent `fwrite()` FAILS. `path()` reports whichever path ended up in use; the processor reads it via `$stream->path()` on every commit.
+
+`ExportJobProcessor` never trusts `$job->lastCursor` directly — it checks `$stream->resumedFromByte() > 0` after `open()` and only then starts the probe there; otherwise it starts at 0 regardless of what the row said. This is what makes the invariant self-enforcing: a pending claim's `ClaimedJob` carries no anchor at all, so it always resumes at byte 0 and therefore always probes at row 0 — no special-casing by `ClaimKind` needed.
 
 ### The lease-loss detector
 
-**The `WHERE worker_identity = self_identity` predicate IS the detector.** `PDOStatement::rowCount() === 0` ⇒ a re-claimer overwrote our row ⇒ emit `lease_lost`, delete the partial, return `JobOutcome::LeaseLost` **without** marking the row failed. The re-claimer owns terminal state.
+**The `WHERE worker_identity = self_identity` predicate IS the detector.** `PDOStatement::rowCount() === 0` ⇒ a re-claimer overwrote our row ⇒ emit `lease_lost`, `close()` — releasing the lock and handle only, **NOT `delete()`** — return `JobOutcome::LeaseLost` **without** marking the row failed. The re-claimer owns terminal state, and per ADR 0047 it may already be resuming from these exact bytes, so deleting here would be the single most dangerous interaction the resume design has to avoid.
 
 ### Failure semantics (ADR 0025)
 
@@ -48,6 +56,8 @@ Resolves the deterministic CSV header via `HeaderResolver::resolve($tenantId, $m
 - **`skip_count > skipCountCap`** (1 000): delete partial, mark `failed:excessive_skips`, emit `job_failed{reason:excessive_skips}`.
 - **Artifact over cap**: emit `artifact_oversized` (an event distinct from `job_failed`), delete partial, mark `failed:artifact_size_exceeded`.
 - **`ENOSPC` during append**: `failed:disk_full`.
+
+**Every terminal-failure path's `markFailed()` UPDATE also NULLs `artifact_path`/`artifact_bytes` in the same transaction as the status flip** (ADR 0047) — the anchor dies with the file the same statement's caller already deleted, so a `failed` row never advertises a resume path to bytes that no longer exist.
 
 ### DB disconnect mid-pagination
 
@@ -79,6 +89,8 @@ Scans two buckets:
 - `status='failed' AND completed_at < UTC_TIMESTAMP() - INTERVAL orphanedPartialTtlSeconds SECOND` (1 h default)
 
 Per row: `@unlink` + `UPDATE … SET artifact_path = NULL`. `gc_swept` is emitted ONLY when `artifactsDeleted > 0`, so idle cycles produce no event spam.
+
+Since ADR 0047 made `artifact_path`/`artifact_bytes` populated on every chunk commit rather than only the final one, a job that dies mid-flight and later reaches `failed` (its terminal-failure path already deletes the file and NULLs both columns — see above) never reaches this sweep with a stale path; the bucket-2 orphan case here is specifically for a crash between that delete and the column NULL, same as before this ADR.
 
 ## ADR 0036 rename aliases — CSV only, deliberately
 

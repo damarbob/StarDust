@@ -13,10 +13,15 @@ use StarDust\Tests\Smoke\Phase7TestCase;
  * Lease-loss self-detection (chronicler_daemon.md §4 AC#8):
  *
  *   When `UPDATE … WHERE worker_identity = self_identity` affects zero
- *   rows, the processor emits `lease_lost`, deletes its partial
- *   artifact, and exits the job loop WITHOUT marking the row failed.
- *   The re-claimer (whoever overwrote the row) owns the terminal state
- *   from that point on.
+ *   rows, the processor emits `lease_lost` and exits the job loop
+ *   WITHOUT marking the row failed. The re-claimer (whoever overwrote
+ *   the row) owns the terminal state from that point on.
+ *
+ *   Per ADR 0047, the losing worker does NOT delete its artifact — it
+ *   only releases its file lock and closes the handle. Deleting here
+ *   would destroy bytes a concurrent re-claimer may already be
+ *   resuming from, which is the single most dangerous interaction the
+ *   append-resume design introduces.
  *
  * This test simulates the race by hand-crafting a ClaimedJob that
  * claims to be one worker but submitting it to a processor while the
@@ -42,6 +47,13 @@ final class ChroniclerLeaseLostTest extends Phase7TestCase
             claimedAt: $this->utcNowString(),
         );
 
+        // A known, controlled artifact path — the loser's stream opens
+        // exactly here (whether it adopts these bytes or falls back to
+        // fresh makes no difference to this test), so the assertion
+        // below proves the file at this path survives lease loss.
+        $artifactPath = $this->makeTempArtifactDir() . DIRECTORY_SEPARATOR . 'export_zombie.csv';
+        file_put_contents($artifactPath, "idx\r\n");
+
         $loserClaim = new ClaimedJob(
             id: $jobId,
             tenantId: 1,
@@ -50,8 +62,10 @@ final class ChroniclerLeaseLostTest extends Phase7TestCase
             filter: ['model_id' => $modelId],
             lastCursor: null,
             workerIdentity: 'host:LOSE:displaced-uuid',
-            claimKind: ClaimKind::Pending,
+            claimKind: ClaimKind::Abandoned,
             skipCount: 0,
+            artifactPath: $artifactPath,
+            artifactBytes: strlen("idx\r\n"),
         );
 
         $logger = $this->makeRecordingLogger();
@@ -67,6 +81,11 @@ final class ChroniclerLeaseLostTest extends Phase7TestCase
         $row = $this->fetchExportJob($jobId);
         self::assertSame('processing', $row['status']);
         self::assertSame('host:WIN:re-claimer-uuid', $row['worker_identity']);
+
+        // The artifact survives — the loser released its lock and
+        // closed the handle, but did NOT delete the file a re-claimer
+        // may already be resuming from (ADR 0047).
+        self::assertTrue(is_file($artifactPath));
     }
 
     public function testLeaseLostDoesNotMarkRowFailed(): void

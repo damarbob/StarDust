@@ -39,6 +39,9 @@ final class ChroniclerCompleteJobTest extends Phase7TestCase
         self::assertSame('completed', $row['status']);
         self::assertNotNull($row['artifact_path']);
         self::assertNotNull($row['completed_at']);
+        // ADR 0047: artifact_bytes is the resume anchor and must match
+        // what is actually on disk, not merely be non-null.
+        self::assertSame((int) filesize((string) $row['artifact_path']), (int) $row['artifact_bytes']);
 
         $rows = $this->readArtifactCsv((string) $row['artifact_path']);
         self::assertCount(3, $rows);

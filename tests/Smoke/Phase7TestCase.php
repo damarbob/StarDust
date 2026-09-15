@@ -140,6 +140,13 @@ abstract class Phase7TestCase extends Phase6bTestCase
      *
      * @param array<string,mixed> $filter Stored verbatim; the
      *   Chronicler reads `model_id` out of this map.
+     * @param int|null $artifactBytes ADR 0047 resume anchor. Pass this
+     *   alongside `artifactPath` pointing at a real file with at least
+     *   this many bytes to build a genuinely resumable fixture; leaving
+     *   it `null` (the default) makes any `artifactPath` un-adoptable —
+     *   `ArtifactStreamFactory` treats a path with no byte count as no
+     *   anchor at all, matching a row claimed before this column
+     *   existed.
      */
     protected function seedExportJob(
         int $tenantId,
@@ -156,6 +163,7 @@ abstract class Phase7TestCase extends Phase6bTestCase
         ?string $failedReason = null,
         int $skipCount = 0,
         array $filter = [],
+        ?int $artifactBytes = null,
     ): int {
         // Match the production envelope: stored shape is
         // {model_id, filter} so the consumer QueryFilter stays clean.
@@ -165,13 +173,13 @@ abstract class Phase7TestCase extends Phase6bTestCase
 
         $stmt = $this->pdo->prepare(
             'INSERT INTO stardust_export_jobs'
-            . ' (tenant_id, status, filter, format, last_cursor, artifact_path,'
+            . ' (tenant_id, status, filter, format, last_cursor, artifact_path, artifact_bytes,'
             . '  failed_reason, skip_count, worker_identity, claimed_at,'
             . '  heartbeat_at, created_at, completed_at)'
-            . ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            . ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
-            $tenantId, $status, $filterJson, $format, $lastCursor, $artifactPath,
+            $tenantId, $status, $filterJson, $format, $lastCursor, $artifactPath, $artifactBytes,
             $failedReason, $skipCount, $workerIdentity, $claimedAt,
             $heartbeatAt, $now, $completedAt,
         ]);

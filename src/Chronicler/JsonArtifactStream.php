@@ -30,6 +30,20 @@ use StarDust\Exception\ChroniclerRowEncodingException;
  *     `unrepresentable_codepoint`. PHP's encoder is strict on UTF-8.
  *   - Short `fwrite` →
  *     {@see ChroniclerArtifactDiskFullException}.
+ *
+ * Resumption (ADR 0047): with a nonzero `$resumeBytes` anchor, `open()`
+ * re-opens `$resumePath` (`'c+b'`, no truncate), acquires an exclusive
+ * non-blocking lock, and verifies the file EXISTS, holds at least
+ * `$resumeBytes` bytes, AND begins with `[` — JSON has no header to
+ * compare, so the leading-bracket check is the whole prelude
+ * verification. On success it truncates to exactly `$resumeBytes`,
+ * seeks there, and sets `$firstRowEmitted = true` so the next
+ * `appendRow()` writes the `,` prefix a mid-array resume needs. On ANY
+ * verification failure it opens `$freshPath` instead — a DIFFERENT
+ * file, never `$resumePath` — for the same reason as
+ * {@see CsvArtifactStream}: a `locked` rejection can mean another
+ * process is still actively writing `$resumePath`. `path()` reports
+ * whichever path ended up in use.
  */
 final class JsonArtifactStream implements ArtifactStream
 {
@@ -37,9 +51,26 @@ final class JsonArtifactStream implements ArtifactStream
     private $handle = null;
     private int $bytesWritten = 0;
     private bool $firstRowEmitted = false;
+    private int $resumedFromByte = 0;
+    private ?string $restartCause = null;
+    private string $activePath;
 
-    public function __construct(private readonly string $path)
-    {
+    /**
+     * @param string $freshPath Always used when there is no anchor, or
+     *   the anchor fails verification. Never the same file as
+     *   `$resumePath`.
+     * @param string|null $resumePath The prior attempt's artifact path
+     *   to try adopting. `null` means no anchor — always use `$freshPath`.
+     * @param int|null $resumeBytes ADR 0047 resume anchor: the byte
+     *   count a prior attempt is believed to have committed to
+     *   `$resumePath`. `null` (or `0`) means no anchor.
+     */
+    public function __construct(
+        private readonly string $freshPath,
+        private readonly ?string $resumePath = null,
+        private readonly ?int $resumeBytes = null,
+    ) {
+        $this->activePath = $freshPath;
     }
 
     public function open(): void
@@ -47,11 +78,93 @@ final class JsonArtifactStream implements ArtifactStream
         if ($this->handle !== null) {
             return;
         }
-        $h = @fopen($this->path, 'wb');
-        if ($h === false) {
-            throw new RuntimeException("JsonArtifactStream: cannot open '{$this->path}' for write.");
+
+        if ($this->resumePath === null || $this->resumeBytes === null || $this->resumeBytes <= 0) {
+            $this->openFresh('no_anchor');
+            return;
         }
-        $this->handle = $h;
+
+        // 'c+b' would CREATE a missing file rather than failing —
+        // check existence explicitly (see CsvArtifactStream::open()).
+        if (!@file_exists($this->resumePath)) {
+            $this->openFresh('missing');
+            return;
+        }
+
+        $h = @fopen($this->resumePath, 'c+b');
+        if ($h === false) {
+            $this->openFresh('missing');
+            return;
+        }
+
+        if (!@flock($h, LOCK_EX | LOCK_NB)) {
+            @fclose($h);
+            $this->openFresh('locked');
+            return;
+        }
+
+        $stat = @fstat($h);
+        $size = $stat !== false ? (int) $stat['size'] : 0;
+        if ($size < $this->resumeBytes) {
+            @flock($h, LOCK_UN);
+            @fclose($h);
+            $this->openFresh('short');
+            return;
+        }
+
+        fseek($h, 0);
+        $firstByte = fread($h, 1);
+        if ($firstByte !== '[') {
+            @flock($h, LOCK_UN);
+            @fclose($h);
+            $this->openFresh('header_mismatch');
+            return;
+        }
+
+        if (!@ftruncate($h, $this->resumeBytes) || fseek($h, $this->resumeBytes) !== 0) {
+            @flock($h, LOCK_UN);
+            @fclose($h);
+            $this->openFresh('short');
+            return;
+        }
+
+        $this->handle           = $h;
+        $this->activePath       = $this->resumePath;
+        $this->bytesWritten     = $this->resumeBytes;
+        $this->resumedFromByte  = $this->resumeBytes;
+        $this->restartCause     = null;
+        // Byte 0 is always the leading `[` (verified above), so
+        // resumeBytes === 1 means no row has ever been successfully
+        // appended — a non-final chunk whose every row hit an encoding
+        // error commits exactly this state. Anything past byte 1 means
+        // at least one row landed, so the next appendRow() needs the
+        // `,` separator rather than a bare first-element write.
+        $this->firstRowEmitted = $this->resumeBytes > 1;
+    }
+
+    public function resumedFromByte(): int
+    {
+        return $this->resumedFromByte;
+    }
+
+    public function restartCause(): ?string
+    {
+        return $this->restartCause;
+    }
+
+    private function openFresh(string $cause): void
+    {
+        $h = @fopen($this->freshPath, 'wb');
+        if ($h === false) {
+            throw new RuntimeException("JsonArtifactStream: cannot open '{$this->freshPath}' for write.");
+        }
+        @flock($h, LOCK_EX | LOCK_NB);
+        $this->handle          = $h;
+        $this->activePath      = $this->freshPath;
+        $this->bytesWritten    = 0;
+        $this->resumedFromByte = 0;
+        $this->restartCause    = $cause;
+        $this->firstRowEmitted = false;
         $this->writeRaw('[');
     }
 
@@ -83,6 +196,13 @@ final class JsonArtifactStream implements ArtifactStream
         return $this->bytesWritten;
     }
 
+    public function flush(): void
+    {
+        if ($this->handle !== null) {
+            @fflush($this->handle);
+        }
+    }
+
     public function close(): void
     {
         // Held in a local: the writeRaw() call below would otherwise
@@ -93,6 +213,7 @@ final class JsonArtifactStream implements ArtifactStream
         }
         $this->writeRaw(']');
         @fflush($handle);
+        @flock($handle, LOCK_UN);
         @fclose($handle);
         $this->handle = null;
     }
@@ -100,17 +221,18 @@ final class JsonArtifactStream implements ArtifactStream
     public function delete(): void
     {
         if ($this->handle !== null) {
+            @flock($this->handle, LOCK_UN);
             @fclose($this->handle);
             $this->handle = null;
         }
-        if (is_file($this->path)) {
-            @unlink($this->path);
+        if (is_file($this->activePath)) {
+            @unlink($this->activePath);
         }
     }
 
     public function path(): string
     {
-        return $this->path;
+        return $this->activePath;
     }
 
     private function writeRaw(string $bytes): void
@@ -122,7 +244,7 @@ final class JsonArtifactStream implements ArtifactStream
             // itself is protected, and a programming error here is not the
             // disk-full condition the processor knows how to handle.
             throw new RuntimeException(
-                "JSON artifact stream at '{$this->path}' is not open; call open() first."
+                "JSON artifact stream at '{$this->activePath}' is not open; call open() first."
             );
         }
 
@@ -130,7 +252,7 @@ final class JsonArtifactStream implements ArtifactStream
         $written = @fwrite($handle, $bytes);
         if ($written === false || $written !== $expected) {
             throw new ChroniclerArtifactDiskFullException(
-                "JSON artifact write truncated at '{$this->path}'; "
+                "JSON artifact write truncated at '{$this->activePath}'; "
                 . "expected={$expected}, written=" . var_export($written, true) . '.'
             );
         }

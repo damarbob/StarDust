@@ -34,10 +34,14 @@ use Throwable;
  * operators can see the original claim time, with the
  * `worker_identity` and `heartbeat_at` overwritten in place.
  *
- * Best-effort unlink of the abandoned job's prior `artifact_path`
- * happens AFTER the transaction commits, so an unlink failure cannot
- * roll back the claim. The new worker will re-build the artifact
- * from `last_cursor` regardless.
+ * Per ADR 0047, the abandoned path does NOT unlink the prior partial
+ * artifact — it hands `artifact_path` / `artifact_bytes` forward on the
+ * returned {@see ClaimedJob} so the processor's {@see ArtifactStream}
+ * can attempt a verified re-open. Deleting here, before the new worker
+ * even exists, is exactly the defect this ADR closes: the file and the
+ * cursor that describes it must be discarded or adopted together, and
+ * only the stream that is about to write to the path is positioned to
+ * make that call.
  *
  * The claimer intentionally exposes no constructor for
  * `workerIdentity` — each `claimPendingOrAbandoned()` invocation
@@ -139,7 +143,7 @@ final class ExportJobClaimer
             // and falsely identify fresh leases as abandoned.
             $select = $this->pdo->prepare(
                 'SELECT j.id, j.tenant_id, j.filter, j.format,'
-                . '       j.last_cursor, j.skip_count, j.artifact_path, j.correlation_id'
+                . '       j.last_cursor, j.skip_count, j.artifact_path, j.artifact_bytes, j.correlation_id'
                 . '  FROM stardust_export_jobs j'
                 . " WHERE j.status = 'processing'"
                 . '   AND j.heartbeat_at IS NOT NULL'
@@ -166,15 +170,7 @@ final class ExportJobClaimer
             $update->execute([$workerIdentity, $now, $jobId]);
             $this->pdo->commit();
 
-            // Best-effort unlink of the prior partial artifact; the
-            // re-claimer will rebuild from last_cursor. Failure to
-            // unlink does not roll back the claim — the GC sweep
-            // will eventually catch the orphan via the failed-partial
-            // TTL path.
             $priorArtifact = $row['artifact_path'];
-            if (is_string($priorArtifact) && $priorArtifact !== '' && is_file($priorArtifact)) {
-                @unlink($priorArtifact);
-            }
 
             return new ClaimedJob(
                 id: $jobId,
@@ -189,6 +185,8 @@ final class ExportJobClaimer
                 correlationId: $row['correlation_id'] === null
                     ? null
                     : (string) $row['correlation_id'],
+                artifactPath: (is_string($priorArtifact) && $priorArtifact !== '') ? $priorArtifact : null,
+                artifactBytes: $row['artifact_bytes'] === null ? null : (int) $row['artifact_bytes'],
             );
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

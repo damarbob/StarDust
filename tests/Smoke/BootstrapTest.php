@@ -490,6 +490,49 @@ final class BootstrapTest extends TestCase
     }
 
     /**
+     * ADR 0047: `stardust_export_jobs.artifact_bytes` is the resume
+     * anchor's byte count, written on every chunk commit alongside
+     * `artifact_path` so an abandoned re-claim can attempt a verified
+     * re-open rather than trusting `last_cursor` alone. Nullable for
+     * the same in-flight reason as every other `ensureXxx` column: a
+     * job already `processing` when the ALTER lands has no anchor and
+     * the stream's verification simply fails closed.
+     */
+    public function testBootstrapAddsExportJobsArtifactBytesColumn(): void
+    {
+        (new Bootstrapper($this->pdo))->run();
+
+        $column = $this->pdo
+            ->query(
+                'SELECT IS_NULLABLE, DATA_TYPE'
+                . ' FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_export_jobs'"
+                . " AND column_name = 'artifact_bytes'"
+            )
+            ->fetch(\PDO::FETCH_ASSOC);
+
+        self::assertIsArray($column, 'artifact_bytes column must be present after bootstrap.');
+        self::assertSame('YES', $column['IS_NULLABLE'], 'artifact_bytes must be nullable.');
+        self::assertSame('bigint', $column['DATA_TYPE']);
+
+        // Idempotent: re-running must not error and must not duplicate
+        // the column.
+        (new Bootstrapper($this->pdo))->run();
+        (new Bootstrapper($this->pdo))->run();
+
+        $exists = (int) $this->pdo
+            ->query(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_export_jobs'"
+                . " AND column_name = 'artifact_bytes'"
+            )
+            ->fetchColumn();
+        self::assertSame(1, $exists, 'Re-running bootstrap must not duplicate the column.');
+    }
+
+    /**
      * ADR 0036 deliverable: `stardust_fields.previous_name` is
      * provisioned by the bootstrap runner and re-runs are
      * non-destructive. Nullable with no default, so existing rows stay

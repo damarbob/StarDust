@@ -96,6 +96,7 @@ final class EventVocabularyTest extends TestCase
         'lease_lost',
         'low_disk',
         'artifact_oversized',
+        'artifact_resumed',
         'job_complete',
         'job_failed',
         'gc_swept',
