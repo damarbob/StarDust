@@ -84,16 +84,25 @@ final class ExportJobProcessor
         $header  = $this->headerResolver->resolve($job->tenantId, $job->modelId);
         $aliases = $this->headerResolver->resolveAliases($job->tenantId, $job->modelId);
         $stream  = $this->streamFactory->from($job, $header, $aliases);
+
+        // A re-claim rebuilds the artifact from scratch — the claimer
+        // deletes the prior partial and both streams open truncating
+        // ('wb'), so resuming the cursor would skip rows the new file
+        // does not contain. Only a fresh pending claim (never
+        // re-claimed) may trust its stored cursor; an abandoned
+        // re-claim always starts the probe at 0, matching what the
+        // file on disk actually holds.
+        $cursor = $job->claimKind === ClaimKind::Abandoned ? 0 : ($job->lastCursor ?? 0);
+
         // open() may write the format prelude (CSV header / JSON `[`),
         // which can trip ENOSPC. Treat header-write disk-full
         // identically to per-row disk-full per ADR 0025.
         try {
             $stream->open();
         } catch (ChroniclerArtifactDiskFullException) {
-            return $this->failDiskFull($job, $stream, $correlationId, $job->lastCursor ?? 0, $job->skipCount, $startTime);
+            return $this->failDiskFull($job, $stream, $correlationId, $cursor, $job->skipCount, $startTime);
         }
 
-        $cursor          = $job->lastCursor ?? 0;
         $skipCount       = $job->skipCount;
         $rowsTotal       = 0;
         $bytesBaseline   = $stream->bytesWritten();

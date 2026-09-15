@@ -90,7 +90,14 @@ final class ChroniclerAbandonedClaimTest extends Phase7TestCase
         self::assertSame('host:1234:alive', $row['worker_identity']);
     }
 
-    public function testResumesFromLastCursor(): void
+    /**
+     * ADR 0025's "resume from last_cursor with the partial deleted" is
+     * self-contradictory: the claimer deletes the prior partial and
+     * both artifact streams open truncating ('wb'), so trusting the
+     * cursor would silently skip every row the deleted file held. A
+     * re-claim must rebuild the whole artifact from zero instead.
+     */
+    public function testReclaimRebuildsTheWholeArtifact(): void
     {
         $modelId = $this->createModel(1, 'resume');
         $this->createFieldNamed($modelId, 'idx', 'int');
@@ -101,6 +108,8 @@ final class ChroniclerAbandonedClaimTest extends Phase7TestCase
             ->format('Y-m-d H:i:s');
 
         // Prior worker committed through entry 5 before its lease expired.
+        // The claimer deletes its partial artifact on re-claim, so the
+        // new worker has no bytes to resume from and must rebuild all 10.
         $jobId = $this->seedExportJob(
             1, $modelId,
             status: 'processing',
@@ -115,8 +124,9 @@ final class ChroniclerAbandonedClaimTest extends Phase7TestCase
 
         $row = $this->fetchExportJob($jobId);
         self::assertSame('completed', $row['status']);
-        // Final artifact has only the remaining 5 rows (resume from cursor).
+        // Final artifact has every row — not merely the ones after the
+        // dead worker's cursor, which no longer exist anywhere.
         $rows = $this->readArtifactCsv((string) $row['artifact_path']);
-        self::assertCount(5, $rows);
+        self::assertCount(10, $rows);
     }
 }
