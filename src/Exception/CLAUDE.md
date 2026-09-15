@@ -35,7 +35,7 @@ All typed errors extend `RuntimeException`.
 
 ## Phase 6a
 
-- `LiberatorSingletonViolationException` — Liberator's PID-file contention. CLI exit code 2. `PidFileGuard::acquire()` takes an optional `?string $exceptionClass` defaulting to `WatcherSingletonViolationException` so Phase 5 behaviour is preserved; the Liberator CLI passes this class explicitly.
+**No exception class here any more.** `LiberatorSingletonViolationException` existed for the Liberator's PID-file contention through Phase 6a and ADR 0048; ADR 0049 replaced that process-level singleton with page-table-granularity `GET_LOCK` exclusion (`Liberator\SweepPageLock`), which has no failure mode of its own to report — contention there is routine (`AdvisoryLock::tryAcquire()` returns `null`, the slot is skipped for the cycle), not an error. `PidFileGuard::acquire()`'s optional `?string $exceptionClass`, defaulting to `WatcherSingletonViolationException`, is unused by anything but the Watcher now.
 
 ## Phase 6b — retype
 

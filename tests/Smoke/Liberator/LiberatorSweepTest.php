@@ -108,14 +108,21 @@ final class LiberatorSweepTest extends Phase6aTestCase
         self::assertNotFalse($stream);
         $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
 
-        // chunkSize=10 → 3 chunks (sweep_chunk × 3) + sweep_started + sweep_complete.
+        // chunkSize=10 → 3 chunks (sweep_chunk × 3) + sweep_complete + sweep_started.
         $this->makeLiberator(logger: $logger, chunkSize: 10)->tick();
 
         $events = $this->readNdjsonStream($stream);
         $names = array_map(static fn ($e) => $e['event'] ?? null, $events);
 
+        // ADR 0049: `sweep_started` now fires once at the END of the
+        // cycle rather than before any sweeping, because it carries the
+        // cycle's final `slots_claimed`/`slots_contended` tallies —
+        // unknowable up front without pre-acquiring every claimable
+        // slot's page lock before sweeping any of them, which would let
+        // one worker monopolize a whole multi-page batch and defeat the
+        // point of a multi-worker Liberator.
         self::assertSame(
-            ['sweep_started', 'sweep_chunk', 'sweep_chunk', 'sweep_chunk', 'sweep_complete'],
+            ['sweep_chunk', 'sweep_chunk', 'sweep_chunk', 'sweep_complete', 'sweep_started'],
             $names,
         );
 

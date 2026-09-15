@@ -57,6 +57,32 @@ abstract class WritePathTestCase extends TestCase
     }
 
     /**
+     * A second PDO session against the same test database, for tests
+     * that need two real connections (SKIP LOCKED / GET_LOCK
+     * contention proofs). Lifted out of
+     * `Chronicler\ChroniclerMultiWorkerClaimTest`, which was the only
+     * caller until the ADR 0049 Liberator multi-worker tests needed the
+     * identical helper — shared here rather than duplicated a second
+     * time.
+     */
+    protected function makeSiblingPdo(): PDO
+    {
+        $dsn  = getenv('STARDUST_TEST_DSN') ?: '';
+        $user = getenv('STARDUST_TEST_USER') ?: '';
+        $pass = getenv('STARDUST_TEST_PASS') ?: '';
+
+        if ($dsn === '' || $user === '') {
+            self::markTestSkipped('STARDUST_TEST_DSN/STARDUST_TEST_USER must be set.');
+        }
+
+        return new PDO($dsn, $user, $pass, [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+    }
+
+    /**
      * Provision a page indexing exactly the named slot columns.
      */
     protected function provisionPage(array $filterableSlots = []): int

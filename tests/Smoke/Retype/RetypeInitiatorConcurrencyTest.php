@@ -143,20 +143,4 @@ final class RetypeInitiatorConcurrencyTest extends Phase6bTestCase
         return $fieldId;
     }
 
-    private function makeSiblingPdo(): PDO
-    {
-        $dsn  = getenv('STARDUST_TEST_DSN') ?: '';
-        $user = getenv('STARDUST_TEST_USER') ?: '';
-        $pass = getenv('STARDUST_TEST_PASS') ?: '';
-
-        if ($dsn === '' || $user === '') {
-            self::markTestSkipped('STARDUST_TEST_DSN/STARDUST_TEST_USER must be set.');
-        }
-
-        return new PDO($dsn, $user, $pass, [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_EMULATE_PREPARES   => false,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
-    }
 }

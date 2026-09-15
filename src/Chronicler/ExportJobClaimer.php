@@ -7,6 +7,7 @@ namespace StarDust\Chronicler;
 use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
+use StarDust\Support\WorkerIdentity;
 use Throwable;
 
 /**

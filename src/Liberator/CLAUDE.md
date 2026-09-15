@@ -1,12 +1,23 @@
 # Liberator daemon
 
-Phase 6a singleton slot reclamation (ADR 0008, ADR 0009). Three `final` collaborators, SOLID-decomposed.
+Phase 6a slot reclamation (ADR 0008, ADR 0009), multi-worker since ADR 0049. Four `final` collaborators, SOLID-decomposed.
 
-Process-level singleton enforcement is the CLI's job: `PidFileGuard::acquire(pidFileDir, 'liberator', LiberatorSingletonViolationException::class)` in `bin/stardust liberator`.
+**No process-level singleton enforcement any more.** `bin/stardust liberator` takes no PID guard, the same as `reconciler` and `chronicler` — run N processes for N-way reclaim throughput. Exclusion happens instead at **page-table granularity**, via `SweepPageLock::tryAcquire(pageId)` (`GET_LOCK('stardust_sweep_page_{pageId}', 0)`, hard-coded zero timeout — a worker that cannot take a page's lock has other pages it could sweep instead, so waiting is never the right move). `Liberator::sweepBatch()` tries the lock per slot in its batch: a claimed slot is swept and the lock released (`finally`) whether or not the sweep threw; a contended slot is skipped for this cycle, left `tombstoned` for whichever worker (this one, next cycle, or another worker) claims it next.
+
+**Why page granularity, not slot granularity or a `FOR UPDATE` claim on `stardust_slot_assignments` (ADR 0009's original rejection, and the roadmap item that started this work):**
+
+1. **A row lock cannot span the unit of work.** `SlotSweeper::sweep()` runs many short transactions per slot (`commitChunk()`), each its own `beginTransaction()`/`commit()`. A `FOR UPDATE` claim taken once in `loadBatch()` would die at the first commit — guarding the batch read and nothing else. Spanning it would need lease columns + heartbeats + abandoned-claim recovery on `stardust_slot_assignments`, i.e. the Chronicler's machinery, and new DDL this ADR deliberately avoids.
+2. **Slot granularity is the wrong unit and would make things worse.** Two workers on two *different slots of the same page* both issue `UPDATE {$tableName} SET {$slotColumn} = NULL WHERE entry_id IN (…)` against the *same rows* of the same table — exactly ADR 0009's original "multiply InnoDB row-lock contention" objection, and post-ADR-0046 worse than merely slow: contention burns the retry budget, takes a gap, and a gapped sweep **does not reclaim** (see below). Slot-level parallelism would convert reclamations into deferrals.
+
+Page granularity has neither problem: two workers never touch the same `entry_slots_page_N` table concurrently, so no Liberator-vs-Liberator row contention is possible, and the parallelism is genuinely across distinct IO (distinct page tables) rather than within one. The honest throughput bound is the number of distinct pages holding tombstones, not the worker count. See ADR 0049 for the full case against the row-lock and lease-column alternatives, and for the accepted trade: a worker that hangs *while still connected* holds its page indefinitely — `GET_LOCK` is untouched by `COMMIT`/`ROLLBACK` on the sweep's own per-chunk transactions (verified against MySQL 8.0.13; this is exactly why the lock can safely wrap a multi-transaction sweep in the first place), and only releases via `RELEASE_LOCK` or the holding connection's death. Strictly better than the pre-0049 singleton, where a wedged process stalled *all* reclamation, and observable the same way: tombstone depth and age.
+
+**`sweepBatch()` acquires, sweeps and releases ONE slot's page lock at a time — never all of a batch's locks up front.** A batch can span many pages (up to `liberatorBatchSize`, default 50); pre-acquiring every claimable slot's lock before sweeping any of them would let one worker monopolize every page in its batch for the whole cycle, silently starving every other worker for that entire cycle and defeating the reason this ADR exists. Because of this, `sweep_started` fires once at the END of the cycle rather than at the start: it carries the cycle's final `slots_claimed` / `slots_contended` tallies, which are not knowable before the batch has actually been walked slot by slot. `tests/Smoke/Liberator/LiberatorSweepTest::testEmitsExpectedEventSequence` pins the resulting order — `sweep_chunk`(s), `sweep_complete`, `sweep_started` — a change from the pre-0049 shape where it led.
+
+`worker_identity` (`host:pid:uuid`, minted once per process via `Support\WorkerIdentity::mint()`, shared with the Chronicler and the Reconciler's import-job source) rides every one of the five Liberator events, since with N workers the event stream alone can no longer distinguish which process emitted what.
 
 ## `TombstonedSlotRepository`
 
-`loadBatch()` runs the registry SELECT `… WHERE status='tombstoned' ORDER BY tombstoned_at ASC, page_id, slot_column LIMIT N` — **no `FOR UPDATE`**, because the singleton guarantee makes claim contention impossible — and hydrates `TombstonedSlot` DTOs with the page's `table_name` joined in.
+`loadBatch()` runs the registry SELECT `… WHERE status='tombstoned' ORDER BY tombstoned_at ASC, page_id, slot_column LIMIT N` — **no `FOR UPDATE`**. Two workers loading the same batch is fine and costs one extra SELECT per cycle; exclusion happens afterwards, at `SweepPageLock`, not here — and hydrates `TombstonedSlot` DTOs with the page's `table_name` joined in.
 
 ## `SlotSweeper`
 
@@ -50,6 +61,10 @@ Two things follow for anyone editing this file. **Do not move the reset into the
 
 **The reclaim carries a `WHERE status='tombstoned'` guard** for the rare operator-resurrect race: 0 rows affected → no reclaim → the next batch sees the updated state.
 
-## `Liberator::tick()`
+## `Liberator::tick()` / `Liberator::sweepBatch()`
 
-Generates one `correlation_id` (UUID v4), loads the batch, emits `sweep_started`, then sweeps each slot. **Idle ticks emit nothing**, per blueprint AC#13.
+Generates one `correlation_id` (UUID v4), loads the batch, then walks it one slot at a time: tries `SweepPageLock::tryAcquire()`, and on success sweeps that slot immediately and releases its page lock in a `finally` before moving to the next slot — never acquiring ahead. At the end of the cycle, emits `sweep_started` **only when at least one slot was actually claimed** (with the final `slots_claimed` / `slots_contended` tallies alongside the existing `batch_size`). **Idle ticks — including a fully-contended batch, where every slot's page is already being swept by another worker — emit nothing**, extending blueprint AC#13's no-spam-when-idle rule to "nothing to do because everything is already spoken for." `sweepBatch()` returns the count actually swept, not the batch size — `CombinedTick` (ADR 0048) relies on that to detect a genuinely idle round; returning the batch size would make a fully-contended tick look like progress and defeat the idle-exit.
+
+## `SlotSweeper` is unchanged, deliberately
+
+ADR 0049 added a `string $workerIdentity` parameter to `sweep()` (threaded onto its four events, alongside `sweep_started`'s from `Liberator`) and nothing else. The per-slot chunk loop, the deadlock/gap policy (ADR 0009/0045/0046, ~330 of these 385 lines), and the reclaim transaction are all untouched — multi-worker-ness lives entirely one layer up, at whether a slot's page lock was claimed before `sweep()` is ever called. A slot in progress is swept by exactly one worker at a time (the page lock guarantees it), so nothing about `SlotSweeper`'s own single-writer assumptions — the cursor, the gap-pinning, the reclaim guard — needed to change.

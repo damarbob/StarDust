@@ -127,8 +127,9 @@ switch ($command) {
                            daemon (Phase 5).
           reconciler:dlq:replay --id=N | --reason=X
                            Operator-initiated DLQ replay (Phase 5).
-          liberator        Singleton slot-reclamation daemon (Phase 6a):
-                           sweeps tombstoned slots back to free.
+          liberator        Multi-worker slot-reclamation daemon (Phase 6a):
+                           sweeps tombstoned slots back to free. Run
+                           multiple processes for horizontal scale.
           chronicler       Multi-worker async export daemon (Phase 7):
                            claims pending export jobs, paginates entry_data,
                            writes CSV/JSON artifacts under Config::artifactDir.
@@ -222,24 +223,16 @@ switch ($command) {
         try {
             $pdo = $buildPdo();
             $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
-            $guard = \StarDust\Daemon\PidFileGuard::acquire(
-                $stardust->config()->pidFileDir,
-                'liberator',
-                \StarDust\Exception\LiberatorSingletonViolationException::class,
+            // Liberator is multi-worker safe since ADR 0049
+            // (page-table-granularity GET_LOCK exclusion via
+            // SweepPageLock) — no PID guard. Tick the loop continuously
+            // at the configured idle interval, same as before.
+            $stardust->pollLoop()->run(
+                $stardust->liberator(),
+                $stardust->shutdownSignal('liberator'),
+                $stardust->config()->liberatorIdleIntervalSeconds,
             );
-            try {
-                $stardust->pollLoop()->run(
-                    $stardust->liberator(),
-                    $stardust->shutdownSignal('liberator'),
-                    $stardust->config()->liberatorIdleIntervalSeconds,
-                );
-                exit(0);
-            } finally {
-                $guard->release();
-            }
-        } catch (\StarDust\Exception\LiberatorSingletonViolationException $e) {
-            fwrite(STDERR, "stardust: " . $e->getMessage() . "\n");
-            exit(2);
+            exit(0);
         } catch (\Throwable $e) {
             fwrite(STDERR, "stardust: liberator failed: " . $e->getMessage() . "\n");
             exit(1);

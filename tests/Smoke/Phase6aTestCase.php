@@ -7,10 +7,13 @@ namespace StarDust\Tests\Smoke;
 use DateTimeZone;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use PDO;
 use StarDust\Clock\SystemClock;
 use StarDust\Liberator\Liberator;
 use StarDust\Liberator\SlotSweeper;
+use StarDust\Liberator\SweepPageLock;
 use StarDust\Liberator\TombstonedSlotRepository;
+use StarDust\Support\WorkerIdentity;
 
 /**
  * Shared scaffolding for Phase 6a Liberator smoke tests. Builds on
@@ -121,9 +124,9 @@ abstract class Phase6aTestCase extends Phase5TestCase
             ->fetchColumn();
     }
 
-    protected function makeTombstonedSlotRepository(int $batchSize = 50): TombstonedSlotRepository
+    protected function makeTombstonedSlotRepository(int $batchSize = 50, ?PDO $pdo = null): TombstonedSlotRepository
     {
-        return new TombstonedSlotRepository(pdo: $this->pdo, batchSize: $batchSize);
+        return new TombstonedSlotRepository(pdo: $pdo ?? $this->pdo, batchSize: $batchSize);
     }
 
     protected function makeSlotSweeper(
@@ -132,9 +135,10 @@ abstract class Phase6aTestCase extends Phase5TestCase
         int $interChunkDelayMicros = 0,
         int $deadlockRetryBudget = 3,
         ?callable $sleepFn = null,
+        ?PDO $pdo = null,
     ): SlotSweeper {
         return new SlotSweeper(
-            pdo: $this->pdo,
+            pdo: $pdo ?? $this->pdo,
             logger: $logger ?? new NullLogger(),
             chunkSize: $chunkSize,
             interChunkDelayMicros: $interChunkDelayMicros,
@@ -143,24 +147,34 @@ abstract class Phase6aTestCase extends Phase5TestCase
         );
     }
 
+    protected function makeSweepPageLock(?PDO $pdo = null): SweepPageLock
+    {
+        return new SweepPageLock($pdo ?? $this->pdo);
+    }
+
     protected function makeLiberator(
         ?LoggerInterface $logger = null,
         int $batchSize = 50,
         int $chunkSize = 500,
         int $deadlockRetryBudget = 3,
         ?callable $sleepFn = null,
+        ?PDO $pdo = null,
+        ?string $workerIdentity = null,
     ): Liberator {
         $log = $logger ?? new NullLogger();
         return new Liberator(
             logger: $log,
-            repository: $this->makeTombstonedSlotRepository($batchSize),
+            repository: $this->makeTombstonedSlotRepository($batchSize, $pdo),
             sweeper: $this->makeSlotSweeper(
                 logger: $log,
                 chunkSize: $chunkSize,
                 interChunkDelayMicros: 0,
                 deadlockRetryBudget: $deadlockRetryBudget,
                 sleepFn: $sleepFn,
+                pdo: $pdo,
             ),
+            pageLock: $this->makeSweepPageLock($pdo),
+            workerIdentity: $workerIdentity ?? WorkerIdentity::mint(),
         );
     }
 

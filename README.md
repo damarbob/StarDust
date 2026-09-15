@@ -124,7 +124,7 @@ Four background daemons keep the slot machinery healthy. They never talk to each
              │             │    slots     │                │
       ┌──────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐
       │ Watcher  │  │ Reconciler │  │ Liberator  │  │ Chronicler │
-      │ singleton│  │multi-worker│  │ singleton  │  │multi-worker│
+      │ singleton│  │multi-worker│  │multi-worker│  │multi-worker│
       └──────────┘  └────────────┘  └────────────┘  └────────────┘
    adds indexed   backfills the    sweeps tombstoned  writes async
    pages when     sync queue,      slot columns back  CSV/JSON
@@ -204,7 +204,7 @@ The 8.0.13 floor is firm: StarDust leans on functional/conditional unique indexe
 
 ## Deployment Requirements
 
-Two deployment modes: the reference mode (persistent processes, the MySQL floor, CLI access, artifact disk, and singleton enforcement for the Watcher and Liberator), or one bounded `bin/stardust tick` on a schedule for a host with no persistent-process capability — plus which hosting tiers qualify for each: [docs/deployment.md](docs/deployment.md).
+Two deployment modes: the reference mode (persistent processes, the MySQL floor, CLI access, artifact disk, and singleton enforcement for the Watcher), or one bounded `bin/stardust tick` on a schedule for a host with no persistent-process capability — plus which hosting tiers qualify for each: [docs/deployment.md](docs/deployment.md).
 
 ---
 

@@ -66,7 +66,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
             sweepCursorId: null,
         );
 
-        $sweeper->sweep($slot, 'test-corr-deadlock');
+        $sweeper->sweep($slot, 'test-corr-deadlock', 'test-worker');
 
         $events = array_map(static fn ($e) => $e['event'], $this->readNdjsonStream($stream));
         self::assertSame(['deadlock_retry', 'sweep_chunk', 'sweep_complete'], $events);
@@ -136,7 +136,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
         );
 
         // Without the fix this throws straight out and kills the daemon.
-        $sweeper->sweep($slot, 'test-corr-lockwait');
+        $sweeper->sweep($slot, 'test-corr-lockwait', 'test-worker');
 
         $events = array_map(static fn ($e) => $e['event'], $this->readNdjsonStream($stream));
         self::assertSame(['deadlock_retry', 'sweep_chunk', 'sweep_complete'], $events);
@@ -185,7 +185,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
             sweepCursorId: null,
         );
 
-        $sweeper->sweep($slot, 'test-corr-gap');
+        $sweeper->sweep($slot, 'test-corr-gap', 'test-worker');
 
         $events = array_map(static fn ($e) => $e['event'], $this->readNdjsonStream($stream));
         // 3 deadlock_retry -> sweep_gap_flagged -> second chunk succeeds
@@ -266,6 +266,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
         $sweeper->sweep(
             new TombstonedSlot($slotAssignmentId, $pageId, $slotColumn, $tableName, null),
             'test-corr-sparse',
+            'test-worker',
         );
 
         $events = array_map(static fn ($e) => $e['event'], $this->readNdjsonStream($stream));
@@ -313,6 +314,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
         $sweeper->sweep(
             new TombstonedSlot($slotAssignmentId, $pageId, $slotColumn, $tableName, null),
             'test-corr-pass-1',
+            'test-worker',
         );
 
         self::assertSame('tombstoned', $this->fetchSlotAssignment($slotAssignmentId)['status']);
@@ -376,6 +378,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
         $sweeper->sweep(
             new TombstonedSlot($slotAssignmentId, $pageId, $slotColumn, $tableName, null),
             'test-corr-gapfail',
+            'test-worker',
         );
 
         $row = $this->fetchSlotAssignment($slotAssignmentId);
@@ -441,6 +444,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
         $sweeper->sweep(
             new TombstonedSlot($slotAssignmentId, $pageId, $slotColumn, $tableName, null),
             'test-corr-nopast',
+            'test-worker',
         );
 
         $events = $this->readNdjsonStream($stream);

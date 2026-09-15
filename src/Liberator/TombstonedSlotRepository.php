@@ -16,10 +16,12 @@ use PDO;
  * `tombstoned_at ASC, page_id, slot_column` — oldest tombstone first,
  * deterministic tie-break for cross-restart parity.
  *
- * No `FOR UPDATE` claim: the Liberator is a strict singleton
- * (ADR 0009), so no other Liberator can race for these rows. Concurrent
- * registry mutations (e.g. an operator tombstoning new fields) just
- * surface in the next batch.
+ * No `FOR UPDATE` claim, and none is needed even though the Liberator
+ * is multi-worker since ADR 0049: two workers loading the same batch
+ * costs one extra SELECT per cycle and nothing more, because exclusion
+ * happens afterwards, at page-table granularity, via
+ * {@see SweepPageLock}. Concurrent registry mutations (e.g. an operator
+ * tombstoning new fields) just surface in the next batch.
  *
  * SRP: this class only reads. Sweep mutations live on
  * {@see SlotSweeper}; cycle orchestration lives on {@see Liberator}.

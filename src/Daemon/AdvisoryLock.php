@@ -50,6 +50,33 @@ final class AdvisoryLock
         return new self($pdo, $name);
     }
 
+    /**
+     * Same as {@see acquire()}, except contention (`GET_LOCK` returns
+     * `0`) returns `null` instead of throwing — mirroring
+     * {@see PidFileGuard::tryAcquire()} for a caller like
+     * {@see \StarDust\Liberator\SweepPageLock} that treats "another
+     * worker already holds this page" as routine, not an error. A
+     * server-side error (`NULL`) still throws: a skip and a broken
+     * server must not look the same to the caller.
+     */
+    public static function tryAcquire(PDO $pdo, string $name, int $timeoutSeconds = 0): ?self
+    {
+        $stmt = $pdo->prepare('SELECT GET_LOCK(?, ?)');
+        $stmt->execute([$name, $timeoutSeconds]);
+        $result = $stmt->fetchColumn();
+
+        if ($result === '0' || $result === 0 || $result === false) {
+            return null;
+        }
+        if ($result === null) {
+            throw new AdvisoryLockTimeoutException(
+                "MySQL GET_LOCK('{$name}', {$timeoutSeconds}) returned NULL — server-side error."
+            );
+        }
+
+        return new self($pdo, $name);
+    }
+
     public function release(): void
     {
         if ($this->released) {

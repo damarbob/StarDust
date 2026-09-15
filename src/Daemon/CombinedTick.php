@@ -25,14 +25,21 @@ use StarDust\Watcher\Watcher;
  * `run()`:
  *
  *   1. Emits `tick_started`.
- *   2. Takes the Watcher's, then the Liberator's, pid-file lock via
- *      {@see PidFileGuard::tryAcquire()} — both are strict singletons
- *      ({@see Watcher}, {@see Liberator}), and this run composes both,
- *      so it takes *their* locks rather than minting a third. Either
- *      being held by another process (an overlapping cron firing, or a
- *      persistent `bin/stardust watcher`/`liberator`) is routine, not
- *      an error: `run()` emits `tick_skipped`, touches the database not
- *      at all, and reports {@see TickStopReason::LOCK_CONTENDED}.
+ *   2. Takes the Watcher's pid-file lock via
+ *      {@see PidFileGuard::tryAcquire()} — the Watcher is a strict
+ *      singleton ({@see Watcher}), and this run composes it, so it
+ *      takes *its* lock rather than minting a third. Held by another
+ *      process (an overlapping cron firing, or a persistent
+ *      `bin/stardust watcher`) is routine, not an error: `run()` emits
+ *      `tick_skipped`, touches the database not at all, and reports
+ *      {@see TickStopReason::LOCK_CONTENDED}. **The Liberator is no
+ *      longer part of this** — ADR 0049 replaced its process-level
+ *      singleton with page-table-granularity `GET_LOCK` exclusion
+ *      ({@see \StarDust\Liberator\SweepPageLock}), taken per slot
+ *      inside {@see \StarDust\Liberator\Liberator::sweepBatch()}
+ *      itself, so a `tick` run may now proceed alongside a standalone
+ *      `bin/stardust liberator` process — the two simply divide the
+ *      tombstoned-slot batch by whichever pages each claims first.
  *   3. Optionally forces both Watcher advisory samplers once
  *      ({@see Watcher::sampleAdvisories()}) — see that method's
  *      docblock for why this process model cannot rely on the
@@ -50,8 +57,7 @@ use StarDust\Watcher\Watcher;
  *      {@see ShutdownSignal} are checked between rounds, never mid-
  *      round, so a budget at or under zero still completes one round
  *      rather than erroring.
- *   6. Emits `tick_complete` and releases both locks (Liberator's
- *      first, Watcher's last — the reverse acquisition order).
+ *   6. Emits `tick_complete` and releases the Watcher's lock.
  *
  * **Fixed order, and it is a design decision, not an implementation
  * detail** — observable in the event stream the same way the
@@ -103,16 +109,7 @@ final class CombinedTick
         }
 
         try {
-            $liberatorGuard = PidFileGuard::tryAcquire($this->pidFileDir, 'liberator');
-            if ($liberatorGuard === null) {
-                return $this->skipped($correlationId, $budget, 'liberator');
-            }
-
-            try {
-                return $this->runLocked($correlationId, $budget, $advisories);
-            } finally {
-                $liberatorGuard->release();
-            }
+            return $this->runLocked($correlationId, $budget, $advisories);
         } finally {
             $watcherGuard->release();
         }

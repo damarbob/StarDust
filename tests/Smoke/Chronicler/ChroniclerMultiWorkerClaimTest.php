@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace StarDust\Tests\Smoke\Chronicler;
 
-use PDO;
 use StarDust\Chronicler\ExportJobClaimer;
 use StarDust\Clock\SystemClock;
 use StarDust\Tests\Smoke\Phase7TestCase;
@@ -123,22 +122,5 @@ final class ChroniclerMultiWorkerClaimTest extends Phase7TestCase
         // B sees no pending and no abandoned (A's heartbeat is fresh)
         // — so B's claim returns null.
         self::assertNull($b, 'Second claimer must not double-claim the same row.');
-    }
-
-    private function makeSiblingPdo(): PDO
-    {
-        $dsn  = getenv('STARDUST_TEST_DSN') ?: '';
-        $user = getenv('STARDUST_TEST_USER') ?: '';
-        $pass = getenv('STARDUST_TEST_PASS') ?: '';
-
-        if ($dsn === '' || $user === '') {
-            self::markTestSkipped('STARDUST_TEST_DSN/STARDUST_TEST_USER must be set.');
-        }
-
-        return new PDO($dsn, $user, $pass, [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_EMULATE_PREPARES   => false,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
     }
 }

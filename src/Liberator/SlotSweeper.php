@@ -106,7 +106,7 @@ final class SlotSweeper
         $this->sleepFn = $sleepFn ?? static fn (int $micros) => usleep($micros);
     }
 
-    public function sweep(TombstonedSlot $slot, string $correlationId): void
+    public function sweep(TombstonedSlot $slot, string $correlationId, string $workerIdentity): void
     {
         // Validate the dynamic identifier before it ever reaches SQL.
         // Belt-and-braces on top of the repository's table-name check.
@@ -161,6 +161,7 @@ final class SlotSweeper
                         'event'              => 'deadlock_retry',
                         'source'             => 'liberator',
                         'correlation_id'     => $correlationId,
+                        'worker_identity'    => $workerIdentity,
                         'slot_assignment_id' => $slot->slotAssignmentId,
                         'attempt'            => $retryCount,
                         'cursor'             => $cursor,
@@ -203,6 +204,7 @@ final class SlotSweeper
                             'event'              => 'sweep_gap_flagged',
                             'source'             => 'liberator',
                             'correlation_id'     => $correlationId,
+                            'worker_identity'    => $workerIdentity,
                             'slot_assignment_id' => $slot->slotAssignmentId,
                             // The chunk's own range, per blueprint AC 8 —
                             // not the cursor span, which named rows the
@@ -239,6 +241,7 @@ final class SlotSweeper
                 'event'              => 'sweep_chunk',
                 'source'             => 'liberator',
                 'correlation_id'     => $correlationId,
+                'worker_identity'    => $workerIdentity,
                 'slot_assignment_id' => $slot->slotAssignmentId,
                 'rows_nullified'     => $rowCount,
                 'chunk_elapsed_ms'   => $elapsedMs,
@@ -261,6 +264,7 @@ final class SlotSweeper
                         'event'              => 'sweep_complete',
                         'source'             => 'liberator',
                         'correlation_id'     => $correlationId,
+                        'worker_identity'    => $workerIdentity,
                         'slot_assignment_id' => $slot->slotAssignmentId,
                         'sweep_cursor_id'    => $storeCursor,
                     ]);

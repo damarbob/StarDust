@@ -11,7 +11,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\ImportJobArtifactException;
-use StarDust\Support\UuidV4;
+use StarDust\Support\WorkerIdentity;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriter;
 use StarDust\Write\ImportChunkRecord;
@@ -120,7 +120,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
 
     public function tickOne(string $chunkCorrelationId): TickOutcome
     {
-        $workerIdentity = $this->workerIdentity();
+        $workerIdentity = WorkerIdentity::mint();
         $claim = $this->claim($workerIdentity);
         if ($claim === null) {
             return TickOutcome::IDLE;
@@ -216,12 +216,6 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         );
 
         return TickOutcome::WORK_DONE;
-    }
-
-    private function workerIdentity(): string
-    {
-        $host = gethostname() ?: 'unknown';
-        return $host . ':' . getmypid() . ':' . UuidV4::generate();
     }
 
     /**

@@ -34,6 +34,7 @@ use StarDust\Export\ExportJobRequest;
 use StarDust\Export\ExportJobSubmitter;
 use StarDust\Liberator\Liberator;
 use StarDust\Liberator\SlotSweeper;
+use StarDust\Liberator\SweepPageLock;
 use StarDust\Liberator\TombstonedSlotRepository;
 use StarDust\Page\PageProvisioner;
 use StarDust\Read\Entry;
@@ -54,6 +55,7 @@ use StarDust\Reconciler\ImportJobWorkSource;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\SyncQueueWorkSource;
 use StarDust\Reconciler\UnmappedFieldReserver;
+use StarDust\Support\WorkerIdentity;
 use StarDust\Retype\RetypeBackfillExecutor;
 use StarDust\Rename\RenameBackfillExecutor;
 use StarDust\Rename\RenameBackfillWorkSource;
@@ -869,17 +871,18 @@ final class StarDust
     }
 
     /**
-     * Phase 6a slot-reclamation daemon (singleton). Polls
-     * `stardust_slot_assignments` for `status='tombstoned'` rows and
-     * sweeps each via chunked nullification of the slot column on
+     * Phase 6a slot-reclamation daemon, multi-worker since ADR 0049.
+     * Polls `stardust_slot_assignments` for `status='tombstoned'` rows
+     * and sweeps each via chunked nullification of the slot column on
      * `entry_slots_page_X`; on the final chunk of a slot, transitions
      * `tombstoned → free` and bumps `stardust_schema_version` in the
      * same transaction (ADR 0009, ADR 0017 §4.6).
      *
-     * Singleton enforcement is the CLI's job
-     * ({@see \StarDust\Daemon\PidFileGuard} with
-     * `LiberatorSingletonViolationException::class`); this factory
-     * assumes it.
+     * Exclusion is page-table granularity via {@see SweepPageLock}
+     * (`GET_LOCK`), not a process-level singleton — no `PidFileGuard`
+     * involved. `worker_identity` is minted once per process and
+     * threaded onto every Liberator event so N processes' output is
+     * distinguishable.
      */
     public function liberator(): Liberator
     {
@@ -896,6 +899,8 @@ final class StarDust
                 interChunkDelayMicros: $this->config->liberatorInterChunkDelayMicros,
                 deadlockRetryBudget: $this->config->liberatorDeadlockRetryBudget,
             ),
+            pageLock: new SweepPageLock($this->config->pdo),
+            workerIdentity: WorkerIdentity::mint(),
         );
     }
 

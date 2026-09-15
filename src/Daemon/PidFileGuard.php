@@ -16,9 +16,12 @@ use StarDust\Exception\WatcherSingletonViolationException;
  * non-blocking exclusive `flock`, and writes the current PID. On
  * contention it throws the caller-provided exception class (defaults
  * to {@see WatcherSingletonViolationException} to preserve Phase 5
- * behaviour); newer daemons inject their own typed exception, e.g.
- * `LiberatorSingletonViolationException::class`. The exception class
- * MUST extend {@see RuntimeException}.
+ * behaviour); a daemon with its own strict-singleton contract can
+ * inject its own typed exception instead. The exception class MUST
+ * extend {@see RuntimeException}. (The Liberator used to be such a
+ * daemon — `LiberatorSingletonViolationException::class` — until
+ * ADR 0049 replaced its process-level singleton with page-table
+ * `GET_LOCK` exclusion; the Watcher remains the only caller today.)
  *
  * The file handle is held for the lifetime of the guard object; the OS
  * releases the lock automatically when the process exits, so even a
