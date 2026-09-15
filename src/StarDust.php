@@ -16,6 +16,7 @@ use StarDust\Chronicler\ExportJobProcessor;
 use StarDust\Chronicler\GcSweeper;
 use StarDust\Chronicler\HeaderResolver;
 use StarDust\Config\Config;
+use StarDust\Daemon\CombinedTick;
 use StarDust\Daemon\CompositeShutdownSignal;
 use StarDust\Compaction\CompactionPlan;
 use StarDust\Compaction\CompactionRepository;
@@ -25,6 +26,8 @@ use StarDust\Daemon\FlagFileShutdownSignal;
 use StarDust\Daemon\PollLoop;
 use StarDust\Daemon\ShutdownSignal;
 use StarDust\Daemon\SignalShutdownSignal;
+use StarDust\Daemon\TickBudget;
+use StarDust\Daemon\TickReport;
 use StarDust\Export\ExportJob;
 use StarDust\Export\ExportJobId;
 use StarDust\Export\ExportJobRequest;
@@ -894,6 +897,62 @@ final class StarDust
                 deadlockRetryBudget: $this->config->liberatorDeadlockRetryBudget,
             ),
         );
+    }
+
+    /**
+     * ADR 0048 bounded combined tick — Watcher + Liberator + Reconciler
+     * over one connection, for hosts with no persistent-process
+     * capability. See {@see CombinedTick} for the run order and why the
+     * Chronicler is excluded. `StarDust::tick()` is the entry point
+     * that actually invokes it; this factory exists for a consumer that
+     * wants to drive the run loop itself (e.g. a `fastcgi_finish_request()`
+     * post-response driver).
+     */
+    public function combinedTick(): CombinedTick
+    {
+        return new CombinedTick(
+            watcher: $this->watcher(),
+            liberator: $this->liberator(),
+            reconciler: $this->reconciler(),
+            logger: $this->config->logger,
+            clock: $this->config->clock,
+            shutdown: $this->shutdownSignal('tick'),
+            pidFileDir: $this->config->pidFileDir,
+        );
+    }
+
+    /**
+     * Runs one bounded, budget-limited pass of the Watcher, Liberator
+     * and Reconciler over the current connection and returns when the
+     * budget is spent, a round finds nothing to do, shutdown is
+     * requested, or the Watcher's/Liberator's pid file is already held
+     * by another process. Intended for a cron line or a scheduled URL
+     * fetch on a host that cannot run persistent daemon processes — see
+     * `docs/deployment.md`.
+     *
+     * `$budgetSeconds` defaults to `Config::$tickBudgetSeconds`,
+     * clamped against `max_execution_time` (when the SAPI reports one)
+     * via {@see TickBudget::resolve()}. `$advisories` forces both
+     * Watcher advisory samplers once at the start of the run — see
+     * {@see \StarDust\Watcher\Watcher::sampleAdvisories()} for why this
+     * process model cannot rely on the Watcher's normal in-memory
+     * schedule, and pass it from a separate, once-daily crontab line
+     * rather than every invocation.
+     *
+     * **Never call this from a request path.** It is bounded but still
+     * does real, potentially slow work (page provisioning, chunked
+     * backfills, slot sweeps) synchronously on the calling connection.
+     *
+     * Excludes the Chronicler — see {@see CombinedTick}.
+     */
+    public function tick(?int $budgetSeconds = null, bool $advisories = false): TickReport
+    {
+        $budget = TickBudget::resolve(
+            $budgetSeconds ?? $this->config->tickBudgetSeconds,
+            $this->config->tickBudgetMarginSeconds,
+        );
+
+        return $this->combinedTick()->run($budget, $advisories);
     }
 
     /**

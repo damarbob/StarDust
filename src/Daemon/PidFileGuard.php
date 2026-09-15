@@ -46,7 +46,53 @@ final class PidFileGuard
     public static function acquire(string $pidFileDir, string $daemonName, ?string $exceptionClass = null): self
     {
         $exceptionClass ??= WatcherSingletonViolationException::class;
+        [$handle, $path] = self::openHandle($pidFileDir, $daemonName, $exceptionClass);
 
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            $existingPid = is_readable($path) ? trim((string) @file_get_contents($path)) : '';
+            $message = "Another {$daemonName} process holds '{$path}'";
+            if ($existingPid !== '') {
+                $message .= " (PID {$existingPid})";
+            }
+            throw new $exceptionClass($message . '.');
+        }
+
+        return self::finish($handle, $path);
+    }
+
+    /**
+     * Same as {@see acquire()}, except flock contention returns `null`
+     * instead of throwing `WatcherSingletonViolationException`. An
+     * unwritable directory or an unopenable pid file still throws —
+     * those are configuration errors, not the "another instance is
+     * already running" condition a caller like
+     * {@see \StarDust\Daemon\CombinedTick} treats as routine (an
+     * overlapping cron firing is expected, not an error).
+     *
+     * Shares {@see openHandle()} / {@see finish()} with `acquire()`
+     * rather than duplicating the open/lock/write sequence — there is
+     * exactly one place that opens the file and one that writes the PID
+     * into it.
+     */
+    public static function tryAcquire(string $pidFileDir, string $daemonName): ?self
+    {
+        [$handle, $path] = self::openHandle($pidFileDir, $daemonName, WatcherSingletonViolationException::class);
+
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            return null;
+        }
+
+        return self::finish($handle, $path);
+    }
+
+    /**
+     * @param class-string<RuntimeException> $exceptionClass
+     * @return array{0: resource, 1: string}
+     */
+    private static function openHandle(string $pidFileDir, string $daemonName, string $exceptionClass): array
+    {
         if (!is_dir($pidFileDir) && !@mkdir($pidFileDir, 0777, true) && !is_dir($pidFileDir)) {
             throw new $exceptionClass(
                 "Cannot create pid-file directory '{$pidFileDir}'."
@@ -61,16 +107,12 @@ final class PidFileGuard
             );
         }
 
-        if (!flock($handle, LOCK_EX | LOCK_NB)) {
-            fclose($handle);
-            $existingPid = is_readable($path) ? trim((string) @file_get_contents($path)) : '';
-            $message = "Another {$daemonName} process holds '{$path}'";
-            if ($existingPid !== '') {
-                $message .= " (PID {$existingPid})";
-            }
-            throw new $exceptionClass($message . '.');
-        }
+        return [$handle, $path];
+    }
 
+    /** @param resource $handle */
+    private static function finish(mixed $handle, string $path): self
+    {
         ftruncate($handle, 0);
         rewind($handle);
         fwrite($handle, (string) getmypid());

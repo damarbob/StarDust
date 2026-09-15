@@ -166,8 +166,7 @@ final class Watcher implements Tickable
             // cycle id — a daily sweep emits hundreds of samples and an
             // operator needs to see them as one sweep, not as hundreds
             // of unrelated observations.
-            $this->cardinalitySampler->sample($correlationId);
-            $this->spreadSampler->sampleAll($correlationId);
+            $this->sampleAdvisories($correlationId);
             $this->scheduleNextAdvisorySample($this->clock->now()->getTimestamp());
         }
 
@@ -247,6 +246,31 @@ final class Watcher implements Tickable
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * Runs both advisory samplers unconditionally, bypassing the
+     * in-memory due-check {@see shouldSampleAdvisories()} normally
+     * gates them behind.
+     *
+     * `tick()`'s schedule (`$nextAdvisorySampleAt`) is a process-local
+     * field, which is fine for a persistent daemon but cannot survive a
+     * process that exits after every run — {@see
+     * \StarDust\Daemon\CombinedTick} is exactly that under the
+     * shared-hosting cron model (ADR 0027 §deferred), and a fresh
+     * `Watcher` on every invocation would never get past its first
+     * (always-false) `shouldSampleAdvisories()` check, so the ADR 0019
+     * cardinality advisory and the ADR 0031 spread advisory would never
+     * fire again. The operator schedules this explicitly instead, off
+     * its own once-daily crontab line (`bin/stardust tick
+     * --advisories`); persisting the schedule so it works unprompted
+     * stays open as its own change rather than becoming a silent
+     * requirement of this mode.
+     */
+    public function sampleAdvisories(string $correlationId): void
+    {
+        $this->cardinalitySampler->sample($correlationId);
+        $this->spreadSampler->sampleAll($correlationId);
     }
 
     private function shouldSampleAdvisories(): bool

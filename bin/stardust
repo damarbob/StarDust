@@ -144,6 +144,18 @@ switch ($command) {
                            reconciler to make progress. Filters on the
                            in-flight field are rejected until it lands;
                            reads keep working. Safe to re-run.
+          tick [--budget=N] [--advisories]
+                           Bounded, single-process pass of the Watcher,
+                           Liberator and Reconciler over one connection —
+                           for a cron line or scheduled URL fetch on a
+                           host with no persistent-process capability.
+                           Excludes the Chronicler; exports still need a
+                           persistent `bin/stardust chronicler`. Runs
+                           until its time budget is spent, a round finds
+                           nothing to do, or it is asked to shut down.
+                           --advisories forces the cardinality and spread
+                           samplers once; run it from a separate,
+                           once-daily crontab line.
 
         Subsequent phases are tracked in the project's design notes.
         HELP;
@@ -383,6 +395,38 @@ switch ($command) {
             exit(0);
         } catch (\Throwable $e) {
             fwrite(STDERR, "stardust: spread:report failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'tick':
+        try {
+            $flags = $parseFlags(array_slice($argv, 2));
+            $budget = isset($flags['budget']) && is_string($flags['budget']) ? (int) $flags['budget'] : null;
+            $advisories = isset($flags['advisories']);
+
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $report = $stardust->tick($budget, $advisories);
+
+            if ($report->stopReason === \StarDust\Daemon\TickStopReason::LOCK_CONTENDED) {
+                // Routine, not an error: an overlapping cron firing (or a
+                // persistent watcher/liberator process already running)
+                // is expected, and a non-zero exit every firing would
+                // mean cron mail every firing.
+                echo "stardust: tick skipped — a watcher or liberator process already holds its pid file.\n";
+                exit(0);
+            }
+
+            printf(
+                "stardust: tick complete — %d round(s) in %.1fs (budget %ds), stopped: %s.\n",
+                $report->rounds,
+                $report->elapsedSeconds,
+                $report->budgetSeconds,
+                $report->stopReason->value,
+            );
+            exit(0);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: tick failed: " . $e->getMessage() . "\n");
             exit(1);
         }
 

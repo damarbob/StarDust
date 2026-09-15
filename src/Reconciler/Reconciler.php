@@ -70,13 +70,36 @@ final class Reconciler implements Tickable
 
     public function tick(): void
     {
+        $this->tickRound();
+    }
+
+    /**
+     * One round-robin pass over every work source, returning the
+     * round's aggregate {@see TickOutcome} rather than `void`.
+     *
+     * `tick()` (the {@see Tickable} contract used by the standalone
+     * `bin/stardust reconciler` poll loop) delegates here and discards
+     * the result; {@see \StarDust\Daemon\CombinedTick} calls this
+     * directly so it can decide whether the round did anything without
+     * a second query.
+     *
+     * `WORK_DONE` is returned only once every source has been given a
+     * turn — a single busy source does not short-circuit the others,
+     * matching the existing "round-robin, max one chunk per source per
+     * round" contract. `CAPACITY_WAIT` / `LOCK_WAIT` still short-circuit
+     * the round (unchanged behaviour): one source losing capacity or a
+     * lock predicts the rest will too.
+     */
+    public function tickRound(): TickOutcome
+    {
         $chunkCorrelationId = UuidV4::generate();
+        $didWork = false;
 
         foreach ($this->workSources as $source) {
             $outcome = $source->tickOne($chunkCorrelationId);
             if ($outcome === TickOutcome::CAPACITY_WAIT) {
                 ($this->sleepFn)($this->capacityWaitMillis * 1000);
-                return;
+                return TickOutcome::CAPACITY_WAIT;
             }
             // LOCK_WAIT is handled exactly like CAPACITY_WAIT, and for
             // the analogous reason: the contention is on the shared
@@ -89,11 +112,16 @@ final class Reconciler implements Tickable
             // of magnitude, and `Config` already has two.
             if ($outcome === TickOutcome::LOCK_WAIT) {
                 ($this->sleepFn)($this->capacityWaitMillis * 1000);
-                return;
+                return TickOutcome::LOCK_WAIT;
             }
-            if ($outcome === TickOutcome::WORK_DONE && $this->interChunkDelayMicros > 0) {
-                ($this->sleepFn)($this->interChunkDelayMicros);
+            if ($outcome === TickOutcome::WORK_DONE) {
+                $didWork = true;
+                if ($this->interChunkDelayMicros > 0) {
+                    ($this->sleepFn)($this->interChunkDelayMicros);
+                }
             }
         }
+
+        return $didWork ? TickOutcome::WORK_DONE : TickOutcome::IDLE;
     }
 }

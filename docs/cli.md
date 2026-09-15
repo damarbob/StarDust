@@ -64,6 +64,20 @@ vendor/bin/stardust spread:report --tenant=1 --model=7
 # the reconciler to finish and re-run; spread:report stays available.
 vendor/bin/stardust compact:model --tenant=1 --model=7 --dry-run
 vendor/bin/stardust compact:model --tenant=1 --model=7
+
+# Bounded, single-process pass of the Watcher, Liberator and Reconciler
+# over one connection — for a cron line or scheduled URL fetch on a
+# host with no persistent-process capability (see
+# docs/deployment.md#cron-only--shared-hosting). Runs until its time
+# budget is spent, a round finds nothing to do, or it is asked to shut
+# down. Excludes the Chronicler; exports still need a persistent
+# `chronicler` process. --advisories forces the cardinality and spread
+# advisories once — schedule it from a separate, once-daily crontab
+# line, not on every invocation. Never run this alongside a persistent
+# `watcher` or `liberator` process: an overlapping run just skips with
+# exit code 0 rather than doing anything.
+vendor/bin/stardust tick --budget=50
+vendor/bin/stardust tick --budget=50 --advisories
 ```
 
 Daemons honour both `SIGTERM`/`SIGINT` (when `ext-pcntl` is loaded) and

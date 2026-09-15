@@ -204,7 +204,7 @@ The 8.0.13 floor is firm: StarDust leans on functional/conditional unique indexe
 
 ## Deployment Requirements
 
-What a supported deployment must provide — persistent processes, the MySQL floor, CLI access, artifact disk, and singleton enforcement for the Watcher and Liberator — plus which hosting tiers qualify: [docs/deployment.md](docs/deployment.md).
+Two deployment modes: the reference mode (persistent processes, the MySQL floor, CLI access, artifact disk, and singleton enforcement for the Watcher and Liberator), or one bounded `bin/stardust tick` on a schedule for a host with no persistent-process capability — plus which hosting tiers qualify for each: [docs/deployment.md](docs/deployment.md).
 
 ---
 
@@ -414,7 +414,7 @@ Every typed exception the engine throws, what triggers it, and how to handle a `
 
 ## CLI
 
-The framework-neutral `bin/stardust` entry point — bootstrap, the four daemons, DLQ replay, and the operator-initiated `spread:report` / `compact:model` commands: [docs/cli.md](docs/cli.md).
+The framework-neutral `bin/stardust` entry point — bootstrap, the four daemons, the bounded combined `tick` command for hosts with no persistent-process capability, DLQ replay, and the operator-initiated `spread:report` / `compact:model` commands: [docs/cli.md](docs/cli.md).
 
 ---
 

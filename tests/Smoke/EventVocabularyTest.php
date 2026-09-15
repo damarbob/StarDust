@@ -11,8 +11,8 @@ use PHPUnit\Framework\TestCase;
  *
  * Greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`,
  * `src/Retype/`, `src/Rename/`, `src/Chronicler/`, `src/Export/`,
- * `src/Search/`, `src/Filter/`, `src/Compaction/`, and `src/Write/` for
- * `'event' => '...'` literals and asserts the
+ * `src/Search/`, `src/Filter/`, `src/Compaction/`, `src/Write/`, and
+ * `src/Daemon/` for `'event' => '...'` literals and asserts the
  * union is a subset of the ADR 0020 allowlist for each source.
  * Adding a new event name without updating ADR 0020 must fail this
  * test.
@@ -131,6 +131,13 @@ final class EventVocabularyTest extends TestCase
         'capability_unsupported',
         'pre_flight_rejected',
         'cache_miss',
+    ];
+
+    /** ADR 0048 combined tick, source `tick`. */
+    private const TICK_EVENTS = [
+        'tick_started',
+        'tick_complete',
+        'tick_skipped',
     ];
 
     public function testWatcherSourceUsesOnlyAllowedEventNames(): void
@@ -319,6 +326,27 @@ final class EventVocabularyTest extends TestCase
             );
         }
         self::assertNotEmpty($found, 'Search namespace should emit at least one structured-log event');
+    }
+
+    /**
+     * ADR 0048's combined tick emits on its own `tick` source.
+     *
+     * Exists for the same reason {@see testCompactionSourceUsesOnlyAllowedEventNames()}
+     * does: the scan is per-directory, so a new `src/Daemon/` event
+     * would otherwise go entirely unenforced while the suite stayed
+     * green.
+     */
+    public function testTickSourceUsesOnlyAllowedEventNames(): void
+    {
+        $found = $this->scanDir(__DIR__ . '/../../src/Daemon');
+        foreach ($found as $event) {
+            self::assertContains(
+                $event,
+                self::TICK_EVENTS,
+                "Event '{$event}' is not in the tick allowlist (ADR 0020)."
+            );
+        }
+        self::assertNotEmpty($found, 'Daemon namespace should emit at least one structured-log event');
     }
 
     /** @return list<string> */

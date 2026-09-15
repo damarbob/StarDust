@@ -47,9 +47,24 @@ final class Liberator implements Tickable
 
     public function tick(): void
     {
+        $this->sweepBatch();
+    }
+
+    /**
+     * The body of `tick()`, returning the swept batch size rather than
+     * `void`.
+     *
+     * `tick()` (the {@see Tickable} contract used by the standalone
+     * `bin/stardust liberator` poll loop) delegates here and discards
+     * the result; {@see \StarDust\Daemon\CombinedTick} calls this
+     * directly so a fully idle round can be detected without a second
+     * query against `stardust_slot_assignments`.
+     */
+    public function sweepBatch(): int
+    {
         $slots = $this->repository->loadBatch();
         if ($slots === []) {
-            return;
+            return 0;
         }
 
         $correlationId = UuidV4::generate();
@@ -63,5 +78,7 @@ final class Liberator implements Tickable
         foreach ($slots as $slot) {
             $this->sweeper->sweep($slot, $correlationId);
         }
+
+        return count($slots);
     }
 }

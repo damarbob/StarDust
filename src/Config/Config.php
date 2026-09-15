@@ -39,6 +39,10 @@ final class Config
     /** ADR 0042 — indexed columns per slot family on every newly provisioned page. */
     public readonly int $pageIndexHeadroom;
 
+    /** ADR 0048 — see the constructor for the clamp order against `max_execution_time`. */
+    public readonly int $tickBudgetSeconds;
+    public readonly int $tickBudgetMarginSeconds;
+
     /** ADR 0038 model purge — see the constructor for why it is not `reconcilerChunkSize`. */
     public readonly int $modelPurgeChunkSize;
     public readonly int $modelPurgeLockRetryBudget;
@@ -118,6 +122,8 @@ final class Config
         ?int $reconcilerLockRetryBudget = null,
         ?int $reconcilerLockRetryDelayMicros = null,
         ?int $pageIndexHeadroom = null,
+        ?int $tickBudgetSeconds = null,
+        ?int $tickBudgetMarginSeconds = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -254,5 +260,14 @@ final class Config
         // column per demanded family, so no value here can starve a waiter
         // or name a column that does not exist.
         $this->pageIndexHeadroom = $pageIndexHeadroom ?? 4;
+
+        // ADR 0048 combined tick (shared-hosting deployment mode).
+        // Default 50 s fits under a one-minute cron period with room to
+        // spare; 5 s margin is subtracted from whatever
+        // `max_execution_time` reports (when nonzero — CLI's own
+        // default is already 0) so the run cannot itself get killed
+        // mid-round by the timeout it is trying to respect.
+        $this->tickBudgetSeconds       = $tickBudgetSeconds       ?? 50;
+        $this->tickBudgetMarginSeconds = $tickBudgetMarginSeconds ?? 5;
     }
 }

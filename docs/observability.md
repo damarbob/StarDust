@@ -30,3 +30,5 @@ Two details worth knowing when you read the output:
 
 - **A background worker processes many requests in one batch.** Where that happens, the batch's own `correlation_id` describes the batch, and your id appears under a second key — `job_correlation_id` for bulk imports, `origin_correlation_id` on dead-letter rows.
 - **Successful background backfills are not logged per entry**, only per batch. The absence of a per-entry record is normal; the queue depth is the signal to watch.
+
+**`bin/stardust tick` (see [Deployment requirements](deployment.md)) is its own trace boundary, not a joining one.** Each run mints one `correlation_id` and emits `tick_started` and `tick_complete` under it (plus `tick_skipped` when it declines to run at all because another process already holds a pid file), but the Watcher, Liberator and Reconciler it composes each mint their own per-tick ids as usual — a run's log does not join end-to-end under a single id the way a request's does. If you need to correlate everything one `tick` invocation did, group by timestamp proximity in that run's own log output rather than by `correlation_id`.
