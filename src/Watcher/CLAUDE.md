@@ -2,6 +2,8 @@
 
 Phase 5 singleton page provisioner (ADR 0008). Process-level singleton enforcement is the CLI's job (`PidFileGuard::acquire(pidFileDir, 'watcher')` in `bin/stardust watcher`); the in-DB `GET_LOCK` is the safety net per ADR 0027.
 
+**That lock's name is `stardust_page_provision` qualified per installation (ADR 0053).** Blueprint AC#2's base name and its 10-second timeout are both still normative and unchanged — the suffix only stops two StarDust installations on one shared `mysqld` from excluding each other, since `GET_LOCK` names are server-scoped rather than database-scoped. Note the interaction with ADR 0027's model: a PID file is per-host, so across two hosts the advisory lock *is* the Watcher's excluder, and qualification does not weaken that (both hosts resolve the same schema to the same suffix). See `src/Daemon/CLAUDE.md`.
+
 ## The tick
 
 `Watcher` implements `Tickable`. Each `tick()`:

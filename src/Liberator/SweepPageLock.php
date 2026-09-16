@@ -6,6 +6,7 @@ namespace StarDust\Liberator;
 
 use PDO;
 use StarDust\Daemon\AdvisoryLock;
+use StarDust\Daemon\LockNamespace;
 
 /**
  * Per-page exclusion for the multi-worker Liberator (ADR 0049).
@@ -22,17 +23,28 @@ use StarDust\Daemon\AdvisoryLock;
  * `SlotSweeper`, `TombstonedSlot` and `TombstonedSlotRepository` are
  * unaware of this class — the lock serializes access to a page's
  * sweep, it is not part of the sweep itself.
+ *
+ * The name is qualified per installation by {@see LockNamespace}
+ * (ADR 0053). Page ids restart at 1 in every installation, so
+ * `stardust_sweep_page_1` was the single most collision-prone name in
+ * the engine on a shared mysqld: two unrelated accounts would each
+ * skip the other's page-1 sweep. Passing `null` keeps the unqualified
+ * name and is for tests that assert on the literal.
  */
 final class SweepPageLock
 {
     private const LOCK_NAME_PREFIX = 'stardust_sweep_page_';
 
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly ?LockNamespace $lockNamespace = null,
+    ) {
     }
 
     public function tryAcquire(int $pageId): ?AdvisoryLock
     {
-        return AdvisoryLock::tryAcquire($this->pdo, self::LOCK_NAME_PREFIX . $pageId, 0);
+        $name = self::LOCK_NAME_PREFIX . $pageId;
+
+        return AdvisoryLock::tryAcquire($this->pdo, $this->lockNamespace?->qualify($name) ?? $name, 0);
     }
 }

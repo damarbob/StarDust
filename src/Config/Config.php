@@ -71,6 +71,8 @@ final class Config
     public readonly int $chroniclerPerTenantActiveCap;
     /** @var list<int> */
     public readonly array $chroniclerDbDisconnectBackoffSeconds;
+    /** ADR 0053 — see the constructor; NULL derives it from `DATABASE()`. */
+    public readonly ?string $lockNamespace;
     public readonly ?EntrySearchInterface $searchDriver;
     public readonly FilterLimits $queryFilterLimits;
     public readonly ?PdoConnector $pdoConnector;
@@ -126,6 +128,7 @@ final class Config
         ?int $tickBudgetSeconds = null,
         ?int $tickBudgetMarginSeconds = null,
         ?int $chroniclerDiskProbeBytes = null,
+        ?string $lockNamespace = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -209,6 +212,13 @@ final class Config
         // a derived number would be false precision). 0 disables the
         // probe and restores the pre-0051 ratio-only gate.
         $this->chroniclerDiskProbeBytes            = $chroniclerDiskProbeBytes            ?? 65_536;
+        // ADR 0053 — the discriminator that keeps this installation's
+        // GET_LOCK names distinct from another installation's on a
+        // shared mysqld. NULL derives it from `DATABASE()`, which is
+        // sound because one schema holds at most one installation;
+        // set it only to keep a lock identity across a database
+        // rename, or to deliberately share one between installations.
+        $this->lockNamespace                       = $lockNamespace;
         $this->chroniclerPerTenantActiveCap        = $chroniclerPerTenantActiveCap        ?? 3;
         // ADR 0025 pins the schedule at [1, 4, 16]; the field is
         // injectable so tests can shorten the cumulative wait.

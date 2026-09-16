@@ -109,5 +109,12 @@ $engine = new StarDust(new Config(
                                                     // fixed when the page is created and never widened after
     tickBudgetSeconds:                   50,        // StarDust::tick() run length — see deployment.md
     tickBudgetMarginSeconds:             5,         // subtracted from max_execution_time when the SAPI reports one
+    lockNamespace:                       null,      // null = derive from the database name — see below
 ));
 ```
+
+**`lockNamespace` almost never needs setting, but is worth understanding if you are on shared hosting.** StarDust takes two MySQL advisory locks, and MySQL scopes advisory lock names to the *server*, not to your database — so on a host where many accounts share one MySQL server, two StarDust installations would otherwise compete for the same lock names and each would periodically stall waiting for the other. Left at `null`, StarDust derives a private namespace from your database name, which is correct automatically and needs no action from you.
+
+Set it explicitly only in two situations: you are renaming the database and want the lock identity to stay put across the move, or you are deliberately running two installations that should coordinate as one. Any non-empty string works — it is only an identifier, never a secret, and the value never leaves your server.
+
+One upgrade note: locks named under the old scheme and the new one do not recognise each other, so **stop your daemons (or pause the cron line) while deploying this version** rather than restarting them one at a time. On a cron schedule, that is a single skipped run.

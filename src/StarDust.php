@@ -23,6 +23,7 @@ use StarDust\Compaction\CompactionRepository;
 use StarDust\Compaction\CompactionService;
 use StarDust\Exception\CompactionCapacityException;
 use StarDust\Daemon\FlagFileShutdownSignal;
+use StarDust\Daemon\LockNamespace;
 use StarDust\Daemon\PollLoop;
 use StarDust\Daemon\ShutdownSignal;
 use StarDust\Daemon\ShutdownYield;
@@ -126,6 +127,7 @@ final class StarDust
     private ?SlotRowUpserter $slotRowUpserter = null;
     private ?BackfillExecutor $backfillExecutor = null;
     private ?PollLoop $pollLoop = null;
+    private ?LockNamespace $lockNamespace = null;
     private ?SlotReserver $slotReserver = null;
     private ?LiveSlotTombstoner $liveSlotTombstoner = null;
     private ?CardinalitySampler $cardinalitySampler = null;
@@ -634,6 +636,21 @@ final class StarDust
      * process-level PID-file guard to already be held (handled by the
      * `bin/stardust watcher` entry point).
      */
+    /**
+     * ADR 0053 per-installation qualifier for the engine's two
+     * `GET_LOCK` names. Memoised rather than rebuilt per factory call
+     * because resolving the default costs a `SELECT DATABASE()` round
+     * trip, and `combinedTick()` builds both lock-taking daemons in
+     * one process — this keeps that at one query, not one per daemon.
+     */
+    public function lockNamespace(): LockNamespace
+    {
+        return $this->lockNamespace ??= new LockNamespace(
+            pdo: $this->config->pdo,
+            explicit: $this->config->lockNamespace,
+        );
+    }
+
     public function watcher(): Watcher
     {
         return new Watcher(
@@ -658,6 +675,7 @@ final class StarDust
                 pdo: $this->config->pdo,
                 clock: $this->config->clock,
             ),
+            lockNamespace: $this->lockNamespace(),
         );
     }
 
@@ -921,7 +939,7 @@ final class StarDust
                 interChunkDelayMicros: $this->config->liberatorInterChunkDelayMicros,
                 deadlockRetryBudget: $this->config->liberatorDeadlockRetryBudget,
             ),
-            pageLock: new SweepPageLock($this->config->pdo),
+            pageLock: new SweepPageLock($this->config->pdo, $this->lockNamespace()),
             workerIdentity: WorkerIdentity::mint(),
         );
     }

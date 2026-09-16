@@ -45,7 +45,8 @@ Fields are `readonly`. **New phases append constructor params, never repurpose e
 - `$chroniclerArtifactTtlSeconds` (86_400) — completed-job artifact GC.
 - `$chroniclerOrphanedPartialTtlSeconds` (3_600) — failed-job partial-artifact GC.
 - `$chroniclerLowDiskThresholdPct` (0.10) — pre-claim disk gate, free-space ratio. Short-circuits: a trip here means the write probe below never runs.
-- `$chroniclerDiskProbeBytes` (65 536) — ADR 0051 pre-claim **write probe**, the half that catches a per-account quota (invisible to the ratio above). A detection-sensitivity parameter, not a reserve budget. `0` disables it and restores the pre-0051 ratio-only gate, including taking no filesystem side effect. **Currently the last constructor parameter.**
+- `$chroniclerDiskProbeBytes` (65 536) — ADR 0051 pre-claim **write probe**, the half that catches a per-account quota (invisible to the ratio above). A detection-sensitivity parameter, not a reserve budget. `0` disables it and restores the pre-0051 ratio-only gate, including taking no filesystem side effect.
+- `$lockNamespace` (`null`) — ADR 0053 discriminator keeping this installation's `GET_LOCK` names distinct from another installation's on a shared `mysqld`. **`null` does not mean "off"** — it means "derive it from `DATABASE()`", which `Daemon\LockNamespace` does on first use. Set it only to keep one lock identity across a database rename, or to make two installations deliberately share one. **This is the first field whose default is resolved outside `Config`**, and deliberately so: deriving it needs a `SELECT DATABASE()`, and this constructor performs no I/O. **Currently the last constructor parameter.**
 - `$chroniclerPerTenantActiveCap` (3) — submission cap on `pending+processing`.
 - `$chroniclerDbDisconnectBackoffSeconds` (`[1, 4, 16]`) — ADR 0025 fixed schedule; the field exists for test injection.
 

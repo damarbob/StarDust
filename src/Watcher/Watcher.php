@@ -9,6 +9,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Daemon\AdvisoryLock;
+use StarDust\Daemon\LockNamespace;
 use StarDust\Daemon\Tickable;
 use StarDust\Exception\AdvisoryLockTimeoutException;
 use StarDust\Page\PageProvisioner;
@@ -111,6 +112,9 @@ final class Watcher implements Tickable
     /** ADR 0052 persisted advisory schedule — see shouldSampleAdvisories(). */
     private readonly AdvisoryScheduleRepository $advisorySchedule;
 
+    /** ADR 0053 per-installation lock-name qualifier; NULL leaves names unqualified. */
+    private readonly ?LockNamespace $lockNamespace;
+
     /**
      * @param (Closure(int, int): int)|null $jitterFn injectable RNG
      *        (signature mirrors `random_int`); defaults to `random_int`.
@@ -133,6 +137,7 @@ final class Watcher implements Tickable
         private readonly int $provisionLockTimeoutSeconds = 10,
         ?IndexHeadroomPolicy $headroomPolicy = null,
         ?AdvisoryScheduleRepository $advisorySchedule = null,
+        ?LockNamespace $lockNamespace = null,
     ) {
         $this->jitterFn = $jitterFn ?? static fn (int $min, int $max): int => random_int($min, $max);
         // Defaulted for the same reason $provisionLockTimeoutSeconds is:
@@ -149,6 +154,11 @@ final class Watcher implements Tickable
         // carries none of that one's hand-tracking hazard — it is pure
         // construction from deps this class already holds.
         $this->advisorySchedule = $advisorySchedule ?? new AdvisoryScheduleRepository($pdo, $clock);
+        // ADR 0053. NULL keeps the unqualified literal rather than
+        // defaulting to a derived namespace, because the unqualified
+        // name is what blueprint AC#2 specifies and what the existing
+        // smoke tests assert on; StarDust::watcher() passes a real one.
+        $this->lockNamespace = $lockNamespace;
     }
 
     public function tick(): void
@@ -216,13 +226,25 @@ final class Watcher implements Tickable
      * singleton guarantee narrows the race to a single other writer.
      * Re-reading would double the round-trips for that.
      */
+    /**
+     * Blueprint AC#2's `stardust_page_provision`, qualified per
+     * installation (ADR 0053). The base name and the 10-second timeout
+     * are both still normative — the suffix keeps two installations on
+     * one mysqld from excluding each other, it does not reinterpret
+     * what the lock means.
+     */
+    private function provisionLockName(): string
+    {
+        return $this->lockNamespace?->qualify('stardust_page_provision') ?? 'stardust_page_provision';
+    }
+
     private function tryProvision(
         string $correlationId,
         ProvisioningPlan $plan,
         PendingDemand $demand,
     ): string {
         try {
-            $lock = AdvisoryLock::acquire($this->pdo, 'stardust_page_provision', $this->provisionLockTimeoutSeconds);
+            $lock = AdvisoryLock::acquire($this->pdo, $this->provisionLockName(), $this->provisionLockTimeoutSeconds);
         } catch (AdvisoryLockTimeoutException $e) {
             $this->logger->warning('page provision lock contention', [
                 'event'          => 'lock_contention',
