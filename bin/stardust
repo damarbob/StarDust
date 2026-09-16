@@ -163,8 +163,8 @@ switch ($command) {
                            boundary once this run's own budget deadline
                            is reached, resuming on a later tick from its
                            verified byte anchor. Off by default — see
-                           docs/deployment.md before enabling it on a
-                           host with a per-account disk quota.
+                           docs/deployment.md for what the pre-claim
+                           disk gate does and does not cover.
 
         Subsequent phases are tracked in the project's design notes.
         HELP;

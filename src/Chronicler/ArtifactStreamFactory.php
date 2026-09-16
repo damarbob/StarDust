@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Chronicler;
 
 use RuntimeException;
+use StarDust\Support\ArtifactDirectory;
 use StarDust\Support\UuidV4;
 
 /**
@@ -86,10 +87,7 @@ final class ArtifactStreamFactory
 
     private function ensureArtifactDir(): void
     {
-        if (is_dir($this->artifactDir)) {
-            return;
-        }
-        if (!@mkdir($this->artifactDir, 0o775, true) && !is_dir($this->artifactDir)) {
+        if (!(new ArtifactDirectory($this->artifactDir))->ensure()) {
             throw new RuntimeException(
                 "ArtifactStreamFactory: artifact directory '{$this->artifactDir}' is not writable."
             );

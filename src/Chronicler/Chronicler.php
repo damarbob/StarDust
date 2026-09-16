@@ -98,6 +98,15 @@ final class Chronicler implements Tickable
                 'partition'       => $disk->partition,
                 'free_pct'        => $disk->freePct,
                 'threshold_pct'   => $disk->thresholdPct,
+                // ADR 0051. `cause` is a clean partition, not a set:
+                // the ratio check short-circuits, so `write_probe`
+                // means the ratio passed and the probe still failed.
+                // `probe_stage`/`probe_error` are null by construction
+                // when `cause` is `free_pct`.
+                'cause'           => $disk->cause,
+                'probe_bytes'     => $disk->probeBytes,
+                'probe_stage'     => $disk->probeStage,
+                'probe_error'     => $disk->probeError,
             ]);
             // Disk-pressure does NOT short-circuit GC — reclaiming
             // artifact files is the right thing to do under pressure.

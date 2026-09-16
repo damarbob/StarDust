@@ -14,6 +14,7 @@ use StarDust\Chronicler\JobOutcome;
 use StarDust\Clock\SystemClock;
 use StarDust\Exception\ChroniclerArtifactDiskFullException;
 use StarDust\Tests\Smoke\Phase7TestCase;
+use StarDust\Tests\Smoke\Support\FailWriteStreamWrapper;
 
 /**
  * ADR 0025 commitment: `ENOSPC`/short-write during artifact append
@@ -31,17 +32,20 @@ final class ChroniclerDiskFullTest extends Phase7TestCase
 {
     public static function setUpBeforeClass(): void
     {
-        if (in_array('failwrite', stream_get_wrappers(), true)) {
-            stream_wrapper_unregister('failwrite');
-        }
-        stream_wrapper_register('failwrite', FailWriteStreamWrapper::class);
+        FailWriteStreamWrapper::register();
     }
 
     public static function tearDownAfterClass(): void
     {
-        if (in_array('failwrite', stream_get_wrappers(), true)) {
-            stream_wrapper_unregister('failwrite');
-        }
+        FailWriteStreamWrapper::unregister();
+    }
+
+    protected function tearDown(): void
+    {
+        // The wrapper carries mutable static state; every consumer
+        // must reset it or a later test inherits this one's stage.
+        FailWriteStreamWrapper::reset();
+        parent::tearDown();
     }
 
     public function testStreamRaisesDiskFullOnShortWrite(): void
@@ -125,101 +129,5 @@ final class ChroniclerDiskFullTest extends Phase7TestCase
         // because the stream's delete() call is a best-effort op on
         // our virtual failwrite:// path.
         self::assertNull($row['artifact_path']);
-    }
-}
-
-/**
- * PHP stream wrapper that accepts open/mkdir but returns 0 on every
- * stream_write — mimicking an ENOSPC partition. The CsvArtifactStream
- * treats a short write (written !== expected) as disk-full.
- *
- * Registered for the duration of {@see ChroniclerDiskFullTest} and
- * unregistered after, so no other test sees `failwrite://`.
- */
-final class FailWriteStreamWrapper
-{
-    /** @var resource|null */
-    public $context;
-
-    public function stream_open(string $path, string $mode, int $options, ?string &$opened_path): bool
-    {
-        // Pretend the open succeeded.
-        return true;
-    }
-
-    public function stream_write(string $data): int
-    {
-        // Short write: simulates ENOSPC. CsvArtifactStream / JsonArtifactStream
-        // both treat written < expected as disk-full and raise the typed
-        // exception.
-        return 0;
-    }
-
-    public function stream_close(): void
-    {
-        // no-op
-    }
-
-    public function stream_flush(): bool
-    {
-        return true;
-    }
-
-    public function stream_metadata(string $path, int $option, mixed $value): bool
-    {
-        // Allow touch() / chmod() / etc. against virtual paths.
-        return true;
-    }
-
-    public function mkdir(string $path, int $mode, int $options): bool
-    {
-        // Pretend mkdir always succeeds — the factory's
-        // ensureArtifactDir() probes is_dir() first; we satisfy that
-        // through url_stat() below.
-        return true;
-    }
-
-    /**
-     * @return array<string|int,int>|false
-     */
-    public function url_stat(string $path, int $flags): array|false
-    {
-        // Report any failwrite:// path as a writable directory so
-        // is_dir() / is_writable() checks pass.
-        $mode = 0o040777; // S_IFDIR | 0777
-        return [
-            0 => 0,
-            1 => 0,
-            2 => $mode,
-            3 => 0,
-            4 => 0,
-            5 => 0,
-            6 => 0,
-            7 => 0,
-            8 => 0,
-            9 => 0,
-            10 => 0,
-            11 => 0,
-            12 => 0,
-            'dev'     => 0,
-            'ino'     => 0,
-            'mode'    => $mode,
-            'nlink'   => 0,
-            'uid'     => 0,
-            'gid'     => 0,
-            'rdev'    => 0,
-            'size'    => 0,
-            'atime'   => 0,
-            'mtime'   => 0,
-            'ctime'   => 0,
-            'blksize' => 0,
-            'blocks'  => 0,
-        ];
-    }
-
-    public function unlink(string $path): bool
-    {
-        // Best-effort delete from the stream's delete() — always succeed.
-        return true;
     }
 }

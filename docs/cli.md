@@ -75,9 +75,10 @@ vendor/bin/stardust compact:model --tenant=1 --model=7
 # invocation. --exports (off by default) opts the Chronicler into the
 # run: a large export cooperatively yields back to `pending` with its
 # resume anchor intact once this run's own budget deadline is reached,
-# rather than running to completion regardless of size. Read the
-# disk-pressure caveat in docs/deployment.md before enabling it on a
-# host with a per-account disk quota. Never run `tick` alongside a
+# rather than running to completion regardless of size. See
+# docs/deployment.md for what the pre-claim disk gate does and does
+# not protect you from before enabling it on constrained hosting.
+# Never run `tick` alongside a
 # persistent `watcher` process: an overlapping run just skips with
 # exit code 0 rather than doing anything. (`liberator` and `chronicler`
 # are the exception — both are multi-worker, so a `tick` run can

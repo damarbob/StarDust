@@ -95,7 +95,8 @@ $engine = new StarDust(new Config(
     chroniclerArtifactSizeCapBytes:      5 * 1024 * 1024 * 1024,  // 5 GB per-artifact cap
     chroniclerArtifactTtlSeconds:        86_400,    // 24 h GC TTL for completed artifacts
     chroniclerOrphanedPartialTtlSeconds: 3_600,     // 1 h GC TTL for failed-job partials
-    chroniclerLowDiskThresholdPct:       0.10,      // pre-claim disk gate (0..1)
+    chroniclerLowDiskThresholdPct:       0.10,      // pre-claim disk gate, free-space ratio (0..1)
+    chroniclerDiskProbeBytes:            65536,     // pre-claim write probe; 0 disables
     chroniclerPerTenantActiveCap:        3,         // submission cap on pending+processing
     chroniclerDbDisconnectBackoffSeconds:[1, 4, 16],// fixed backoff schedule
     pdoConnector:                        null,      // reconnect factory for mid-export DB drops (CLI wires one automatically)

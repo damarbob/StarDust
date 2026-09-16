@@ -69,6 +69,7 @@ abstract class Phase7TestCase extends Phase6bTestCase
         float $lowDiskThresholdPct = 0.0, // disabled by default for tests
         int $deadlockRetryBudget = 3,
         ?YieldSignal $yieldSignal = null, // ADR 0050 — this instance's default yield probe
+        int $diskProbeBytes = 0, // ADR 0051 — disabled by default for tests, as lowDiskThresholdPct is
     ): Chronicler {
         $log = $logger ?? new NullLogger();
         $dir = $artifactDir ?? $this->makeTempArtifactDir();
@@ -97,12 +98,14 @@ abstract class Phase7TestCase extends Phase6bTestCase
             diskGate: new DiskPressureGate(
                 artifactDir: $dir,
                 lowDiskThresholdPct: $lowDiskThresholdPct,
+                probeBytes: $diskProbeBytes,
             ),
             gcSweeper: new GcSweeper(
                 pdo: $this->pdo,
                 logger: $log,
                 artifactTtlSeconds: $artifactTtlSeconds,
                 orphanedPartialTtlSeconds: $orphanedPartialTtlSeconds,
+                artifactDir: $dir,
             ),
             yieldSignal: $yieldSignal,
         );

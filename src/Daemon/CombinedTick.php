@@ -20,15 +20,17 @@ use StarDust\Watcher\Watcher;
  * persistent-process capability (ADR 0048).
  *
  * **The Chronicler is opt-in, off by default, and always composed
- * last in a round** (ADR 0050). It is off by default because the
- * disk-pressure gate reports partition-level free space rather than
- * a per-account quota, and shared hosting commonly enforces the
- * latter above the filesystem layer the gate actually checks — a
- * cron-only host is exactly where that deployment shape is most
- * likely to be found. This is unverified, not merely theoretical
- * (internal build-sequencing notes track it as open); `$exports =
- * true` is the operator's explicit acknowledgement. It runs last so
- * registry maintenance
+ * last in a round** (ADR 0050). Its original reason for being
+ * off — the disk gate could not see a per-account quota — was
+ * measured and closed by ADR 0051, which replaced the bare
+ * free-space ratio with a write probe. Two reasons survive that fix
+ * and are why the default did not flip: the probe proves
+ * `chroniclerDiskProbeBytes` can be written, not that a large export
+ * will fit; and GC runs only on idle ticks, so a `tick --exports`
+ * schedule permanently busy with in-progress exports never reclaims
+ * TTL'd artifacts. `$exports = true` stays the operator's explicit
+ * choice rather than an assumption made on their behalf. It runs
+ * last so registry maintenance
  * (page provisioning, slot reclamation, the sync-queue / import-job /
  * backfill drain) is never starved by a large export. When enabled,
  * `runLocked()` builds ONE per-run {@see YieldSignal} — a

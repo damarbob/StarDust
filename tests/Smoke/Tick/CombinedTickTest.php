@@ -170,6 +170,7 @@ final class CombinedTickTest extends Phase7TestCase
         ?\Psr\Log\LoggerInterface $logger = null,
         ?ClockInterface $clock = null,
         ?string $artifactDir = null,
+        int $diskProbeBytes = 0,
     ): CombinedTick {
         $log = $logger ?? new NullLogger();
 
@@ -181,7 +182,12 @@ final class CombinedTickTest extends Phase7TestCase
             // this Chronicler's tickRound() is never actually invoked —
             // it exists only to satisfy the constructor. The exports
             // tests below pass their own `$artifactDir`.
-            chronicler: $this->makeChronicler($log, artifactDir: $artifactDir, pageSize: 4),
+            chronicler: $this->makeChronicler(
+                $log,
+                artifactDir: $artifactDir,
+                pageSize: 4,
+                diskProbeBytes: $diskProbeBytes,
+            ),
             logger: $log,
             clock: $clock ?? new SystemClock(),
             shutdown: $this->neverShuttingDown(),
@@ -286,6 +292,75 @@ final class CombinedTickTest extends Phase7TestCase
 
         self::assertSame(TickStopReason::IDLE, $report->stopReason);
         self::assertSame('pending', $this->fetchExportJob($jobId)['status'], 'Untouched — exports were never composed into this run.');
+    }
+
+    /**
+     * A path whose parent is a regular file, so `mkdir` can never
+     * succeed — the cheapest genuine "artifact directory is
+     * unwritable" condition, with no stream wrapper involved.
+     */
+    private function unwritableArtifactDir(): string
+    {
+        $blocker = $this->makeTempArtifactDir() . DIRECTORY_SEPARATOR . 'blocker.txt';
+        file_put_contents($blocker, 'not a directory');
+        return $blocker . DIRECTORY_SEPARATOR . 'artifacts';
+    }
+
+    /**
+     * ADR 0051's fail-closed regression test, and the reason the probe
+     * defaults to on.
+     *
+     * With the probe enabled, an unwritable `artifactDir` makes the
+     * gate decline to claim: the run stays `IDLE`, exits cleanly, and
+     * the registry daemons that ran before the Chronicler keep their
+     * round loop.
+     */
+    public function testUnwritableArtifactDirWithProbeStaysIdleRatherThanCrashing(): void
+    {
+        $modelId = $this->createModel(1, 'tick_probe_guard');
+        $this->createFieldNamed($modelId, 'idx', 'int');
+        $this->seedEntryDataBatch(1, $modelId, 3);
+        $jobId = $this->makeExportSubmitter()
+            ->submit(new ExportJobRequest(1, $modelId, 'csv'))
+            ->jobId;
+
+        $report = $this->makeCombinedTick(
+            artifactDir: $this->unwritableArtifactDir(),
+            diskProbeBytes: 4096,
+        )->run(TickBudget::resolve(50, 5), exports: true);
+
+        self::assertSame(TickStopReason::IDLE, $report->stopReason);
+        $row = $this->fetchExportJob($jobId);
+        self::assertSame('pending', $row['status'], 'declined, not claimed-then-crashed');
+        self::assertNull($row['worker_identity']);
+    }
+
+    /**
+     * The counterfactual that makes the test above non-vacuous.
+     *
+     * Without the probe the gate cannot see the problem, so the job is
+     * claimed and flipped to `processing` — and then
+     * `ExportJobProcessor` builds its stream OUTSIDE any try block, so
+     * the `RuntimeException` propagates through `tickRound()` and out
+     * of `CombinedTick::run()`, which has a `finally` but no `catch`.
+     * On a cron-only host that is a nonzero exit every invocation,
+     * with the whole round's registry work truncated (ADR 0048's
+     * one-failure-domain rule).
+     */
+    public function testUnwritableArtifactDirWithoutProbeCrashesTheWholeRun(): void
+    {
+        $modelId = $this->createModel(1, 'tick_probe_absent');
+        $this->createFieldNamed($modelId, 'idx', 'int');
+        $this->seedEntryDataBatch(1, $modelId, 3);
+        $this->makeExportSubmitter()->submit(new ExportJobRequest(1, $modelId, 'csv'));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/artifact directory .* is not writable/');
+
+        $this->makeCombinedTick(
+            artifactDir: $this->unwritableArtifactDir(),
+            diskProbeBytes: 0, // the pre-ADR-0051 gate
+        )->run(TickBudget::resolve(50, 5), exports: true);
     }
 
     private function neverShuttingDown(): ShutdownSignal

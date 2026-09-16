@@ -21,6 +21,13 @@ use Psr\Log\LoggerInterface;
  *      `artifact_path IS NOT NULL`. The processor best-effort-deletes
  *      on terminal failure, but a crash between mark-failed and unlink
  *      could leave a stranded file; this is the cleanup path.
+ *   3. **Leaked disk-probe files** (ADR 0051) — `artifactDir` entries
+ *      matching {@see DiskPressureGate::probeGlob()} older than
+ *      `chroniclerOrphanedPartialTtlSeconds`. {@see DiskPressureGate}
+ *      unlinks its probe in a `finally`, so one survives only if the
+ *      process died mid-probe. Counted separately from artifacts:
+ *      `artifacts_deleted` is normative in chronicler_daemon.md §6 and
+ *      a probe file is not an artifact.
  *
  * Per-row tiny transactions keep the lock window minimal and ensure
  * `gc_swept` is accurate to bytes-actually-reclaimed. Idle cycles
@@ -34,6 +41,11 @@ final class GcSweeper
         private readonly LoggerInterface $logger,
         private readonly int $artifactTtlSeconds,
         private readonly int $orphanedPartialTtlSeconds,
+        /**
+         * ADR 0051 bucket 3. Nullable so no existing call site is
+         * forced to supply it; null simply skips the probe sweep.
+         */
+        private readonly ?string $artifactDir = null,
     ) {
     }
 
@@ -64,9 +76,14 @@ final class GcSweeper
             $bytes   += $reclaim['bytes'];
         }
 
-        $result = new GcResult($deleted, $bytes);
+        // === Bucket 3: leaked disk-probe files (ADR 0051) ===
+        $probes = $this->sweepStaleProbes();
 
-        if ($deleted > 0) {
+        $result = new GcResult($deleted, $bytes, $probes);
+
+        // Still only fires when something was genuinely reclaimed, so
+        // the "idle cycles emit nothing" property holds.
+        if ($deleted > 0 || $probes > 0) {
             $this->logger->info('chronicler gc swept', [
                 'event'              => 'gc_swept',
                 'source'             => 'chronicler',
@@ -74,10 +91,40 @@ final class GcSweeper
                 'tenant_id'          => null,
                 'artifacts_deleted'  => $deleted,
                 'bytes_reclaimed'    => $bytes,
+                'probes_deleted'     => $probes,
             ]);
         }
 
         return $result;
+    }
+
+    /**
+     * Unlinks {@see DiskPressureGate} probe files left behind by a
+     * process that died between creating one and its `finally`
+     * cleanup. Reuses `orphanedPartialTtlSeconds` deliberately — it is
+     * already exactly the "a crash stranded a file" bucket, and a
+     * fourth TTL knob would say nothing new. The age check is what
+     * keeps this from deleting a *live* probe belonging to another
+     * worker mid-tick.
+     */
+    private function sweepStaleProbes(): int
+    {
+        if ($this->artifactDir === null) {
+            return 0;
+        }
+        $matches = glob(DiskPressureGate::probeGlob($this->artifactDir));
+        if ($matches === false) {
+            return 0;
+        }
+        $cutoff  = time() - $this->orphanedPartialTtlSeconds;
+        $deleted = 0;
+        foreach ($matches as $probePath) {
+            $mtime = @filemtime($probePath);
+            if (is_int($mtime) && $mtime < $cutoff && @unlink($probePath)) {
+                $deleted++;
+            }
+        }
+        return $deleted;
     }
 
     /**

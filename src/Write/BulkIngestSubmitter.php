@@ -12,6 +12,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
 use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Support\ArtifactDirectory;
 use StarDust\Support\ModelDeletionProbe;
 use StarDust\Support\UuidV4;
 use Throwable;
@@ -136,7 +137,7 @@ final class BulkIngestSubmitter
             }
         }
 
-        if (!is_dir($this->artifactDir) && !@mkdir($this->artifactDir, 0o775, true) && !is_dir($this->artifactDir)) {
+        if (!(new ArtifactDirectory($this->artifactDir))->ensure()) {
             throw new RuntimeException(
                 "BulkIngestSubmitter: artifact directory '{$this->artifactDir}' is not writable."
             );

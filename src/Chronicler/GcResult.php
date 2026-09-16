@@ -14,6 +14,13 @@ final class GcResult
     public function __construct(
         public readonly int $artifactsDeleted,
         public readonly int $bytesReclaimed,
+        /**
+         * ADR 0051 leaked disk-probe files. Counted separately and
+         * NOT folded into `$artifactsDeleted`: that number is
+         * normative in chronicler_daemon.md §6, and a probe file is
+         * not an artifact.
+         */
+        public readonly int $probesDeleted = 0,
     ) {
     }
 }

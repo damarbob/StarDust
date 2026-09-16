@@ -8,7 +8,7 @@ Phase 7 multi-worker async export drain (ADR 0010, ADR 0025, ADR 0027, ADR 0047,
 
 `tick()` (the `Tickable` contract the standalone poll loop uses) delegates here and discards the result — the same seam `Reconciler::tickRound()` and `Liberator::sweepBatch()` already are, so `CombinedTick` (ADR 0048/0050) can tell an idle round from one where a job is converging without a second query.
 
-1. Calls `DiskPressureGate::sample()` exactly once and reads `DiskPressureReading::shouldSkipClaim()` off the result — every field the `low_disk` event logs (`partition`, `free_pct`, `threshold_pct`) comes off that same reading, so the logged value can never disagree with the one that decided to skip. Below threshold ⇒ emit `low_disk` (cycle-scoped) and fall through to GC, return `IDLE`. **In-flight jobs are unaffected** — this gates claiming only. The probe is always taken against `artifactDir` itself (never a `sys_get_temp_dir()` fallback), so `partition` never names a directory other than the one measured; a missing `artifactDir` (not yet created by `ArtifactStreamFactory`) reads as `null` and fails open, same as any other probe failure. **The gate does not yet see a per-account disk quota** — tracked as open build-sequencing work.
+1. Calls `DiskPressureGate::sample()` exactly once and reads `DiskPressureReading::shouldSkipClaim()` off the result. A trip emits `low_disk` (cycle-scoped) and falls through to GC, returning `IDLE`. **In-flight jobs are unaffected** — this gates claiming only. See `## DiskPressureGate` below.
 2. Asks `ExportJobClaimer::claimPendingOrAbandoned()` for one job. `null` ⇒ run `GcSweeper::sweep()`, return `IDLE`.
 3. Otherwise emits `job_claimed` and calls `ExportJobProcessor::process($claim, $correlationId, $yield ?? $this->yieldSignal)` — the per-call `$yield` overrides the instance's own constructor default rather than replacing it. Maps `JobOutcome::Yielded` to `ChroniclerOutcome::YIELDED`; everything else (completed, any failure flavour, lease lost) to `WORKED`.
 
@@ -112,6 +112,26 @@ So a re-claimer continues charging from the previous worker's count. Otherwise a
 
 **`job_yielded`'s `rows_streamed_total` is scoped to this worker's attempt, NOT cumulative across the job's whole lifetime** — the same limitation `job_complete`'s own field already has across an abandoned re-claim. A job yielded three times and re-claimed each time emits four separate row counts (three `job_yielded` plus one final `job_complete`); summing all four is how an operator gets the true total.
 
+## `DiskPressureGate` (ADR 0051)
+
+`sample(): DiskPressureReading` is the whole public surface — it replaced four separate getters, and that consolidation *is* one of the two bug fixes.
+
+**Two checks, ordered and short-circuiting.** Ratio first; a ratio trip returns immediately and the write probe never runs. That makes `cause` a clean partition (`write_probe` ⟹ the ratio passed *and* the probe failed), so there is no precedence rule and no `both` — and a nearly-full partition is exactly when an extra write is least welcome.
+
+**Why a probe and not a second threshold.** Measured on kernel 6.18.33.2: an ext4 **per-uid** quota 1 MiB from its cap reported the filesystem **91.2% free** via `disk_free_space()` while every `fwrite()` failed `EDQUOT`. No threshold on a number that does not move can detect that. **Project** quotas are a different story — ext4 `prjquota` and XFS `pquota` both scope `statvfs` to the project limit, which is why the ratio survives as a pre-filter rather than being deleted. The blind case is user quota specifically, which is what cPanel-style per-uid hosting uses.
+
+**Fails CLOSED at every stage, including permissions** — the deliberate inversion of the ratio check's fail-open. The alternative is not "the job fails cleanly": `ExportJobProcessor` builds its stream *outside* every `try`, so an unwritable dir claims the job, flips it to `processing`, then throws through `tickRound()` and kills the process — and under `tick --exports` that ends the whole run (ADR 0048's one failure domain), so every cron firing does one round and exits nonzero. `CombinedTickTest` pins both halves, the crash as an explicit counterfactual so the guard test cannot pass vacuously.
+
+**Traps.**
+
+- **The probe filename is unique per probe, and that is load-bearing.** Two workers share one `artifactDir`; with a fixed name, A's `finally` unlink deletes B's in-flight probe and on POSIX B then writes to an unlinked inode and *passes wrongly*.
+- **Never probe with `ftruncate()`** — sparse, no block allocation, no quota charge, so it would pass under the exact condition it exists to detect.
+- **No `fsync()`.** All four measured arms surfaced `EDQUOT`/`ENOSPC` at `write(2)`; `fsync` would cost a real sync every tick forever and buy nothing. `fflush()` is checked because it is free.
+- **`probeBytes: 0` is a *complete* opt-out** — it must not create the artifact directory either, or the "disabled" path still takes a side effect.
+- `stream_set_write_buffer()` is suppressed: a custom stream wrapper need not implement `stream_set_option`, and the measurement showed buffered and unbuffered runs are identical anyway.
+
+**Two defects this closed**, both predating the quota question: the ratio probe used to fall back to `sys_get_temp_dir()` when `artifactDir` did not exist while still reporting `artifactDir` as `partition` (so the event could name a directory that was never measured); and `shouldSkipClaim()`/`freePct()` each re-probed, so the logged `free_pct` could be a different syscall result from the one that decided. The "each tick re-probes so a transient spike does not stick" property is preserved and strengthened — one probe per tick, read repeatedly, never stored on the gate.
+
 ## `GcSweeper`
 
 Scans two buckets:
@@ -119,7 +139,9 @@ Scans two buckets:
 - `status='completed' AND completed_at < UTC_TIMESTAMP() - INTERVAL artifactTtlSeconds SECOND` (24 h default)
 - `status='failed' AND completed_at < UTC_TIMESTAMP() - INTERVAL orphanedPartialTtlSeconds SECOND` (1 h default)
 
-Per row: `@unlink` + `UPDATE … SET artifact_path = NULL`. `gc_swept` is emitted ONLY when `artifactsDeleted > 0`, so idle cycles produce no event spam.
+Per row: `@unlink` + `UPDATE … SET artifact_path = NULL`. Plus a third bucket since ADR 0051: `artifactDir` entries matching `DiskPressureGate::probeGlob()` older than `orphanedPartialTtlSeconds` — probe files leaked by a process that died mid-probe. It reuses that existing TTL deliberately (same "a crash stranded a file" semantics, no fourth knob), and the age check is also what stops it deleting another worker's *live* probe mid-tick. Reported as `probes_deleted`, **never folded into `artifacts_deleted`** — that counter is normative in chronicler_daemon.md §6 and a probe file is not an artifact.
+
+`gc_swept` is emitted ONLY when `artifactsDeleted > 0 || probesDeleted > 0`, so idle cycles produce no event spam.
 
 Since ADR 0047 made `artifact_path`/`artifact_bytes` populated on every chunk commit rather than only the final one, a job that dies mid-flight and later reaches `failed` (its terminal-failure path already deletes the file and NULLs both columns — see above) never reaches this sweep with a stale path; the bucket-2 orphan case here is specifically for a crash between that delete and the column NULL, same as before this ADR.
 

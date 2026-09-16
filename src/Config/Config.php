@@ -67,6 +67,7 @@ final class Config
     public readonly int $chroniclerArtifactTtlSeconds;
     public readonly int $chroniclerOrphanedPartialTtlSeconds;
     public readonly float $chroniclerLowDiskThresholdPct;
+    public readonly int $chroniclerDiskProbeBytes;
     public readonly int $chroniclerPerTenantActiveCap;
     /** @var list<int> */
     public readonly array $chroniclerDbDisconnectBackoffSeconds;
@@ -124,6 +125,7 @@ final class Config
         ?int $pageIndexHeadroom = null,
         ?int $tickBudgetSeconds = null,
         ?int $tickBudgetMarginSeconds = null,
+        ?int $chroniclerDiskProbeBytes = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -199,6 +201,14 @@ final class Config
         $this->chroniclerArtifactTtlSeconds        = $chroniclerArtifactTtlSeconds        ?? 86_400;
         $this->chroniclerOrphanedPartialTtlSeconds = $chroniclerOrphanedPartialTtlSeconds ?? 3_600;
         $this->chroniclerLowDiskThresholdPct       = $chroniclerLowDiskThresholdPct       ?? 0.10;
+        // ADR 0051 pre-claim write probe. 64 KiB — more than one
+        // filesystem block, enough to cross a block-group boundary,
+        // cheap enough to run every tick. A detection-sensitivity
+        // parameter, NOT a reserve budget, and deliberately not
+        // derived from chroniclerPageSize (rows are variable-width, so
+        // a derived number would be false precision). 0 disables the
+        // probe and restores the pre-0051 ratio-only gate.
+        $this->chroniclerDiskProbeBytes            = $chroniclerDiskProbeBytes            ?? 65_536;
         $this->chroniclerPerTenantActiveCap        = $chroniclerPerTenantActiveCap        ?? 3;
         // ADR 0025 pins the schedule at [1, 4, 16]; the field is
         // injectable so tests can shorten the cumulative wait.

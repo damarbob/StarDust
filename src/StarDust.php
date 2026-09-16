@@ -874,12 +874,14 @@ final class StarDust
             diskGate: new DiskPressureGate(
                 artifactDir: $this->config->artifactDir,
                 lowDiskThresholdPct: $this->config->chroniclerLowDiskThresholdPct,
+                probeBytes: $this->config->chroniclerDiskProbeBytes,
             ),
             gcSweeper: new GcSweeper(
                 pdo: $this->config->pdo,
                 logger: $this->config->logger,
                 artifactTtlSeconds: $this->config->chroniclerArtifactTtlSeconds,
                 orphanedPartialTtlSeconds: $this->config->chroniclerOrphanedPartialTtlSeconds,
+                artifactDir: $this->config->artifactDir,
             ),
             yieldSignal: $shutdown !== null ? new ShutdownYield($shutdown) : null,
         );

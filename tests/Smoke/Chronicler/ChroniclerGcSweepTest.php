@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace StarDust\Tests\Smoke\Chronicler;
 
+use StarDust\Chronicler\DiskPressureGate;
 use StarDust\Tests\Smoke\Phase7TestCase;
 
 /**
@@ -107,5 +108,58 @@ final class ChroniclerGcSweepTest extends Phase7TestCase
         $events = $this->recordsWithEvent($logger->records(), 'gc_swept');
         self::assertCount(0, $events);
         self::assertTrue(is_file($freshArtifact));
+    }
+
+    // === Bucket 3: leaked disk-probe files (ADR 0051) ===
+
+    public function testGcSweepsStaleDiskProbeFiles(): void
+    {
+        $artifactDir = $this->makeTempArtifactDir();
+
+        // A probe file left behind by a process that died between
+        // creating one and its `finally` cleanup.
+        $stale = $artifactDir . DIRECTORY_SEPARATOR
+            . DiskPressureGate::PROBE_PREFIX . 'aaaaaaaa' . DiskPressureGate::PROBE_SUFFIX;
+        file_put_contents($stale, str_repeat('x', 64));
+        touch($stale, time() - 7_200); // 2 h old
+
+        // A probe from a worker mid-tick right now — must survive.
+        $fresh = $artifactDir . DIRECTORY_SEPARATOR
+            . DiskPressureGate::PROBE_PREFIX . 'bbbbbbbb' . DiskPressureGate::PROBE_SUFFIX;
+        file_put_contents($fresh, str_repeat('x', 64));
+
+        // A real artifact that is not a probe — must survive, and must
+        // not be counted as one.
+        $decoy = $artifactDir . DIRECTORY_SEPARATOR . 'export_1_decoy.csv';
+        file_put_contents($decoy, 'keep me');
+
+        $logger = $this->makeRecordingLogger();
+        $this->makeChronicler(
+            $logger,
+            artifactDir: $artifactDir,
+            orphanedPartialTtlSeconds: 3_600, // 1 h
+        )->tick();
+
+        self::assertFileDoesNotExist($stale);
+        self::assertFileExists($fresh, 'a live probe from another worker must not be swept');
+        self::assertFileExists($decoy);
+
+        $events = $this->recordsWithEvent($logger->records(), 'gc_swept');
+        self::assertCount(1, $events);
+        self::assertSame(1, $events[0]['context']['probes_deleted']);
+        // A probe file is not an artifact; the normative counter must
+        // not absorb it.
+        self::assertSame(0, $events[0]['context']['artifacts_deleted']);
+    }
+
+    public function testNoProbeFilesStillEmitsNothing(): void
+    {
+        // The new counter must not break the no-spam property.
+        $artifactDir = $this->makeTempArtifactDir();
+
+        $logger = $this->makeRecordingLogger();
+        $this->makeChronicler($logger, artifactDir: $artifactDir)->tick();
+
+        self::assertCount(0, $this->recordsWithEvent($logger->records(), 'gc_swept'));
     }
 }
