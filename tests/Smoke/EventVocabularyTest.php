@@ -100,6 +100,10 @@ final class EventVocabularyTest extends TestCase
         'job_complete',
         'job_failed',
         'gc_swept',
+        // ADR 0050: cooperative yield at a chunk boundary — the job
+        // returns to `pending` with its resume anchor intact rather
+        // than reaching a terminal state.
+        'job_yielded',
     ];
 
     private const EXPORT_API_EVENTS = [

@@ -44,6 +44,19 @@ use Throwable;
  * only the stream that is about to write to the path is positioned to
  * make that call.
  *
+ * Per ADR 0050, the SAME is true of the pending path: a `pending` row
+ * carrying a usable anchor (`artifact_path` + a positive
+ * `artifact_bytes`) is not a fresh submission — it is a job the
+ * processor previously yielded back to `pending` at a chunk boundary.
+ * `claimPending()` therefore selects and forwards the anchor exactly
+ * as `claimAbandoned()` does, and reports {@see ClaimKind::Resumed}
+ * rather than `Pending` when the anchor is usable. Omitting this was
+ * the roadmap sketch's original mistake: a yielded job re-claimed with
+ * no anchor gets a fresh artifact path from
+ * {@see ArtifactStreamFactory} and restarts from byte zero on every
+ * tick, orphaning one partial per tick and never converging on a job
+ * larger than one budget.
+ *
  * The claimer intentionally exposes no constructor for
  * `workerIdentity` — each `claimPendingOrAbandoned()` invocation
  * mints a fresh identity via {@see WorkerIdentity::mint()} so a
@@ -82,7 +95,7 @@ final class ExportJobClaimer
             // a tenant the inner created_at preserves FIFO.
             $select = $this->pdo->prepare(
                 'SELECT j.id, j.tenant_id, j.filter, j.format,'
-                . '       j.last_cursor, j.skip_count, j.correlation_id'
+                . '       j.last_cursor, j.skip_count, j.artifact_path, j.artifact_bytes, j.correlation_id'
                 . '  FROM stardust_export_jobs j'
                 . " WHERE j.status = 'pending'"
                 . ' ORDER BY ('
@@ -108,19 +121,31 @@ final class ExportJobClaimer
             $update->execute([$workerIdentity, $now, $now, $jobId]);
             $this->pdo->commit();
 
+            // ADR 0050: a usable anchor on a `pending` row means this is
+            // a previously-yielded job, not a fresh submission — same
+            // predicate ArtifactStreamFactory::from() applies, so the
+            // reported kind can never claim an anchor the factory then
+            // discards.
+            $priorArtifact = $row['artifact_path'];
+            $anchorBytes = $row['artifact_bytes'] === null ? null : (int) $row['artifact_bytes'];
+            $hasAnchor = is_string($priorArtifact) && $priorArtifact !== ''
+                && $anchorBytes !== null && $anchorBytes > 0;
+
             return new ClaimedJob(
                 id: $jobId,
                 tenantId: (int) $row['tenant_id'],
                 modelId: $this->extractModelId($row['filter']),
                 format: (string) $row['format'],
                 filter: $this->decodeFilter($row['filter']),
-                lastCursor: null,
+                lastCursor: $row['last_cursor'] === null ? null : (int) $row['last_cursor'],
                 workerIdentity: $workerIdentity,
-                claimKind: ClaimKind::Pending,
+                claimKind: $hasAnchor ? ClaimKind::Resumed : ClaimKind::Pending,
                 skipCount: (int) $row['skip_count'],
                 correlationId: $row['correlation_id'] === null
                     ? null
                     : (string) $row['correlation_id'],
+                artifactPath: $hasAnchor ? $priorArtifact : null,
+                artifactBytes: $hasAnchor ? $anchorBytes : null,
             );
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

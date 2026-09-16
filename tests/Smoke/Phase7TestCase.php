@@ -16,6 +16,7 @@ use StarDust\Chronicler\ExportJobProcessor;
 use StarDust\Chronicler\GcSweeper;
 use StarDust\Chronicler\HeaderResolver;
 use StarDust\Clock\SystemClock;
+use StarDust\Daemon\YieldSignal;
 use StarDust\Export\ExportJobSubmitter;
 
 /**
@@ -67,6 +68,7 @@ abstract class Phase7TestCase extends Phase6bTestCase
         int $orphanedPartialTtlSeconds = 3_600,
         float $lowDiskThresholdPct = 0.0, // disabled by default for tests
         int $deadlockRetryBudget = 3,
+        ?YieldSignal $yieldSignal = null, // ADR 0050 — this instance's default yield probe
     ): Chronicler {
         $log = $logger ?? new NullLogger();
         $dir = $artifactDir ?? $this->makeTempArtifactDir();
@@ -102,6 +104,7 @@ abstract class Phase7TestCase extends Phase6bTestCase
                 artifactTtlSeconds: $artifactTtlSeconds,
                 orphanedPartialTtlSeconds: $orphanedPartialTtlSeconds,
             ),
+            yieldSignal: $yieldSignal,
         );
     }
 

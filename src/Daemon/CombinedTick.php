@@ -6,6 +6,8 @@ namespace StarDust\Daemon;
 
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Chronicler\Chronicler;
+use StarDust\Chronicler\ChroniclerOutcome;
 use StarDust\Liberator\Liberator;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\TickOutcome;
@@ -13,14 +15,30 @@ use StarDust\Support\UuidV4;
 use StarDust\Watcher\Watcher;
 
 /**
- * Bounded, single-process run of all three registry daemons over one
- * connection, for hosts with no persistent-process capability (ADR
- * 0048). The Chronicler is deliberately **not** composed here —
- * {@see \StarDust\Chronicler\ExportJobProcessor::process()} runs a
- * claimed job to completion with no yield point, so including it would
- * turn the time budget into a suggestion. Exports stay a
- * persistent-process feature until a future cooperative-yield change
- * lands; `docs/deployment.md` says so in those words.
+ * Bounded, single-process run of all three (four, with `$exports`)
+ * registry daemons over one connection, for hosts with no
+ * persistent-process capability (ADR 0048).
+ *
+ * **The Chronicler is opt-in, off by default, and always composed
+ * last in a round** (ADR 0050). It is off by default because the
+ * disk-pressure gate's account-quota gap (project roadmap item 2) is
+ * unverified, and a cron-only host is exactly where a quota host is
+ * most likely to be found — `$exports = true` is the operator's
+ * explicit acknowledgement. It runs last so registry maintenance
+ * (page provisioning, slot reclamation, the sync-queue / import-job /
+ * backfill drain) is never starved by a large export. When enabled,
+ * `runLocked()` builds ONE per-run {@see YieldSignal} — a
+ * {@see CompositeYield} of a {@see DeadlineYield} pinned to this run's
+ * own budget deadline and a {@see ShutdownYield} wrapping `$shutdown`
+ * — and passes it to every {@see Chronicler::tickRound()} call. This
+ * is load-bearing, not an optimisation: unlike the Liberator's
+ * batch-bounded sweep and the Reconciler's round-bounded pass, the
+ * Chronicler's `process()` loop would otherwise run one claimed job to
+ * completion regardless of size, and the per-round budget check below
+ * (checked only BETWEEN rounds, per Commitment 2) cannot bound work
+ * that happens inside a single round. The `DeadlineYield` is what
+ * keeps that promise instead — see `ExportJobProcessor::process()`'s
+ * own chunk-boundary check.
  *
  * `run()`:
  *
@@ -48,12 +66,16 @@ use StarDust\Watcher\Watcher;
  *      loop — a round's `CAPACITY_WAIT` can only be cleared by the
  *      Watcher, so provisioning has to run before the Reconciler can
  *      possibly need it.
- *   5. Loops: sweep one Liberator batch, then run one Reconciler round
- *      ({@see Reconciler::tickRound()}), re-running the Watcher if the
- *      round reported `CAPACITY_WAIT`. A round that swept nothing and
- *      found the Reconciler fully idle stops the loop — the load-
- *      bearing courtesy to the host, since without it a quiet minute is
- *      ~50 s of continuous idle polling. The budget and
+ *   5. Loops: sweep one Liberator batch, run one Reconciler round
+ *      ({@see Reconciler::tickRound()}), then — when `$exports` is
+ *      true — one Chronicler round ({@see Chronicler::tickRound()}),
+ *      re-running the Watcher if the Reconciler round reported
+ *      `CAPACITY_WAIT`. A round that swept nothing, found the
+ *      Reconciler fully idle, AND found the Chronicler idle (or is not
+ *      running it) stops the loop — the load-bearing courtesy to the
+ *      host, since without it a quiet minute is ~50 s of continuous
+ *      idle polling. `YIELDED` deliberately does NOT count as idle —
+ *      a job is converging toward completion. The budget and
  *      {@see ShutdownSignal} are checked between rounds, never mid-
  *      round, so a budget at or under zero still completes one round
  *      rather than erroring.
@@ -84,6 +106,7 @@ final class CombinedTick
         private readonly Watcher $watcher,
         private readonly Liberator $liberator,
         private readonly Reconciler $reconciler,
+        private readonly Chronicler $chronicler,
         private readonly LoggerInterface $logger,
         private readonly ClockInterface $clock,
         private readonly ShutdownSignal $shutdown,
@@ -91,7 +114,7 @@ final class CombinedTick
     ) {
     }
 
-    public function run(TickBudget $budget, bool $advisories = false): TickReport
+    public function run(TickBudget $budget, bool $advisories = false, bool $exports = false): TickReport
     {
         $correlationId = UuidV4::generate();
         $this->logger->info('tick started', [
@@ -101,6 +124,7 @@ final class CombinedTick
             'budget_seconds' => $budget->seconds,
             'clamped'        => $budget->clamped,
             'advisories'     => $advisories,
+            'exports'        => $exports,
         ]);
 
         $watcherGuard = PidFileGuard::tryAcquire($this->pidFileDir, 'watcher');
@@ -109,19 +133,29 @@ final class CombinedTick
         }
 
         try {
-            return $this->runLocked($correlationId, $budget, $advisories);
+            return $this->runLocked($correlationId, $budget, $advisories, $exports);
         } finally {
             $watcherGuard->release();
         }
     }
 
-    private function runLocked(string $correlationId, TickBudget $budget, bool $advisories): TickReport
+    private function runLocked(string $correlationId, TickBudget $budget, bool $advisories, bool $exports): TickReport
     {
         $startedAt = $this->clock->now()->getTimestamp();
 
         if ($advisories) {
             $this->watcher->sampleAdvisories($correlationId);
         }
+
+        // ADR 0050: one signal for the whole run, built once. The
+        // DeadlineYield is what bounds the Chronicler's internal
+        // chunk loop to this run's own budget — see the class docblock.
+        $exportYield = $exports
+            ? new CompositeYield(
+                new DeadlineYield($this->clock, $startedAt + $budget->seconds),
+                new ShutdownYield($this->shutdown),
+            )
+            : null;
 
         // Runs before the round loop, unconditionally: a round's
         // CAPACITY_WAIT can only be cleared by the Watcher, so
@@ -146,7 +180,15 @@ final class CombinedTick
                 $this->watcher->tick();
             }
 
-            if ($swept === 0 && $outcome === TickOutcome::IDLE) {
+            // Composed last in the round (see class docblock) so
+            // registry maintenance never waits on it. IDLE by
+            // definition when exports are off, so the fold below is a
+            // no-op in that case.
+            $exportOutcome = $exports
+                ? $this->chronicler->tickRound($exportYield)
+                : ChroniclerOutcome::IDLE;
+
+            if ($swept === 0 && $outcome === TickOutcome::IDLE && $exportOutcome === ChroniclerOutcome::IDLE) {
                 $stopReason = TickStopReason::IDLE;
                 break;
             }

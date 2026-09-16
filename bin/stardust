@@ -133,6 +133,9 @@ switch ($command) {
           chronicler       Multi-worker async export daemon (Phase 7):
                            claims pending export jobs, paginates entry_data,
                            writes CSV/JSON artifacts under Config::artifactDir.
+                           A shutdown request yields at the next chunk
+                           boundary rather than blocking until the job
+                           finishes (ADR 0050).
           spread:report [--tenant=N] [--model=N]
                            Report how many extension pages each model's
                            filterable slots occupy, and how many of those
@@ -145,18 +148,23 @@ switch ($command) {
                            reconciler to make progress. Filters on the
                            in-flight field are rejected until it lands;
                            reads keep working. Safe to re-run.
-          tick [--budget=N] [--advisories]
+          tick [--budget=N] [--advisories] [--exports]
                            Bounded, single-process pass of the Watcher,
                            Liberator and Reconciler over one connection —
                            for a cron line or scheduled URL fetch on a
                            host with no persistent-process capability.
-                           Excludes the Chronicler; exports still need a
-                           persistent `bin/stardust chronicler`. Runs
-                           until its time budget is spent, a round finds
-                           nothing to do, or it is asked to shut down.
-                           --advisories forces the cardinality and spread
-                           samplers once; run it from a separate,
-                           once-daily crontab line.
+                           Runs until its time budget is spent, a round
+                           finds nothing to do, or it is asked to shut
+                           down. --advisories forces the cardinality and
+                           spread samplers once; run it from a separate,
+                           once-daily crontab line. --exports opts the
+                           Chronicler into the run (ADR 0050): a large
+                           export yields back to `pending` at a chunk
+                           boundary once this run's own budget deadline
+                           is reached, resuming on a later tick from its
+                           verified byte anchor. Off by default — see
+                           docs/deployment.md before enabling it on a
+                           host with a per-account disk quota.
 
         Subsequent phases are tracked in the project's design notes.
         HELP;
@@ -251,9 +259,18 @@ switch ($command) {
             // SKIP LOCKED on stardust_export_jobs) — no PID guard.
             // The poll interval is the idle interval; per-job work
             // runs synchronously inside one tick.
+            //
+            // ADR 0050: the SAME shutdown signal instance is passed to
+            // both chronicler() (wrapped as its cooperative-yield
+            // signal, so a shutdown request lands mid-export at the
+            // next chunk boundary rather than blocking until the job
+            // finishes) and pollLoop()->run() — shutdownSignal() mints
+            // a fresh composite per call, so building it once here is
+            // load-bearing, not tidiness.
+            $shutdown = $stardust->shutdownSignal('chronicler');
             $stardust->pollLoop()->run(
-                $stardust->chronicler(),
-                $stardust->shutdownSignal('chronicler'),
+                $stardust->chronicler($shutdown),
+                $shutdown,
                 $stardust->config()->chroniclerIdleIntervalSeconds,
             );
             exit(0);
@@ -396,10 +413,19 @@ switch ($command) {
             $flags = $parseFlags(array_slice($argv, 2));
             $budget = isset($flags['budget']) && is_string($flags['budget']) ? (int) $flags['budget'] : null;
             $advisories = isset($flags['advisories']);
+            $exports = isset($flags['exports']);
 
+            // --exports needs the reconnect factory too, for the same
+            // reason the standalone `chronicler` command does (ADR
+            // 0025) — a transient DB disconnect mid-export inside a
+            // tick round should recover in-process rather than failing
+            // the whole run.
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
-            $report = $stardust->tick($budget, $advisories);
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(
+                pdo: $pdo,
+                pdoConnector: $exports ? $buildConnector() : null,
+            ));
+            $report = $stardust->tick($budget, $advisories, $exports);
 
             if ($report->stopReason === \StarDust\Daemon\TickStopReason::LOCK_CONTENDED) {
                 // Routine, not an error: an overlapping cron firing (or a

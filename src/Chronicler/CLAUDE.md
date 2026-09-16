@@ -1,21 +1,23 @@
 # Chronicler daemon
 
-Phase 7 multi-worker async export drain (ADR 0010, ADR 0025, ADR 0027, ADR 0047). Eight `final` collaborators plus the orchestrator, SOLID-decomposed. The synchronous submission half is `src/Export/`.
+Phase 7 multi-worker async export drain (ADR 0010, ADR 0025, ADR 0027, ADR 0047, ADR 0050). Eight `final` collaborators plus the orchestrator, SOLID-decomposed. The synchronous submission half is `src/Export/`.
 
 **Multi-worker by design**: no PID guard; `SELECT … FOR UPDATE SKIP LOCKED` is the only coordination primitive. Horizontal scaling = more `bin/stardust chronicler` processes.
 
-## `Chronicler::tick()`
+## `Chronicler::tickRound(?YieldSignal $yield = null): ChroniclerOutcome`
 
-1. Checks `DiskPressureGate::shouldSkipClaim()`. Below threshold ⇒ emit `low_disk` (cycle-scoped) and fall through to GC. **In-flight jobs are unaffected** — this gates claiming only.
-2. Asks `ExportJobClaimer::claimPendingOrAbandoned()` for one job.
-3. On idle (no claim), runs `GcSweeper::sweep()`.
+`tick()` (the `Tickable` contract the standalone poll loop uses) delegates here and discards the result — the same seam `Reconciler::tickRound()` and `Liberator::sweepBatch()` already are, so `CombinedTick` (ADR 0048/0050) can tell an idle round from one where a job is converging without a second query.
+
+1. Checks `DiskPressureGate::shouldSkipClaim()`. Below threshold ⇒ emit `low_disk` (cycle-scoped) and fall through to GC, return `IDLE`. **In-flight jobs are unaffected** — this gates claiming only.
+2. Asks `ExportJobClaimer::claimPendingOrAbandoned()` for one job. `null` ⇒ run `GcSweeper::sweep()`, return `IDLE`.
+3. Otherwise emits `job_claimed` and calls `ExportJobProcessor::process($claim, $correlationId, $yield ?? $this->yieldSignal)` — the per-call `$yield` overrides the instance's own constructor default rather than replacing it. Maps `JobOutcome::Yielded` to `ChroniclerOutcome::YIELDED`; everything else (completed, any failure flavour, lease lost) to `WORKED`.
 
 ## `ExportJobClaimer`
 
 **Pending path first:**
 
 ```sql
-SELECT … FROM stardust_export_jobs j WHERE status='pending'
+SELECT … artifact_path, artifact_bytes … FROM stardust_export_jobs j WHERE status='pending'
 ORDER BY (SELECT MIN(j2.created_at) FROM stardust_export_jobs j2
           WHERE j2.status='pending' AND j2.tenant_id=j.tenant_id) ASC,
          j.created_at ASC
@@ -24,18 +26,20 @@ LIMIT 1 FOR UPDATE SKIP LOCKED
 
 The subquery materialises per-tenant round-robin (chronicler_daemon.md §4 AC#3) at claim time, without a separate column. Then `UPDATE … SET status='processing', worker_identity=?, claimed_at=?, heartbeat_at=?` in the same transaction.
 
+**Per ADR 0050, this path now selects and forwards `artifact_path`/`artifact_bytes` too — the same columns the abandoned path already did.** A `pending` row carrying a usable anchor (non-null path, positive byte count — the identical predicate `ArtifactStreamFactory::from()` applies before attempting adoption) is a previously-*yielded* job, not a fresh submission; the claim kind is `ClaimKind::Resumed` rather than `Pending` in that case. **This was the original defect in the yield's first sketch**: without it, a yielded job re-claimed through this path got no anchor, a fresh path from `ArtifactStreamFactory`, and restarted from byte zero on every tick — orphaning one partial per tick and never converging on a job larger than one chunk.
+
 **Abandoned path on idle:** `WHERE status='processing' AND heartbeat_at < (UTC_TIMESTAMP() - INTERVAL leaseTimeout SECOND) FOR UPDATE SKIP LOCKED`. **Per ADR 0047 the claimer does NOT unlink the prior `artifact_path`** — it hands `artifact_path`/`artifact_bytes` forward on the `ClaimedJob` so `ExportJobProcessor`'s stream can attempt a verified re-open (see below). `UPDATE … SET worker_identity=?, heartbeat_at=?` — **claimed_at preserved**, so operators still see the original claim time.
 
 Worker identity = `host:pid:UuidV4` via `WorkerIdentity::mint()`.
 
-## `ExportJobProcessor::process(ClaimedJob, correlationId)`
+## `ExportJobProcessor::process(ClaimedJob, correlationId, ?YieldSignal $yield = null)`
 
 Resolves the deterministic CSV header via `HeaderResolver::resolve($tenantId, $modelId)` (alphabetically-sorted union of `stardust_fields.name` for the model), opens an `ArtifactStream` via `ArtifactStreamFactory::from()` (single dispatch on `$job->format`), reads `$stream->resumedFromByte()` to decide the starting cursor (see below), emits `artifact_resumed`, then loops:
 
 1. `EntryDataPager::fetchChunk()` runs `SELECT id, fields FROM entry_data WHERE tenant_id=? AND model_id=? AND deleted_at IS NULL AND id > :cursor ORDER BY id ASC LIMIT pageSize+1` — the `+1` is the next-page signal per ADR 0005.
 2. Per row, `ArtifactStream::appendRow()` encodes and writes. CSV: RFC 4180 quoting, `\r\n` line ending, header derived from `stardust_fields`. JSON: single-document array streamed with a leading `[`, a `,`-prefix for subsequent rows, and a trailing `]` on close.
 3. Checks `bytesWritten() > artifactSizeCapBytes`.
-4. `$stream->flush()`, THEN commits the chunk atomically: `UPDATE stardust_export_jobs SET last_cursor=?, heartbeat_at=?, skip_count=?, artifact_path=?, artifact_bytes=? [, status='completed', completed_at=? if isFinal] WHERE id=? AND worker_identity=?`. **`artifact_path`/`artifact_bytes` are written on EVERY commit now, not only the final one** — that's what makes the row a usable resume anchor for the next abandoned re-claim, per ADR 0047. The flush-before-write ordering matters: the DB must never promise bytes the OS hasn't taken yet, or a future resume's verification could work against phantom bytes.
+4. `$stream->flush()`, THEN — on a non-final chunk, if `$yield?->yieldCause()` is non-null — captures the anchor and closes the stream (see below), THEN commits the chunk atomically: `UPDATE stardust_export_jobs SET last_cursor=?, heartbeat_at=?, skip_count=?, artifact_path=?, artifact_bytes=? [, status='completed', completed_at=? if isFinal | , status='pending', worker_identity=NULL if yielding] WHERE id=? AND worker_identity=?`. **`artifact_path`/`artifact_bytes` are written on EVERY commit now, not only the final one** — that's what makes the row a usable resume anchor for the next abandoned re-claim, per ADR 0047, and now for the next yield-resume too. The flush-before-write ordering matters: the DB must never promise bytes the OS hasn't taken yet, or a future resume's verification could work against phantom bytes.
 
 ### The resume anchor (ADR 0047)
 
@@ -48,6 +52,31 @@ Resolves the deterministic CSV header via `HeaderResolver::resolve($tenantId, $m
 ### The lease-loss detector
 
 **The `WHERE worker_identity = self_identity` predicate IS the detector.** `PDOStatement::rowCount() === 0` ⇒ a re-claimer overwrote our row ⇒ emit `lease_lost`, `close()` — releasing the lock and handle only, **NOT `delete()`** — return `JobOutcome::LeaseLost` **without** marking the row failed. The re-claimer owns terminal state, and per ADR 0047 it may already be resuming from these exact bytes, so deleting here would be the single most dangerous interaction the resume design has to avoid.
+
+**A yield commit uses this SAME predicate, unmodified** — see below. A yield racing a genuine concurrent re-claim is not a new race to reason about; it resolves exactly like any other chunk commit racing one, because it IS the same UPDATE shape with two extra `SET` clauses.
+
+### Cooperative yield (ADR 0050)
+
+After a **non-final** chunk's `flush()`, `process()` checks `$yield?->yieldCause()`. A non-null cause (`'budget'` | `'shutdown'`) means: capture the anchor, close the stream, commit with `status='pending', worker_identity=NULL` folded into the SAME UPDATE as the ordinary chunk commit, return `JobOutcome::Yielded`. Never checked on the final chunk (the last chunk always completes the job) and never before the first commit (a yield always carries at least one chunk of progress) — together these bound convergence to at most N ticks for an N-chunk job.
+
+**Capture-before-close is load-bearing, not stylistic.** `path()` and `bytesWritten()` are read immediately after `flush()`, BEFORE any `close()` call:
+
+```php
+$artifactPath  = $stream->path();
+$artifactBytes = $stream->bytesWritten();   // captured before close()
+
+if ($yieldCause !== null) {
+    try { $stream->close(); } catch (ChroniclerArtifactDiskFullException) { /* anchor already captured */ }
+}
+```
+
+`JsonArtifactStream::close()` writes the trailing `]` through the same `writeRaw()` that increments `bytesWritten()`. Capturing after `close()` would anchor the terminator byte into the committed `artifact_bytes`; the next resume's `ftruncate()` would keep that `]` and append the next row's bytes directly after it — invalid JSON. `CsvArtifactStream::close()` has no equivalent write, which is exactly why this bug would survive a CSV-only test — `tests/Smoke/Chronicler/ChroniclerYieldTest` covers both formats for this reason, asserting the yielded-and-resumed artifact is **byte-identical** to a control run that never yielded, not merely that the job eventually reaches `completed`.
+
+**Close-before-commit is the yield's one asymmetry against an abandoned claim.** Releasing the file's exclusive lock before the row becomes claimable means a resumer's `open()` verification never observes `restart_cause: 'locked'` — the one ADR 0047 rejection cause reserved for "another process may still be actively writing this." An abandoned claim's prior worker may still be alive and holding the lock (that's why `locked` exists); a yield's prior worker has, by construction, already released it.
+
+A `close()` that itself trips `ChroniclerArtifactDiskFullException` (the trailing `]` doesn't fit) is caught and ignored on the yield path: the anchor already captured describes bytes the filesystem genuinely took, so the yield still commits; the next resume's `ftruncate()` trims past whatever partial terminator landed, and the next `appendRow()` on the resumed stream trips disk-full properly if the condition persists.
+
+**`ChunkOutcome::$yielded`** distinguishes a successful yield commit from a lease-lost one — `commitChunk(..., yield: true)` sets it only when `$affected > 0`, so `process()`'s existing `if ($outcome->leaseLost)` check (unmodified, checked first) always wins over a yield that lost the race.
 
 ### Failure semantics (ADR 0025)
 
@@ -79,7 +108,9 @@ So a re-claimer continues charging from the previous worker's count. Otherwise a
 
 **This deliberately covers `chunk_written` too**, which is the opposite of the Reconciler's rule and not an inconsistency. There, one tick claims rows from many unrelated operations, so a chunk is its own operation. Here the Chronicler processes one job across all its chunks in a single continuous `process()` call, so the job *is* the operation and every event of it shares the id.
 
-**An abandoned re-claim reuses the same id**, for the same reason: it is the same job. `worker_identity` is what separates the two attempts, and it is already on every one of these events.
+**An abandoned re-claim — or a resumed (previously yielded, ADR 0050) claim — reuses the same id**, for the same reason: it is the same job. `worker_identity` is what separates the attempts, and it is already on every one of these events.
+
+**`job_yielded`'s `rows_streamed_total` is scoped to this worker's attempt, NOT cumulative across the job's whole lifetime** — the same limitation `job_complete`'s own field already has across an abandoned re-claim. A job yielded three times and re-claimed each time emits four separate row counts (three `job_yielded` plus one final `job_complete`); summing all four is how an operator gets the true total.
 
 ## `GcSweeper`
 

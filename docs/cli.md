@@ -70,18 +70,27 @@ vendor/bin/stardust compact:model --tenant=1 --model=7
 # host with no persistent-process capability (see
 # docs/deployment.md#cron-only--shared-hosting). Runs until its time
 # budget is spent, a round finds nothing to do, or it is asked to shut
-# down. Excludes the Chronicler; exports still need a persistent
-# `chronicler` process. --advisories forces the cardinality and spread
-# advisories once — schedule it from a separate, once-daily crontab
-# line, not on every invocation. Never run this alongside a persistent
-# `watcher` or `liberator` process: an overlapping run just skips with
-# exit code 0 rather than doing anything.
+# down. --advisories forces the cardinality and spread advisories once
+# — schedule it from a separate, once-daily crontab line, not on every
+# invocation. --exports (off by default) opts the Chronicler into the
+# run: a large export cooperatively yields back to `pending` with its
+# resume anchor intact once this run's own budget deadline is reached,
+# rather than running to completion regardless of size. Read the
+# disk-pressure caveat in docs/deployment.md before enabling it on a
+# host with a per-account disk quota. Never run `tick` alongside a
+# persistent `watcher` process: an overlapping run just skips with
+# exit code 0 rather than doing anything. (`liberator` and `chronicler`
+# are the exception — both are multi-worker, so a `tick` run can
+# coexist with either without being skipped.)
 vendor/bin/stardust tick --budget=50
 vendor/bin/stardust tick --budget=50 --advisories
+vendor/bin/stardust tick --budget=50 --exports
 ```
 
 Daemons honour both `SIGTERM`/`SIGINT` (when `ext-pcntl` is loaded) and
 `touch <pidFileDir>/<daemon-name>.shutdown` as a graceful-shutdown
-signal — useful on hosts without `pcntl`. Exit codes: `0` clean
-shutdown (including signal-induced), `1` fatal, `2` singleton
-violation or user error.
+signal — useful on hosts without `pcntl`. A `SIGTERM` to `chronicler`
+mid-export yields at the next chunk boundary rather than blocking
+until the job finishes — see [Async exports](exports.md). Exit codes:
+`0` clean shutdown (including signal-induced), `1` fatal, `2`
+singleton violation or user error.

@@ -13,16 +13,22 @@ use StarDust\Daemon\PidFileGuard;
 use StarDust\Daemon\ShutdownSignal;
 use StarDust\Daemon\TickBudget;
 use StarDust\Daemon\TickStopReason;
+use StarDust\Export\ExportJobRequest;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Reconciler\Reconciler;
-use StarDust\Tests\Smoke\Phase6aTestCase;
+use StarDust\Tests\Smoke\Phase7TestCase;
 
 /**
- * ADR 0048 combined tick: Watcher + Liberator + Reconciler bounded into
- * one budget-limited run over one connection, for the shared-hosting
+ * ADR 0048 combined tick: Watcher + Liberator + Reconciler (and, opt-in
+ * via `$exports`, the Chronicler per ADR 0050) bounded into one
+ * budget-limited run over one connection, for the shared-hosting
  * deployment mode.
+ *
+ * Extends `Phase7TestCase` (not just `Phase6aTestCase`) so the exports
+ * tests below can reuse the Chronicler fixture helpers alongside the
+ * Watcher/Liberator/Reconciler ones every other test here already used.
  */
-final class CombinedTickTest extends Phase6aTestCase
+final class CombinedTickTest extends Phase7TestCase
 {
     private string $pidDir;
 
@@ -41,6 +47,7 @@ final class CombinedTickTest extends Phase6aTestCase
             }
             @rmdir($this->pidDir);
         }
+        parent::tearDown();
     }
 
     public function testIdleRunStopsAfterOneRound(): void
@@ -162,6 +169,7 @@ final class CombinedTickTest extends Phase6aTestCase
         ?Reconciler $reconciler = null,
         ?\Psr\Log\LoggerInterface $logger = null,
         ?ClockInterface $clock = null,
+        ?string $artifactDir = null,
     ): CombinedTick {
         $log = $logger ?? new NullLogger();
 
@@ -169,11 +177,115 @@ final class CombinedTickTest extends Phase6aTestCase
             watcher: $this->makeWatcher($log),
             liberator: $this->makeLiberator($log),
             reconciler: $reconciler ?? $this->makeReconciler($log),
+            // Most tests here never pass `exports: true` to run(), so
+            // this Chronicler's tickRound() is never actually invoked —
+            // it exists only to satisfy the constructor. The exports
+            // tests below pass their own `$artifactDir`.
+            chronicler: $this->makeChronicler($log, artifactDir: $artifactDir, pageSize: 4),
             logger: $log,
             clock: $clock ?? new SystemClock(),
             shutdown: $this->neverShuttingDown(),
             pidFileDir: $this->pidDir,
         );
+    }
+
+    /**
+     * A large (multi-chunk) export composed into a real, budget-bounded
+     * `tick` run must yield at a chunk boundary once the run's own
+     * budget is spent, reporting `BUDGET_SPENT` rather than `IDLE` —
+     * proving `CombinedTick`'s own budget check (between rounds only)
+     * is not what bounds it, since a single round's Chronicler call
+     * would otherwise run the whole job to completion regardless of
+     * `$budget`.
+     */
+    public function testExportYieldsWhenTheRunsOwnBudgetIsSpent(): void
+    {
+        $modelId = $this->createModel(1, 'tick_export_budget');
+        $this->createFieldNamed($modelId, 'idx', 'int');
+        $this->seedEntryDataBatch(1, $modelId, 20); // 5 chunks at pageSize 4
+        $artifactDir = $this->makeTempArtifactDir();
+
+        $jobId = $this->makeExportSubmitter()
+            ->submit(new ExportJobRequest(1, $modelId, 'csv'))
+            ->jobId;
+
+        // Deadline in the past from the very first check: the run's
+        // budget is already spent before the Chronicler round even
+        // opens its first chunk, so exactly one committed chunk lands
+        // before the yield.
+        $clock = new class implements ClockInterface {
+            public function now(): DateTimeImmutable
+            {
+                return new DateTimeImmutable('@1000000000');
+            }
+        };
+
+        $tick = $this->makeCombinedTick(clock: $clock, artifactDir: $artifactDir);
+        $report = $tick->run(TickBudget::resolve(0, 0), exports: true);
+
+        self::assertSame(TickStopReason::BUDGET_SPENT, $report->stopReason);
+
+        $row = $this->fetchExportJob($jobId);
+        self::assertSame('pending', $row['status'], 'The export must have yielded, not completed, in one round.');
+        self::assertNotNull($row['artifact_path']);
+    }
+
+    /**
+     * The same export, driven across several INDEPENDENT `run()`
+     * calls — each with its own zero-second budget, so each call's
+     * Chronicler round can commit at most one chunk before yielding —
+     * must converge to `completed` over more than one invocation,
+     * exactly as two separate cron firings would drive it. A weaker
+     * "eventually completed" assertion with a generous budget would
+     * pass trivially in a single call and prove nothing about
+     * cross-invocation resumption.
+     */
+    public function testExportConvergesAcrossSeparateTickInvocations(): void
+    {
+        $modelId = $this->createModel(1, 'tick_export_converge');
+        $this->createFieldNamed($modelId, 'idx', 'int');
+        $this->seedEntryDataBatch(1, $modelId, 20); // 5 chunks at pageSize 4
+        $artifactDir = $this->makeTempArtifactDir();
+
+        $jobId = $this->makeExportSubmitter()
+            ->submit(new ExportJobRequest(1, $modelId, 'csv'))
+            ->jobId;
+
+        $status = null;
+        $attempts = 0;
+        for (; $attempts < 10; $attempts++) {
+            // A fresh CombinedTick and a fresh zero-second TickBudget
+            // every call — an independent invocation in every sense
+            // that matters, the same as two separate cron firings.
+            $report = $this->makeCombinedTick(artifactDir: $artifactDir)
+                ->run(TickBudget::resolve(0, 0), exports: true);
+            $status = $this->fetchExportJob($jobId)['status'];
+            if ($status === 'completed') {
+                break;
+            }
+            self::assertSame('pending', $status, "Unexpected status on attempt {$attempts}.");
+        }
+
+        self::assertSame('completed', $status);
+        self::assertGreaterThan(1, $attempts, 'A zero-second budget per call must force more than one invocation.');
+        $rows = $this->readArtifactCsv((string) $this->fetchExportJob($jobId)['artifact_path']);
+        self::assertCount(20, $rows);
+        self::assertSame(range(0, 19), array_map(static fn (array $r): int => (int) $r['idx'], $rows));
+    }
+
+    public function testExportsFalseNeverInvokesTheChronicler(): void
+    {
+        $modelId = $this->createModel(1, 'tick_export_off');
+        $this->createFieldNamed($modelId, 'idx', 'int');
+        $this->seedEntryDataBatch(1, $modelId, 3);
+        $jobId = $this->makeExportSubmitter()
+            ->submit(new ExportJobRequest(1, $modelId, 'csv'))
+            ->jobId;
+
+        $report = $this->makeCombinedTick()->run(TickBudget::resolve(50, 5)); // exports defaults false
+
+        self::assertSame(TickStopReason::IDLE, $report->stopReason);
+        self::assertSame('pending', $this->fetchExportJob($jobId)['status'], 'Untouched — exports were never composed into this run.');
     }
 
     private function neverShuttingDown(): ShutdownSignal

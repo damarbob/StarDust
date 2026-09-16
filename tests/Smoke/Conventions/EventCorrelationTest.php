@@ -48,8 +48,8 @@ final class EventCorrelationTest extends TestCase
      *
      * Distribution when this was set, as a sanity check for whoever
      * next has to reconcile a drift: reconciler 29, registry 15,
-     * api 12, chronicler 11, watcher 6, bulk_api 6, liberator 5,
-     * export_api 1.
+     * api 12, chronicler 12 (ADR 0050 added `job_yielded`), watcher 6,
+     * bulk_api 6, liberator 5, export_api 1.
      *
      * **This test cannot tell a threaded id from a freshly minted one**,
      * because both put the literal key at the emit site. That gap is

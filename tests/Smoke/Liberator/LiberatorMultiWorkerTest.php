@@ -5,7 +5,16 @@ declare(strict_types=1);
 namespace StarDust\Tests\Smoke\Liberator;
 
 use PDO;
+use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use StarDust\Chronicler\ArtifactStreamFactory;
+use StarDust\Chronicler\Chronicler;
+use StarDust\Chronicler\DiskPressureGate;
+use StarDust\Chronicler\EntryDataPager;
+use StarDust\Chronicler\ExportJobClaimer;
+use StarDust\Chronicler\ExportJobProcessor;
+use StarDust\Chronicler\GcSweeper;
+use StarDust\Chronicler\HeaderResolver;
 use StarDust\Clock\SystemClock;
 use StarDust\Daemon\CombinedTick;
 use StarDust\Daemon\ShutdownSignal;
@@ -229,6 +238,10 @@ final class LiberatorMultiWorkerTest extends Phase6aTestCase
                 watcher: $this->makeWatcher(),
                 liberator: $this->makeLiberator(),
                 reconciler: $this->makeReconciler(),
+                // Not exercised — this test never passes `exports: true`
+                // to run(), so Chronicler::tickRound() is never invoked.
+                // Exists only to satisfy the constructor.
+                chronicler: $this->makeUnusedChronicler(new NullLogger()),
                 logger: new NullLogger(),
                 clock: new SystemClock(),
                 shutdown: new class implements ShutdownSignal {
@@ -255,6 +268,37 @@ final class LiberatorMultiWorkerTest extends Phase6aTestCase
         } finally {
             $this->rawReleaseLock($sibling, $lockName);
         }
+    }
+
+    private function makeUnusedChronicler(LoggerInterface $logger): Chronicler
+    {
+        $artifactDir = $this->pidDir . DIRECTORY_SEPARATOR . 'unused-exports';
+        return new Chronicler(
+            logger: $logger,
+            claimer: new ExportJobClaimer($this->pdo, new SystemClock(), leaseTimeoutSeconds: 30),
+            processor: new ExportJobProcessor(
+                pdo: $this->pdo,
+                clock: new SystemClock(),
+                logger: $logger,
+                pager: new EntryDataPager($this->pdo),
+                headerResolver: new HeaderResolver($this->pdo),
+                streamFactory: new ArtifactStreamFactory($artifactDir),
+                pageSize: 500,
+                interChunkDelayMicros: 0,
+                deadlockRetryBudget: 3,
+                skipCountCap: 1_000,
+                artifactSizeCapBytes: 5 * 1024 * 1024 * 1024,
+                dbDisconnectBackoffSeconds: [0, 0, 0],
+                sleepFn: static fn (int $_micros) => null,
+            ),
+            diskGate: new DiskPressureGate(artifactDir: $artifactDir, lowDiskThresholdPct: 0.0),
+            gcSweeper: new GcSweeper(
+                pdo: $this->pdo,
+                logger: $logger,
+                artifactTtlSeconds: 86_400,
+                orphanedPartialTtlSeconds: 3_600,
+            ),
+        );
     }
 
     private static function pageLockName(int $pageId): string

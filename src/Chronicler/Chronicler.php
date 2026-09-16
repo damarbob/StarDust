@@ -6,6 +6,7 @@ namespace StarDust\Chronicler;
 
 use Psr\Log\LoggerInterface;
 use StarDust\Daemon\Tickable;
+use StarDust\Daemon\YieldSignal;
 use StarDust\Support\UuidV4;
 
 /**
@@ -38,6 +39,19 @@ use StarDust\Support\UuidV4;
  * {@see \StarDust\Daemon\PollLoop} lets them terminate the process,
  * matching the Watcher/Liberator "fail loudly on unexpected error"
  * policy.
+ *
+ * `$yieldSignal` (ADR 0050) is this instance's default cooperative-
+ * yield probe, checked by {@see ExportJobProcessor::process()} once
+ * per committed chunk. `null` (the default) means "never yield" —
+ * matches every Phase 7 caller's behaviour unchanged. The persistent
+ * `bin/stardust chronicler` daemon is built with
+ * {@see \StarDust\Daemon\ShutdownYield} wrapping its own
+ * {@see \StarDust\Daemon\ShutdownSignal} (see `StarDust::chronicler()`),
+ * so a `SIGTERM` mid-export yields at the next chunk boundary instead
+ * of blocking until the job finishes. {@see self::tickRound()} accepts
+ * a PER-CALL override instead of a second constructor field, because
+ * {@see \StarDust\Daemon\CombinedTick}'s budget deadline is scoped to
+ * one run, not to this daemon's lifetime.
  */
 final class Chronicler implements Tickable
 {
@@ -47,10 +61,32 @@ final class Chronicler implements Tickable
         private readonly ExportJobProcessor $processor,
         private readonly DiskPressureGate $diskGate,
         private readonly GcSweeper $gcSweeper,
+        private readonly ?YieldSignal $yieldSignal = null,
     ) {
     }
 
     public function tick(): void
+    {
+        $this->tickRound();
+    }
+
+    /**
+     * The body of `tick()`, returning {@see ChroniclerOutcome} rather
+     * than `void`.
+     *
+     * `tick()` (the {@see Tickable} contract used by the standalone
+     * `bin/stardust chronicler` poll loop) delegates here and discards
+     * the result; {@see \StarDust\Daemon\CombinedTick} calls this
+     * directly, passing its own per-run {@see YieldSignal}, so it can
+     * tell an idle round from one where a job is converging without a
+     * second query — mirroring {@see \StarDust\Liberator\Liberator::sweepBatch()}
+     * and {@see \StarDust\Reconciler\Reconciler::tickRound()}, the two
+     * existing precedents for this shape.
+     *
+     * `$yield`, when given, overrides `$this->yieldSignal` for this
+     * call only — it does not replace it.
+     */
+    public function tickRound(?YieldSignal $yield = null): ChroniclerOutcome
     {
         if ($this->diskGate->shouldSkipClaim()) {
             $this->logger->warning('chronicler low disk', [
@@ -65,14 +101,14 @@ final class Chronicler implements Tickable
             // Disk-pressure does NOT short-circuit GC — reclaiming
             // artifact files is the right thing to do under pressure.
             $this->gcSweeper->sweep(UuidV4::generate());
-            return;
+            return ChroniclerOutcome::IDLE;
         }
 
         $claim = $this->claimer->claimPendingOrAbandoned();
         if ($claim === null) {
             // Idle cycle: run GC, then let the outer PollLoop sleep.
             $this->gcSweeper->sweep(UuidV4::generate());
-            return;
+            return ChroniclerOutcome::IDLE;
         }
 
         // The submission's id when the job carries one, so
@@ -85,9 +121,10 @@ final class Chronicler implements Tickable
         // operations — the Chronicler processes one job across all its
         // chunks in a single continuous `process()` call, so the job IS
         // the operation and every event of it shares the id. An
-        // abandoned re-claim reuses the same id for the same reason:
-        // it is the same job, and `worker_identity` is what separates
-        // the two attempts.
+        // abandoned re-claim (or a resumed, previously-yielded claim,
+        // ADR 0050) reuses the same id for the same reason: it is the
+        // same job, and `worker_identity` is what separates the
+        // attempts.
         $correlationId = $claim->correlationId ?? UuidV4::generate();
         $this->logger->info('chronicler job claimed', [
             'event'           => 'job_claimed',
@@ -99,6 +136,8 @@ final class Chronicler implements Tickable
             'claim_kind'      => $claim->claimKind->value,
         ]);
 
-        $this->processor->process($claim, $correlationId);
+        $outcome = $this->processor->process($claim, $correlationId, $yield ?? $this->yieldSignal);
+
+        return $outcome === JobOutcome::Yielded ? ChroniclerOutcome::YIELDED : ChroniclerOutcome::WORKED;
     }
 }

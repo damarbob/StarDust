@@ -9,6 +9,7 @@ use PDO;
 use PDOException;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Daemon\YieldSignal;
 use StarDust\Exception\ChroniclerArtifactDiskFullException;
 use StarDust\Exception\ChroniclerRowEncodingException;
 use Throwable;
@@ -44,6 +45,24 @@ use Throwable;
  *   - Every terminal-failure path deletes the artifact AND NULLs
  *     `artifact_path` / `artifact_bytes` in the same transaction — the
  *     anchor dies with the file (ADR 0047).
+ *   - Cooperative yield (ADR 0050): after a committed **non-final**
+ *     chunk, an optional {@see YieldSignal} is checked. A non-null
+ *     cause folds into the SAME commit transaction — `status =
+ *     'pending', worker_identity = NULL`, cursor/skip/anchor columns
+ *     written exactly as any other chunk commit — and `process()`
+ *     returns {@see JobOutcome::Yielded} rather than looping. Never
+ *     checked before the first commit, so a yield always carries at
+ *     least one chunk of durable progress; never checked on the final
+ *     chunk, so the last chunk always completes the job. The anchor is
+ *     captured (`$stream->path()` / `bytesWritten()`) BEFORE `close()`
+ *     — {@see JsonArtifactStream::close()} writes the trailing `]`
+ *     through the same `writeRaw()` that increments `bytesWritten()`,
+ *     so a post-close capture would anchor the terminator byte and the
+ *     next resume's `ftruncate` would keep it, corrupting the
+ *     artifact. `close()` also runs before the yield commits, so the
+ *     file's `flock` is released before the row becomes claimable —
+ *     the resumer never sees `restart_cause: locked`, the inverse of
+ *     an abandoned claim where a hung process may still hold it.
  *
  * The `skip_count` is persisted in every chunk-commit transaction so a
  * re-claimer continues charging from the previous worker's count
@@ -92,7 +111,7 @@ final class ExportJobProcessor
         $this->sleepFn = $sleepFn ?? static fn (int $micros) => usleep($micros);
     }
 
-    public function process(ClaimedJob $job, string $correlationId): JobOutcome
+    public function process(ClaimedJob $job, string $correlationId, ?YieldSignal $yield = null): JobOutcome
     {
         $startTime = microtime(true);
         $header  = $this->headerResolver->resolve($job->tenantId, $job->modelId);
@@ -253,6 +272,39 @@ final class ExportJobProcessor
             // against bytes that only ever existed in a PHP stream
             // buffer (ADR 0047).
             $stream->flush();
+
+            // ADR 0050: never offer a yield on the final chunk (the
+            // last chunk always completes the job), and never before
+            // this point (a yield always carries at least one chunk of
+            // committed progress).
+            $yieldCause = (!$isFinal && $yield !== null) ? $yield->yieldCause() : null;
+
+            // Capture the anchor BEFORE any close() below.
+            // JsonArtifactStream::close() writes the trailing ']'
+            // through writeRaw(), which increments bytesWritten() — a
+            // post-close capture would anchor the terminator byte, and
+            // the next resume's ftruncate would keep it and append the
+            // next row after it, corrupting the artifact.
+            $artifactPath  = $stream->path();
+            $artifactBytes = $stream->bytesWritten();
+
+            if ($yieldCause !== null) {
+                // Release the lock and handle before the row becomes
+                // claimable, so a resumer never sees restart_cause:
+                // 'locked' — the inverse of an abandoned claim, where a
+                // hung process may still hold it.
+                try {
+                    $stream->close();
+                } catch (ChroniclerArtifactDiskFullException) {
+                    // The trailing terminator didn't fit. The anchor
+                    // already captured above describes bytes the
+                    // filesystem genuinely took, so the yield still
+                    // commits cleanly; the next resume's ftruncate
+                    // trims past them and the following appendRow()
+                    // will trip disk-full properly.
+                }
+            }
+
             $outcome = $this->commitChunk(
                 jobId: $job->id,
                 workerIdentity: $job->workerIdentity,
@@ -260,8 +312,9 @@ final class ExportJobProcessor
                 rowsStreamed: $rowsStreamed,
                 skipCount: $skipCount,
                 isFinal: $isFinal,
-                artifactPath: $stream->path(),
-                artifactBytes: $stream->bytesWritten(),
+                artifactPath: $artifactPath,
+                artifactBytes: $artifactBytes,
+                yield: $yieldCause !== null,
             );
 
             if ($outcome->leaseLost) {
@@ -278,6 +331,7 @@ final class ExportJobProcessor
                 // its artifact — the re-claimer now owns the row and
                 // may already be resuming from these exact bytes.
                 // close() releases the file lock and handle only.
+                // (A no-op if the yield branch above already closed it.)
                 $stream->close();
                 return JobOutcome::LeaseLost;
             }
@@ -292,9 +346,28 @@ final class ExportJobProcessor
                 'worker_identity'  => $job->workerIdentity,
                 'last_cursor'      => $outcome->newCursor,
                 'rows_streamed'    => $outcome->rowsStreamed,
-                'bytes_written'    => $stream->bytesWritten() - $bytesBaseline,
+                'bytes_written'    => $artifactBytes - $bytesBaseline,
                 'chunk_elapsed_ms' => $chunkElapsedMs,
             ]);
+
+            if ($outcome->yielded) {
+                $elapsedMs = (int) round((microtime(true) - $startTime) * 1000);
+                $this->logger->info('chronicler job yielded', [
+                    'event'               => 'job_yielded',
+                    'source'              => 'chronicler',
+                    'correlation_id'      => $correlationId,
+                    'tenant_id'           => $job->tenantId,
+                    'job_id'              => $job->id,
+                    'worker_identity'     => $job->workerIdentity,
+                    'last_cursor'         => $outcome->newCursor,
+                    'artifact_bytes'      => $artifactBytes,
+                    'rows_streamed_total' => $rowsTotal,
+                    'skip_count'          => $skipCount,
+                    'cause'               => $yieldCause,
+                    'elapsed_ms'          => $elapsedMs,
+                ]);
+                return JobOutcome::Yielded;
+            }
 
             if ($outcome->isFinal) {
                 $stream->close();
@@ -322,15 +395,25 @@ final class ExportJobProcessor
 
     /**
      * Commit one chunk's progress. The returned {@see ChunkOutcome}
-     * carries the new cursor, rows streamed, finality flag, AND the
-     * lease-loss verdict (`UPDATE … WHERE worker_identity = self`
-     * affecting zero rows ⇒ another worker overwrote our row).
+     * carries the new cursor, rows streamed, finality flag, the
+     * yield flag, AND the lease-loss verdict (`UPDATE … WHERE
+     * worker_identity = self` affecting zero rows ⇒ another worker
+     * overwrote our row).
      *
      * `artifactPath` / `artifactBytes` are written on EVERY commit, not
      * only the final one — per ADR 0047 this is what makes an in-flight
      * job's row a usable resume anchor for an abandoned re-claim, and
      * incidentally makes a mid-flight crash's partial discoverable by
      * {@see GcSweeper}'s orphan bucket for the first time.
+     *
+     * `$yield` (ADR 0050) folds the yield into the SAME transaction as
+     * the ordinary chunk commit rather than a second write: `status`
+     * flips back to `pending` and `worker_identity` clears, while
+     * `claimed_at` / `correlation_id` are untouched (no `UPDATE`
+     * clause touches them) so an operator can still see when the job
+     * was first claimed and a re-claim continues under the same
+     * correlation id. Mutually exclusive with `$isFinal` — the caller
+     * never sets both.
      */
     private function commitChunk(
         int $jobId,
@@ -341,6 +424,7 @@ final class ExportJobProcessor
         bool $isFinal,
         string $artifactPath,
         int $artifactBytes,
+        bool $yield = false,
     ): ChunkOutcome {
         $now = $this->utcNow();
         $this->pdo->beginTransaction();
@@ -354,6 +438,17 @@ final class ExportJobProcessor
                 );
                 $stmt->execute([
                     $newCursor, $now, $skipCount, $artifactPath, $artifactBytes, $now, $jobId, $workerIdentity,
+                ]);
+            } elseif ($yield) {
+                $stmt = $this->pdo->prepare(
+                    'UPDATE stardust_export_jobs'
+                    . " SET last_cursor = ?, heartbeat_at = ?, skip_count = ?,"
+                    . "     artifact_path = ?, artifact_bytes = ?,"
+                    . "     status = 'pending', worker_identity = NULL"
+                    . ' WHERE id = ? AND worker_identity = ?'
+                );
+                $stmt->execute([
+                    $newCursor, $now, $skipCount, $artifactPath, $artifactBytes, $jobId, $workerIdentity,
                 ]);
             } else {
                 $stmt = $this->pdo->prepare(
@@ -373,6 +468,7 @@ final class ExportJobProcessor
                 rowsStreamed: $rowsStreamed,
                 isFinal: $isFinal,
                 leaseLost: $affected === 0,
+                yielded: $yield && $affected > 0,
             );
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

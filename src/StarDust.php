@@ -25,6 +25,7 @@ use StarDust\Exception\CompactionCapacityException;
 use StarDust\Daemon\FlagFileShutdownSignal;
 use StarDust\Daemon\PollLoop;
 use StarDust\Daemon\ShutdownSignal;
+use StarDust\Daemon\ShutdownYield;
 use StarDust\Daemon\SignalShutdownSignal;
 use StarDust\Daemon\TickBudget;
 use StarDust\Daemon\TickReport;
@@ -828,8 +829,21 @@ final class StarDust
      * processes. Failure semantics per ADR 0025: deadlock retry
      * budget (3), skip cap (1 000), artifact size cap (5 GB),
      * fixed DB-disconnect backoff `[1, 4, 16]`.
+     *
+     * `$shutdown` (ADR 0050), when given, is wrapped in
+     * {@see ShutdownYield} and wired as this Chronicler's default
+     * cooperative-yield signal, so a mid-export shutdown request lands
+     * the job back on `pending` with its resume anchor intact at the
+     * next chunk boundary instead of blocking until the job finishes.
+     * `bin/stardust chronicler` passes the SAME {@see ShutdownSignal}
+     * instance here and to `pollLoop()->run()` — sharing matters
+     * because `shutdownSignal()` mints a fresh composite per call.
+     * `null` (the default) preserves Phase 7 behaviour unchanged; this
+     * factory's other caller, `combinedTick()`, deliberately omits it —
+     * {@see \StarDust\Daemon\CombinedTick} supplies its own per-run
+     * signal through {@see Chronicler::tickRound()}'s override instead.
      */
-    public function chronicler(): Chronicler
+    public function chronicler(?ShutdownSignal $shutdown = null): Chronicler
     {
         $streamFactory = new ArtifactStreamFactory($this->config->artifactDir);
 
@@ -867,6 +881,7 @@ final class StarDust
                 artifactTtlSeconds: $this->config->chroniclerArtifactTtlSeconds,
                 orphanedPartialTtlSeconds: $this->config->chroniclerOrphanedPartialTtlSeconds,
             ),
+            yieldSignal: $shutdown !== null ? new ShutdownYield($shutdown) : null,
         );
     }
 
@@ -919,6 +934,11 @@ final class StarDust
             watcher: $this->watcher(),
             liberator: $this->liberator(),
             reconciler: $this->reconciler(),
+            // No $shutdown argument: CombinedTick supplies its own
+            // per-run YieldSignal (budget deadline + this run's own
+            // shutdown probe) through Chronicler::tickRound()'s
+            // override, per ADR 0050 — see chronicler()'s docblock.
+            chronicler: $this->chronicler(),
             logger: $this->config->logger,
             clock: $this->config->clock,
             shutdown: $this->shutdownSignal('tick'),
@@ -948,16 +968,19 @@ final class StarDust
      * does real, potentially slow work (page provisioning, chunked
      * backfills, slot sweeps) synchronously on the calling connection.
      *
-     * Excludes the Chronicler — see {@see CombinedTick}.
+     * `$exports` (ADR 0050) opts the Chronicler into the run, bounded
+     * by a per-run cooperative-yield deadline — see {@see CombinedTick}
+     * for why it defaults to `false` rather than composing
+     * unconditionally.
      */
-    public function tick(?int $budgetSeconds = null, bool $advisories = false): TickReport
+    public function tick(?int $budgetSeconds = null, bool $advisories = false, bool $exports = false): TickReport
     {
         $budget = TickBudget::resolve(
             $budgetSeconds ?? $this->config->tickBudgetSeconds,
             $this->config->tickBudgetMarginSeconds,
         );
 
-        return $this->combinedTick()->run($budget, $advisories);
+        return $this->combinedTick()->run($budget, $advisories, $exports);
     }
 
     /**
