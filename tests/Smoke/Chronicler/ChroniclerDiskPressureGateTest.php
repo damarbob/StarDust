@@ -54,14 +54,54 @@ final class ChroniclerDiskPressureGateTest extends Phase7TestCase
     {
         $dir = $this->makeTempArtifactDir();
         $gate = new DiskPressureGate($dir, 0.10);
+        $reading = $gate->sample();
         // The probe returns a fraction in [0, 1] OR null when the
         // probe call fails.
-        $pct = $gate->freePct();
-        if ($pct !== null) {
-            self::assertGreaterThanOrEqual(0.0, $pct);
-            self::assertLessThanOrEqual(1.0, $pct);
+        if ($reading->freePct !== null) {
+            self::assertGreaterThanOrEqual(0.0, $reading->freePct);
+            self::assertLessThanOrEqual(1.0, $reading->freePct);
         }
-        self::assertSame($dir, $gate->partition());
-        self::assertSame(0.10, $gate->thresholdPct());
+        self::assertSame($dir, $reading->partition);
+        self::assertSame(0.10, $reading->thresholdPct);
+    }
+
+    public function testReadingNamesTheConfiguredDirectoryEvenWhenItDoesNotExist(): void
+    {
+        // Regression: an earlier version of the gate fell back to
+        // sys_get_temp_dir() here and probed THAT instead, while still
+        // reporting the configured (non-existent) directory as
+        // `partition` — so a `low_disk` event could name a directory
+        // that was never the one measured. artifactDir is created
+        // lazily on first claim (ArtifactStreamFactory), so a
+        // never-yet-used directory is the common case, not an edge one.
+        $missingDir = $this->makeTempArtifactDir() . DIRECTORY_SEPARATOR . 'not-created-yet';
+        self::assertDirectoryDoesNotExist($missingDir);
+
+        $reading = (new DiskPressureGate($missingDir, 0.10))->sample();
+
+        self::assertSame($missingDir, $reading->partition);
+        // Fails OPEN: a probe against a missing directory reports no
+        // pressure rather than a misleading reading from elsewhere.
+        self::assertNull($reading->freePct);
+        self::assertFalse($reading->shouldSkipClaim());
+    }
+
+    public function testOneSampleProbesTheOsExactlyOnce(): void
+    {
+        // Regression: an earlier version of the gate exposed
+        // shouldSkipClaim() and freePct() as two separate calls, each
+        // re-probing the OS — so the value Chronicler::tickRound()
+        // logged as `free_pct` could be a different syscall result
+        // from the one that actually decided to skip the claim. A
+        // single sample() must be internally self-consistent: the
+        // free_pct it reports is exactly the one shouldSkipClaim()
+        // used, by construction, since both are computed once.
+        $dir = $this->makeTempArtifactDir();
+        $gate = new DiskPressureGate($dir, 1.01); // always trips
+        $reading = $gate->sample();
+
+        self::assertTrue($reading->shouldSkipClaim());
+        self::assertNotNull($reading->freePct);
+        self::assertLessThan($reading->thresholdPct, $reading->freePct);
     }
 }

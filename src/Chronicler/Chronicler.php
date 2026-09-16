@@ -88,15 +88,16 @@ final class Chronicler implements Tickable
      */
     public function tickRound(?YieldSignal $yield = null): ChroniclerOutcome
     {
-        if ($this->diskGate->shouldSkipClaim()) {
+        $disk = $this->diskGate->sample();
+        if ($disk->shouldSkipClaim()) {
             $this->logger->warning('chronicler low disk', [
                 'event'           => 'low_disk',
                 'source'          => 'chronicler',
                 'correlation_id'  => UuidV4::generate(),
                 'tenant_id'       => null,
-                'partition'       => $this->diskGate->partition(),
-                'free_pct'        => $this->diskGate->freePct(),
-                'threshold_pct'   => $this->diskGate->thresholdPct(),
+                'partition'       => $disk->partition,
+                'free_pct'        => $disk->freePct,
+                'threshold_pct'   => $disk->thresholdPct,
             ]);
             // Disk-pressure does NOT short-circuit GC — reclaiming
             // artifact files is the right thing to do under pressure.
