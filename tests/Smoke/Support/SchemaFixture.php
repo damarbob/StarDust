@@ -79,6 +79,7 @@ final class SchemaFixture
         'stardust_import_jobs',
         'stardust_reconciler_dlq',
         'backfill_checkpoints',
+        'stardust_advisory_schedule',
     ];
 
     /**

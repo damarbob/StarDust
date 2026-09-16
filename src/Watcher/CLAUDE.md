@@ -10,16 +10,40 @@ Phase 5 singleton page provisioner (ADR 0008). Process-level singleton enforceme
 2. Hands both to `ProvisioningPlanner::plan()`.
 3. Emits `poll_started` carrying `free_ratio`, `threshold`, `total_slots`, `free_slots`, `pages_inspected` (the `COUNT(DISTINCT page_id)` that satisfies blueprint AC Watcher#6's "pages inspected" clause), plus `usable_free_slots`, `usable_total_slots`, `usable_free_ratio`, `pending_demand`, `pending_waiters`, `starved_families`.
 4. If the plan says provision, calls `PageProvisioner::provision($plan->indexedColumns)` under `AdvisoryLock`.
-5. If the 24 h jittered advisory timer is due, runs **both** `CardinalitySampler::sample()` (ADR 0019) and `SpreadSampler::sampleAll()` (ADR 0031).
-6. Emits `poll_complete` with `action` + `trigger`.
+5. If the 24 h jittered advisory timer is due — and this process wins the claim on it — runs **both** `CardinalitySampler::sample()` (ADR 0019) and `SpreadSampler::sampleAll()` (ADR 0031). The timer is persisted and shared since ADR 0052; see below.
+6. Emits `poll_complete` with `action` + `trigger` + `advisories_sampled`.
 
 **Both advisories take the cycle id**, so a daily sweep's hundreds of `cardinality_sampled` / `spread_sampled` lines read as one sweep instead of hundreds of unrelated observations. `CardinalitySampler::sample()` and `SpreadSampler::sampleAll()` still mint one when passed null, since `bin/stardust spread:report` is its own operation boundary. This was missed on the first pass of the ADR 0020 correlation work and is the reason `EventCorrelationTest` carries an explicit warning: both samplers *name* `correlation_id` at their emit sites, so a static scan passes them while they mint ids nothing else shares.
 
-**One timer drives both advisories.** ADR 0031 §Sampling Triggers 1 requires it: spread drifts only on registry mutation, so a daily cadence is generous, and a second schedule would be a second stampede surface for nothing. A third advisory hangs off the same gate. The private members are named `$nextAdvisorySampleAt` / `shouldSampleAdvisories()` / `scheduleNextAdvisorySample()` accordingly, while the `Config::$cardinality*` fields keep their names because those are public surface.
+**One timer drives both advisories.** ADR 0031 §Sampling Triggers 1 requires it: spread drifts only on registry mutation, so a daily cadence is generous, and a second schedule would be a second stampede surface for nothing. A third advisory hangs off the same gate. The private members are named `shouldSampleAdvisories()` / `computeNextDue()` accordingly, while the `Config::$cardinality*` fields keep their names because those are public surface.
 
 Provisioning emits `provision_started` → `provision_complete`, both carrying `trigger` + `indexed_columns` + `pending_demand` per AC#6. It catches `AdvisoryLockTimeoutException` → `lock_contention`, and any other Throwable → `provision_failed` with `indexed_columns`, then re-throws so the daemon exits.
 
 **The cycle id is passed into `provision()`**, so `PageProvisioner`'s `page_provisioned` lands between that pair under the same `correlation_id` rather than under one the logger synthesised for it. Until it was, the one event naming the page could not be joined to the decision that created it — invisibly, because a synthesised UUID is indistinguishable from a threaded one on the wire. `WatcherDemandDrivenProvisionTest::testPageProvisionedJoinsTheTickThatOrderedIt` pins all three; background in `src/Logging/CLAUDE.md`.
+
+## The advisory schedule is persisted, and therefore fleet-wide (ADR 0052)
+
+It used to be `$nextAdvisorySampleAt`, a process-local field. That is correct for a persistent daemon and **unreachable under ADR 0048's combined tick**: `StarDust::tick()` builds a fresh object graph per invocation (`combinedTick()` is deliberately not memoised), so a cron-driven host got the always-false first due-check and exited, and neither advisory ever fired without `tick --advisories`. The state now lives in the `stardust_advisory_schedule` singleton via `AdvisoryScheduleRepository`.
+
+`CombinedTick` needed **no change at all** for this, which is why the claim sits inside `Watcher::tick()` rather than in the tick: `CombinedTick` already calls `tick()` once per run unconditionally and again on every `CAPACITY_WAIT` round, and the claim makes the extra calls no-ops instead of duplicate sweeps.
+
+**The consequence to state plainly: one sample now fires per interval across the whole deployment, not one per daemon.** Three hosts running `bin/stardust watcher` go from three daily sweeps to one. Both samplers scan the global pool, so the other two were duplicate work — but this is a behaviour change to the shipped persistent-daemon mode, not just an addition to the cron one.
+
+`sampleAdvisories()` keeps its unconditional "sample now" contract for the `--advisories` flag and additionally **resets the timer**, so a forced sample is not followed minutes later by a scheduled one.
+
+### Three traps, all measured on 8.0.13
+
+- **The claim is the affected-row count of one UPDATE**, and the reschedule cannot be split out of it. Racing hosts serialize on the row lock and the loser re-evaluates the predicate against the winner's committed row. Verified with two real OS processes on separate pid dirs (so the Watcher pid guard was provably not the excluder — both reported `idle`): exactly one sampled.
+- **MySQL reports *changed* rows, not matched rows**, and the engine cannot set `CLIENT_FOUND_ROWS` on an injected PDO. A claim writing back the value already stored reports zero despite matching, and the sample is skipped in silence — hence the `max(..., $from + 1)` floor in `computeNextDue()`. Unreachable at the 86 400 s default; only a degenerate `interval = 0, jitter = 0` reaches it, and `AdvisoryScheduleTest` covers exactly that.
+- **A reused *named* placeholder is rejected.** `:now` three times in the claim throws `SQLSTATE[HY093]` under native prepares. Positional `?` with the value repeated — do not "tidy" them into named parameters.
+
+**The next due time is computed *before* the samplers run**, not after, since the claim and the reschedule are one statement. Cadence therefore no longer drifts forward by each sweep's duration, which the in-memory version did by rescheduling from `now()` on completion. The flip side: the claim commits before the work, so a sampler that throws loses that interval's sample rather than retrying it. Unavoidable given one-statement claim-and-reschedule, and not a regression — the in-memory version rescheduled only on success too, but the exception killed the process and its replacement phase-randomised a fresh schedule, waiting up to an interval anyway. Both advisories are read-only, so the cost is a missing observation rather than inconsistent state.
+
+**`poll_complete` carries `advisories_sampled`.** A field on an existing event, not a new event name, so `EventVocabularyTest`'s allowlist is untouched — and it is the only way to tell "not due" from "due but another host won the claim" on the wire, since a lost claim is silent by design (the Liberator's contended-tick precedent).
+
+**A fixture trap.** `Phase5TestCase::makeWatcher()` passes no `advisorySchedule`, so it falls back to constructing one from the test PDO and clock. That is why `WatcherCardinalityJitterTest`'s three tests pass **unmodified** against the persisted schedule — which is the regression contract for ADR 0019's stampede semantics. If one of them ever needs editing, the semantics moved and that needs saying out loud rather than fixing the test.
+
+**A test trap worth knowing before writing another one.** A Watcher-level test cannot prove the claim is exclusive: each tick reads then immediately claims, so a second Watcher's *read* already sees the first's advanced schedule and returns before `claimDue()` is called. Measured — a two-Watcher test stayed green with the dueness predicate deleted. `AdvisoryScheduleTest` therefore drives the repository directly for that assertion, with the two claims passing **different** next-due values: identical values would make MySQL's changed-rows behaviour supply the exclusion instead of the predicate, and that version stayed green under the neuter too.
 
 ## Provisioning is demand-driven as of ADR 0035
 
@@ -102,6 +126,18 @@ Two consequences to keep in mind when reading a sample: **the number is time-var
 Phase 6b adds `sampleSlot(int $slotAssignmentId): void` — the single-slot variant called post-promotion by `RetypeBackfillWorkSource`, emitting `cardinality_sampled` with `trigger='post_backfill'`.
 
 **Cardinality events carry `source: 'registry'`, not `'watcher'`**, per ADR 0020 line 49 — the Watcher merely owns the schedule.
+
+### Three triggers since ADR 0052, deliberately mirroring `SpreadSampler`
+
+`report(?int $tenantId, ?int $modelId): list<CardinalitySample>` is the third — `trigger='on_demand'`, backing `bin/stardust cardinality:report`, and the only one that returns its samples so the CLI prints without running the aggregates twice. It exists because the spread advisory had an on-demand CLI and the cardinality advisory did not, which left an operator no way to take a reading between scheduled runs.
+
+**It is not the equivalent of `spread:report`, and the help text must not say it is.** `SpreadSampler` is registry-only and documented safe against production at any time; this one reads `COUNT(*)` / `COUNT(DISTINCT col)` off every matching extension page. Read-only, but not free.
+
+**`--model` narrows which *slots* are sampled, not which *rows* are counted.** ADR 0019's aggregate is per `(tenant, slot)` across the tenant's whole partition on that page, because the index it describes is `(tenant_id, slot_column)` and a page is shared by every model with a slot on it. Narrowing the counts instead would measure something the optimizer never sees.
+
+**`--tenant` must confirm the tenant is on the page, not assume it** — `tenantsPresentOn()` is a point lookup returning `[$id]` or `[]`, standing in for the `SELECT DISTINCT tenant_id` the unfiltered path runs. The first version took the flag's value on trust, which looks like a free optimisation and is not: a tenant with no rows on a page produced an invented sample at `row_count: 0, distinct_values: 0`, which then **tripped `low_cardinality_index` on the distinct floor** — so `cardinality:report --tenant=<mistyped id>` warned about every live slot in the deployment holding none of that tenant's data. Measured (`report(999)` emitted exactly one spurious warning per live slot) and pinned by `testATenantWithNoRowsOnThePageYieldsNoSampleAndNoWarning`. The lookup is still indexed — `tenant_id` leads every slot's composite index — so the filter keeps the scan it was there to avoid.
+
+**The join to `stardust_fields` is a LEFT join and has to stay one.** `--model` needs `f.model_id`, but a tombstoned or grandfathered slot carries `field_id = NULL`, and an INNER join would silently shrink the unfiltered scan the periodic trigger has always covered — the sample would simply stop reporting orphaned slots, with nothing failing. `CardinalitySamplerTest::testAnOrphanedSlotIsStillSampledWithANullFieldId` pins it, and both filters were validated by neutering them.
 
 ## ADR 0038: `PendingDemandReader`'s safety is not a local property
 

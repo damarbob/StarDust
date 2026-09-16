@@ -50,6 +50,19 @@ vendor/bin/stardust chronicler
 vendor/bin/stardust spread:report
 vendor/bin/stardust spread:report --tenant=1 --model=7
 
+# Report index cardinality: row count, distinct values and selectivity
+# for each live filterable slot. A low selectivity over many rows is an
+# index the optimizer cannot use well — the same signal the scheduled
+# advisory emits as `low_cardinality_index`, available on demand for
+# triage between runs. Read-only, but UNLIKE spread:report it scans
+# every matching extension page rather than only the registry, so
+# prefer off-peak on a large dataset. --model narrows which slots are
+# examined; each one's counts still cover the tenant's whole partition
+# on that page, because the index being measured is
+# (tenant_id, slot_column) and a page is shared between models.
+vendor/bin/stardust cardinality:report
+vendor/bin/stardust cardinality:report --tenant=1 --model=7
+
 # Compact a model: relocate its filterable fields onto the fewest pages
 # that can hold them, removing the avoidable joins spread:report shows.
 # Long-running and deliberate — it moves one field at a time and needs a
@@ -70,9 +83,12 @@ vendor/bin/stardust compact:model --tenant=1 --model=7
 # host with no persistent-process capability (see
 # docs/deployment.md#cron-only--shared-hosting). Runs until its time
 # budget is spent, a round finds nothing to do, or it is asked to shut
-# down. --advisories forces the cardinality and spread advisories once
-# — schedule it from a separate, once-daily crontab line, not on every
-# invocation. --exports (off by default) opts the Chronicler into the
+# down. The roughly-daily cardinality and spread advisories fire from
+# whichever invocation first finds them due — the schedule is kept in
+# the database, so it needs no crontab line of its own, and is shared
+# across the deployment rather than per host. --advisories forces a
+# sample immediately whatever the schedule says.
+# --exports (off by default) opts the Chronicler into the
 # run: a large export cooperatively yields back to `pending` with its
 # resume anchor intact once this run's own budget deadline is reached,
 # rather than running to completion regardless of size. See

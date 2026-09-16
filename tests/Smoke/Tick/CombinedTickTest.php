@@ -69,6 +69,91 @@ final class CombinedTickTest extends Phase7TestCase
         self::assertContains('poll_started', $events);
     }
 
+    /**
+     * ADR 0052's acceptance criterion: a plain `bin/stardust tick`, with
+     * NO `--advisories` flag, reaches the advisories once they are due.
+     *
+     * Until the schedule was persisted this was impossible — each tick
+     * built a fresh `Watcher` whose process-local due-check was always
+     * false on its first call — and the only route to the ADR 0019 and
+     * ADR 0031 advisories under this deployment mode was a second,
+     * once-daily crontab line carrying the flag.
+     */
+    public function testAdvisoriesFireFromAPlainTickOnceDueWithNoFlag(): void
+    {
+        [$modelId, $_fieldId, $_pageId, $fieldName] = $this->setupModelWithReservedField(1, 'string');
+        $this->seedEntry(1, $modelId, [$fieldName => 'a']);
+        $this->seedEntry(1, $modelId, [$fieldName => 'b']);
+
+        // The operator scenario: the schedule came due while no process
+        // was running. Set in the past so a real clock reaches it.
+        $this->setAdvisoryDue('-1 hour');
+
+        $stream = fopen('php://memory', 'w+');
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        $this->makeCombinedTick(logger: $logger)->run(TickBudget::resolve(50, 5));
+
+        $events = array_map(static fn (array $e) => $e['event'], $this->readNdjsonStream($stream));
+        self::assertContains('cardinality_sampled', $events, 'the ADR 0019 advisory must fire unprompted');
+        self::assertContains('spread_sampled', $events, 'the ADR 0031 advisory rides the same gate');
+
+        // And the claim advanced the schedule, so the next tick is quiet.
+        $second = fopen('php://memory', 'w+');
+        $this->makeCombinedTick(logger: new StdoutNdjsonLogger(new SystemClock(), $second))
+            ->run(TickBudget::resolve(50, 5));
+        $secondEvents = array_map(static fn (array $e) => $e['event'], $this->readNdjsonStream($second));
+        self::assertNotContains('cardinality_sampled', $secondEvents, 'one sample per interval, not one per tick');
+    }
+
+    /**
+     * The `--advisories` force path, which had no coverage at all before
+     * ADR 0052 — no test passed `advisories: true`. It keeps working and
+     * still samples when nothing is due.
+     */
+    public function testAdvisoriesFlagForcesASampleWhenNothingIsDue(): void
+    {
+        [$modelId, $_fieldId, $_pageId, $fieldName] = $this->setupModelWithReservedField(1, 'string');
+        $this->seedEntry(1, $modelId, [$fieldName => 'a']);
+
+        // Far in the future: an unforced run could not reach it.
+        $this->setAdvisoryDue('+30 days');
+
+        $stream = fopen('php://memory', 'w+');
+        $logger = new StdoutNdjsonLogger(new SystemClock(), $stream);
+
+        $this->makeCombinedTick(logger: $logger)->run(TickBudget::resolve(50, 5), advisories: true);
+
+        $events = array_map(static fn (array $e) => $e['event'], $this->readNdjsonStream($stream));
+
+        // Exactly one, not merely at least one: the forced sample resets
+        // the timer, so the `Watcher::tick()` that runs immediately
+        // afterwards must find the schedule no longer due. One live slot
+        // and one tenant means one sweep is one event, so a double
+        // sample would show up here as two.
+        self::assertSame(
+            1,
+            count(array_filter($events, static fn (string $e) => $e === 'cardinality_sampled')),
+            'forcing must not also leave the schedule due for the tick that follows it',
+        );
+        self::assertSame(
+            1,
+            count(array_filter($events, static fn (string $e) => $e === 'spread_sampled')),
+        );
+    }
+
+    /** Pins `stardust_advisory_schedule.next_sample_at` relative to now, in UTC. */
+    private function setAdvisoryDue(string $modifier): void
+    {
+        $due = (new DateTimeImmutable('now', new \DateTimeZone('UTC')))->modify($modifier);
+        self::assertNotFalse($due);
+
+        $stmt = $this->pdo->prepare(
+            'UPDATE stardust_advisory_schedule SET next_sample_at = ?, updated_at = ? WHERE id = 1'
+        );
+        $stmt->execute([$due->format('Y-m-d H:i:s'), $due->format('Y-m-d H:i:s')]);
+    }
+
     public function testSyncQueueDrainsWithNoSeparateReconcilerProcess(): void
     {
         [$modelId, $_fieldId, $pageId, $fieldName] = $this->setupModelWithReservedField(1, 'string');

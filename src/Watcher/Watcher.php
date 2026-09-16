@@ -81,6 +81,17 @@ use Throwable;
  *   - Every subsequent sample fires at `interval ± jitter` (a fresh
  *     draw each cycle), which prevents the fleet from re-synchronizing.
  *
+ * ## The schedule is persisted and fleet-wide (ADR 0052)
+ *
+ * It lives in `stardust_advisory_schedule`, not in a property, because
+ * a process-local field cannot survive a process that exits after every
+ * run — which is exactly what ADR 0048's `CombinedTick` is under the
+ * cron deployment model, and it meant the advisories never fired there
+ * without the `--advisories` flag. One consequence worth knowing: the
+ * schedule is now shared, so ONE sample fires per interval across the
+ * whole deployment rather than one per daemon.
+ * {@see AdvisoryScheduleRepository} carries the claim and its traps.
+ *
  * Failure mapping:
  *   - {@see AdvisoryLockTimeoutException} → `lock_contention`.
  *   - any other `Throwable` from the provision path → `provision_failed`
@@ -91,14 +102,14 @@ use Throwable;
  */
 final class Watcher implements Tickable
 {
-    /** UTC epoch second at which the next advisory sample becomes due. */
-    private ?int $nextAdvisorySampleAt = null;
-
     /** @var Closure(int, int): int RNG returning a value in [min, max]. */
     private readonly Closure $jitterFn;
 
     /** ADR 0042 index headroom, applied to every page this daemon provisions. */
     private readonly IndexHeadroomPolicy $headroomPolicy;
+
+    /** ADR 0052 persisted advisory schedule — see shouldSampleAdvisories(). */
+    private readonly AdvisoryScheduleRepository $advisorySchedule;
 
     /**
      * @param (Closure(int, int): int)|null $jitterFn injectable RNG
@@ -121,6 +132,7 @@ final class Watcher implements Tickable
         ?Closure $jitterFn = null,
         private readonly int $provisionLockTimeoutSeconds = 10,
         ?IndexHeadroomPolicy $headroomPolicy = null,
+        ?AdvisoryScheduleRepository $advisorySchedule = null,
     ) {
         $this->jitterFn = $jitterFn ?? static fn (int $min, int $max): int => random_int($min, $max);
         // Defaulted for the same reason $provisionLockTimeoutSeconds is:
@@ -130,6 +142,13 @@ final class Watcher implements Tickable
         // makeWatcher() passes no policy, so this value is what the whole
         // Watcher smoke suite runs on. See src/Watcher/CLAUDE.md.
         $this->headroomPolicy = $headroomPolicy ?? new FlatIndexHeadroom(4);
+        // Same nullable-collaborator shape as $jitterFn above, and for the
+        // same reason: a direct constructor call (fixtures, one-off
+        // scripts) should not have to assemble it. Unlike
+        // $headroomPolicy this fallback duplicates no *value*, so it
+        // carries none of that one's hand-tracking hazard — it is pure
+        // construction from deps this class already holds.
+        $this->advisorySchedule = $advisorySchedule ?? new AdvisoryScheduleRepository($pdo, $clock);
     }
 
     public function tick(): void
@@ -161,13 +180,17 @@ final class Watcher implements Tickable
             $action = $this->tryProvision($correlationId, $plan, $demand);
         }
 
-        if ($this->shouldSampleAdvisories()) {
+        // The claim inside shouldSampleAdvisories() already advanced the
+        // schedule, so this does NOT call sampleAdvisories() — that one
+        // forces a sample and resets the timer a second time.
+        $sampledAdvisories = $this->shouldSampleAdvisories();
+        if ($sampledAdvisories) {
             // Both advisories run inside this tick, so both carry its
             // cycle id — a daily sweep emits hundreds of samples and an
             // operator needs to see them as one sweep, not as hundreds
             // of unrelated observations.
-            $this->sampleAdvisories($correlationId);
-            $this->scheduleNextAdvisorySample($this->clock->now()->getTimestamp());
+            $this->cardinalitySampler->sample($correlationId);
+            $this->spreadSampler->sampleAll($correlationId);
         }
 
         $this->logger->info('watcher poll complete', [
@@ -176,6 +199,11 @@ final class Watcher implements Tickable
             'correlation_id' => $correlationId,
             'action'         => $action,
             'trigger'        => $plan->trigger,
+            // A field on an existing event, not a new event name: a lost
+            // claim stays silent, matching the Liberator's contended-tick
+            // silence, and this is the only way to tell "not due" from
+            // "due but another host got it" on the wire.
+            'advisories_sampled' => $sampledAdvisories,
         ]);
     }
 
@@ -250,53 +278,86 @@ final class Watcher implements Tickable
 
     /**
      * Runs both advisory samplers unconditionally, bypassing the
-     * in-memory due-check {@see shouldSampleAdvisories()} normally
-     * gates them behind.
+     * due-check {@see shouldSampleAdvisories()} normally gates them
+     * behind, and resets the schedule as if the sample had been due.
      *
-     * `tick()`'s schedule (`$nextAdvisorySampleAt`) is a process-local
-     * field, which is fine for a persistent daemon but cannot survive a
-     * process that exits after every run — {@see
-     * \StarDust\Daemon\CombinedTick} is exactly that under the
-     * shared-hosting cron model (ADR 0027 §deferred), and a fresh
-     * `Watcher` on every invocation would never get past its first
-     * (always-false) `shouldSampleAdvisories()` check, so the ADR 0019
-     * cardinality advisory and the ADR 0031 spread advisory would never
-     * fire again. The operator schedules this explicitly instead, off
-     * its own once-daily crontab line (`bin/stardust tick
-     * --advisories`); persisting the schedule so it works unprompted
-     * stays open as its own change rather than becoming a silent
-     * requirement of this mode.
+     * This is the `bin/stardust tick --advisories` force path. Since
+     * ADR 0052 it is no longer the *only* way the advisories fire under
+     * the cron deployment model — the schedule is persisted, so an
+     * unadorned `bin/stardust tick` reaches them on its own. The flag
+     * survives as "sample now regardless", which is a different and
+     * still-useful thing.
+     *
+     * It resets the timer rather than leaving it alone so a forced
+     * sample is not followed minutes later by a scheduled one.
      */
     public function sampleAdvisories(string $correlationId): void
     {
         $this->cardinalitySampler->sample($correlationId);
         $this->spreadSampler->sampleAll($correlationId);
+
+        $now = $this->clock->now()->getTimestamp();
+        $this->advisorySchedule->force($now, $this->computeNextDue($now));
     }
 
+    /**
+     * True when this process won the claim on a due advisory sample.
+     *
+     * The state lives in `stardust_advisory_schedule` rather than in a
+     * property (ADR 0052), so the schedule survives a process that
+     * exits after every run. The read is non-locking and may be stale;
+     * the claim re-evaluates under the row lock, so exactness comes
+     * from {@see AdvisoryScheduleRepository::claimDue()} and the read
+     * only decides whether a claim is worth attempting — which keeps a
+     * not-due tick to one SELECT.
+     *
+     * **The next due time is now computed before the samplers run**,
+     * not after, because the claim and the reschedule are necessarily
+     * the same statement. The cadence therefore stops drifting forward
+     * by each sweep's duration, which the in-memory version did by
+     * rescheduling from `now()` once the sweep had finished.
+     */
     private function shouldSampleAdvisories(): bool
     {
         $now = $this->clock->now()->getTimestamp();
+        $due = $this->advisorySchedule->read();
 
-        if ($this->nextAdvisorySampleAt === null) {
+        if ($due === null) {
             // First fire: phase-randomize across the whole interval so a
             // lockstep-started fleet spreads over the full day (ADR 0019).
             $phase = $this->cardinalityIntervalSeconds > 0
                 ? ($this->jitterFn)(0, $this->cardinalityIntervalSeconds)
                 : 0;
-            $this->nextAdvisorySampleAt = $now + $phase;
+            $this->advisorySchedule->scheduleFirst($now + $phase);
             return false;
         }
 
-        return $now >= $this->nextAdvisorySampleAt;
+        if ($now < $due) {
+            return false;
+        }
+
+        return $this->advisorySchedule->claimDue($now, $this->computeNextDue($now));
     }
 
-    private function scheduleNextAdvisorySample(int $from): void
+    /**
+     * Steady state: interval ± jitter, a fresh draw each cycle to
+     * prevent the fleet from re-synchronizing. The offset is clamped so
+     * a misconfigured `jitter > interval` can never schedule in the
+     * past.
+     *
+     * The `$from + 1` floor is load-bearing and not defensive rounding:
+     * MySQL reports *changed* rows rather than matched rows, and the
+     * engine cannot set `CLIENT_FOUND_ROWS` on an injected PDO, so a
+     * claim that wrote back the value already stored would report zero
+     * affected rows and skip the sample in silence. Measured on 8.0.13.
+     * At the 86 400 s default the floor is unreachable; it only bites a
+     * degenerate `interval = 0, jitter = 0` configuration.
+     */
+    private function computeNextDue(int $from): int
     {
-        // Steady state: interval ± jitter, a fresh draw each cycle to
-        // prevent the fleet from re-synchronizing. Clamp the offset so a
-        // misconfigured `jitter > interval` can never schedule in the past.
         $jitter = min($this->cardinalityJitterSeconds, $this->cardinalityIntervalSeconds);
         $offset = $jitter > 0 ? ($this->jitterFn)(-$jitter, $jitter) : 0;
-        $this->nextAdvisorySampleAt = $from + $this->cardinalityIntervalSeconds + $offset;
+
+        return max($from + $this->cardinalityIntervalSeconds + $offset, $from + 1);
     }
 }

@@ -414,7 +414,7 @@ Every typed exception the engine throws, what triggers it, and how to handle a `
 
 ## CLI
 
-The framework-neutral `bin/stardust` entry point — bootstrap, the four daemons, the bounded combined `tick` command for hosts with no persistent-process capability, DLQ replay, and the operator-initiated `spread:report` / `compact:model` commands: [docs/cli.md](docs/cli.md).
+The framework-neutral `bin/stardust` entry point — bootstrap, the four daemons, the bounded combined `tick` command for hosts with no persistent-process capability, DLQ replay, and the operator-initiated `spread:report` / `cardinality:report` / `compact:model` commands: [docs/cli.md](docs/cli.md).
 
 ---
 

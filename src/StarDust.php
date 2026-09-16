@@ -83,6 +83,7 @@ use StarDust\Search\SearchService;
 use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
+use StarDust\Watcher\AdvisoryScheduleRepository;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
 use StarDust\Watcher\FlatIndexHeadroom;
@@ -653,6 +654,10 @@ final class StarDust
             cardinalityIntervalSeconds: $this->config->cardinalityIntervalSeconds,
             cardinalityJitterSeconds: $this->config->cardinalityJitterSeconds,
             provisionLockTimeoutSeconds: $this->config->watcherProvisionLockTimeoutSeconds,
+            advisorySchedule: new AdvisoryScheduleRepository(
+                pdo: $this->config->pdo,
+                clock: $this->config->clock,
+            ),
         );
     }
 
@@ -1106,7 +1111,17 @@ final class StarDust
         );
     }
 
-    private function cardinalitySampler(): CardinalitySampler
+    /**
+     * The ADR 0019 cardinality advisory. Shared by the Watcher
+     * (periodic trigger), the retype work source (post-backfill
+     * one-shot), and `bin/stardust cardinality:report` (on demand).
+     *
+     * Public for the same reason {@see self::spreadSampler()} is: the
+     * CLI needs it. **Not the equivalent of `spread:report` in cost,
+     * though** — this sampler reads the extension pages rather than
+     * only the registry.
+     */
+    public function cardinalitySampler(): CardinalitySampler
     {
         return $this->cardinalitySampler ??= new CardinalitySampler(
             pdo: $this->config->pdo,

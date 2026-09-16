@@ -41,6 +41,7 @@ final class Bootstrapper
         $this->createImportJobs();
         $this->createReconcilerDlq();
         $this->createBackfillCheckpoints();
+        $this->createAdvisorySchedule();
 
         $this->ensureSlotAssignmentFieldLiveUniqueIndex();
         $this->ensureSlotAssignmentSweepGapColumn();
@@ -56,6 +57,7 @@ final class Bootstrapper
         $this->ensureExportJobsCorrelationIdColumn();
         $this->ensureExportJobsArtifactBytesColumn();
         $this->seedSchemaVersionSingleton();
+        $this->seedAdvisoryScheduleSingleton();
     }
 
     private function createEntryData(): void
@@ -305,6 +307,43 @@ final class Bootstrapper
                 PRIMARY KEY (id),
                 UNIQUE KEY ux_backfill_job_name (job_name),
                 KEY ix_backfill_status_updated (status, updated_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+        SQL);
+    }
+
+    /**
+     * The Watcher's advisory-sample schedule (ADR 0052).
+     *
+     * A singleton, shaped exactly like stardust_schema_version above and
+     * for the same reason: there is one advisory timer for the whole
+     * deployment, driving both the ADR 0019 cardinality advisory and the
+     * ADR 0031 spread advisory. The CHECK is likewise advisory only on
+     * MySQL 8.0.13–8.0.15 (verified silently dropped on 8.0.13: an
+     * INSERT of id=2 succeeds) — PRIMARY KEY (id) plus the seed step in
+     * seedAdvisoryScheduleSingleton() are the real guarantee.
+     *
+     * Deliberately NOT a column on stardust_schema_version, which the
+     * ROADMAP named as the alternative. That row is a global
+     * serialization point every registry mutation bumps (see
+     * src/Reconciler/CLAUDE.md and SlotReserver's docblock), and its
+     * `updated_at` means "when the schema last changed" — an advisory
+     * claim would have to either lie in it or leave it stale.
+     *
+     * `next_sample_at IS NULL` is the "never scheduled" state, and it is
+     * what preserves ADR 0019's first-sample phase randomization across
+     * the whole interval: the first daemon to observe it writes
+     * `now + rand(0, interval)` and samples nothing.
+     */
+    private function createAdvisorySchedule(): void
+    {
+        $this->pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS stardust_advisory_schedule (
+                id              TINYINT  NOT NULL,
+                next_sample_at  DATETIME     NULL DEFAULT NULL,
+                last_sample_at  DATETIME     NULL DEFAULT NULL,
+                updated_at      DATETIME NOT NULL,
+                PRIMARY KEY (id),
+                CONSTRAINT ck_advisory_schedule_singleton CHECK (id = 1)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
         SQL);
     }
@@ -897,6 +936,29 @@ final class Bootstrapper
         $stmt = $this->pdo->prepare(<<<'SQL'
             INSERT INTO stardust_schema_version (id, version, updated_at)
             VALUES (1, 0, UTC_TIMESTAMP())
+            ON DUPLICATE KEY UPDATE id = id
+        SQL);
+        $stmt->execute();
+    }
+
+    /**
+     * `ON DUPLICATE KEY UPDATE id = id` is the same deliberate no-op
+     * seedSchemaVersionSingleton() uses: re-bootstrapping a live
+     * deployment must not reset a schedule that is already running, or
+     * every `bin/stardust bootstrap` would re-randomize the phase and
+     * push the next advisory up to a full interval away. Verified on
+     * 8.0.13 — a second run leaves a non-null next_sample_at untouched.
+     *
+     * `UTC_TIMESTAMP()` is correct *here* (it seeds `updated_at`, which
+     * nothing compares against) but must not be used in the claim
+     * predicate — see AdvisoryScheduleRepository, where every datetime
+     * comes from the injected clock instead.
+     */
+    private function seedAdvisoryScheduleSingleton(): void
+    {
+        $stmt = $this->pdo->prepare(<<<'SQL'
+            INSERT INTO stardust_advisory_schedule (id, next_sample_at, last_sample_at, updated_at)
+            VALUES (1, NULL, NULL, UTC_TIMESTAMP())
             ON DUPLICATE KEY UPDATE id = id
         SQL);
         $stmt->execute();

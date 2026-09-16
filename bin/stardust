@@ -141,6 +141,16 @@ switch ($command) {
                            filterable slots occupy, and how many of those
                            are avoidable. Registry-only and read-only;
                            safe against production at any time.
+          cardinality:report [--tenant=N] [--model=N]
+                           Report row count, distinct values and
+                           selectivity for each live filterable slot, so
+                           a low-cardinality index can be found between
+                           scheduled advisory runs. Read-only, but it
+                           scans every matching extension page rather
+                           than only the registry — run it off-peak.
+                           --model narrows which slots are examined; each
+                           one's counts still cover the tenant's whole
+                           partition on that page.
           compact:model --tenant=N --model=N [--dry-run]
                            Relocate one model's filterable slots onto the
                            fewest pages that can hold them. Long-running:
@@ -155,9 +165,13 @@ switch ($command) {
                            host with no persistent-process capability.
                            Runs until its time budget is spent, a round
                            finds nothing to do, or it is asked to shut
-                           down. --advisories forces the cardinality and
-                           spread samplers once; run it from a separate,
-                           once-daily crontab line. --exports opts the
+                           down. The cardinality and spread advisories
+                           fire from whichever invocation first finds
+                           them due — the schedule is kept in the
+                           database and shared across the deployment, so
+                           it needs no crontab line of its own (ADR
+                           0052). --advisories forces a sample
+                           immediately regardless. --exports opts the
                            Chronicler into the run (ADR 0050): a large
                            export yields back to `pending` at a chunk
                            boundary once this run's own budget deadline
@@ -405,6 +419,42 @@ switch ($command) {
             exit(0);
         } catch (\Throwable $e) {
             fwrite(STDERR, "stardust: spread:report failed: " . $e->getMessage() . "\n");
+            exit(1);
+        }
+
+    case 'cardinality:report':
+        try {
+            $flags = $parseFlags(array_slice($argv, 2));
+            $tenantId = isset($flags['tenant']) && is_string($flags['tenant']) ? (int) $flags['tenant'] : null;
+            $modelId  = isset($flags['model'])  && is_string($flags['model'])  ? (int) $flags['model']  : null;
+
+            $pdo = $buildPdo();
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $samples = $stardust->cardinalitySampler()->report($tenantId, $modelId);
+
+            if ($samples === []) {
+                echo "stardust: no live slot carries data in that scope.\n";
+                exit(0);
+            }
+
+            // Read SELECTIVITY, not DISTINCT alone: a low distinct count
+            // over few rows is unremarkable, and it is the ratio the
+            // optimizer acts on.
+            printf("%-10s %-10s %-10s %-12s %-10s %s\n",
+                'TENANT', 'FIELD', 'PAGE', 'SLOT', 'ROWS', 'DISTINCT / SELECTIVITY');
+            foreach ($samples as $sample) {
+                printf("%-10d %-10s %-10d %-12s %-10d %d / %.4f\n",
+                    $sample->tenantId,
+                    $sample->fieldId === null ? '-' : (string) $sample->fieldId,
+                    $sample->pageId,
+                    $sample->slotColumn,
+                    $sample->rowCount,
+                    $sample->distinctValues,
+                    $sample->selectivity);
+            }
+            exit(0);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "stardust: cardinality:report failed: " . $e->getMessage() . "\n");
             exit(1);
         }
 

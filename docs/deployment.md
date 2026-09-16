@@ -37,7 +37,7 @@ A supported persistent-process deployment target MUST provide all of the followi
 - `flock -n` stops an overlapping firing from starting a second run if the previous one is still finishing — belt-and-braces alongside `tick`'s own pid-file check, which only guards the Watcher, not the whole run.
 - `--budget=50` keeps the run comfortably inside a one-minute cron period; StarDust also clamps this against PHP's own `max_execution_time` when the SAPI reports a nonzero ceiling, so a smaller host-imposed limit is respected automatically.
 - Redirect output somewhere the account can actually write — cron's default is to email every line to the account owner, which floods an inbox fast on a per-minute schedule.
-- Add a second, once-daily line with `--advisories` to run the cardinality and spread advisories, which `tick` otherwise never fires on its own (each cron invocation is a fresh process with no memory of when it last sampled):
+- **The cardinality and spread advisories need no crontab line of their own.** The line above reaches them: the advisory schedule lives in the database, so it survives a process that exits after every run, and the roughly-daily sample fires from whichever `tick` invocation first finds it due. The schedule is shared, so one sample runs per interval across the whole deployment rather than one per host. `--advisories` remains available to force a sample immediately, whatever the schedule says:
 
 ```cron
 0 3 * * * flock -n /home/youraccount/stardust.lock /usr/bin/php /home/youraccount/bin/stardust tick --budget=50 --advisories >> /home/youraccount/logs/stardust-tick.log 2>&1

@@ -23,6 +23,17 @@ use StarDust\Support\UuidV4;
  * Both events carry `source: 'registry'` per ADR 0020 §Event
  * Vocabulary — the Watcher merely owns the schedule; the events
  * describe registry-level state.
+ *
+ * Three triggers, one method each, mirroring {@see SpreadSampler}:
+ * {@see self::sample()} (`periodic`), {@see self::sampleSlot()}
+ * (`post_backfill`), and {@see self::report()} (`on_demand`, the only
+ * one that returns its samples, so `bin/stardust cardinality:report`
+ * can print them).
+ *
+ * **Unlike `SpreadSampler` this is not registry-only.** It reads
+ * `COUNT(*)` and `COUNT(DISTINCT col)` off the extension pages
+ * themselves, so it does not inherit the spread advisory's "safe
+ * against production at any time" property and the CLI help says so.
  */
 final class CardinalitySampler
 {
@@ -36,6 +47,9 @@ final class CardinalitySampler
     }
 
     /**
+     * ADR 0019 trigger 1 — the periodic scan, on the Watcher's jittered
+     * daily cadence.
+     *
      * `$correlationId` is the Watcher cycle this sweep runs inside, so
      * every `cardinality_sampled` it emits joins that tick's
      * `poll_started` / `poll_complete`. Null mints one, for a caller
@@ -43,19 +57,76 @@ final class CardinalitySampler
      */
     public function sample(?string $correlationId = null): void
     {
-        $correlationId ??= UuidV4::generate();
+        $this->collect(null, null, 'periodic', $correlationId ?? UuidV4::generate());
+    }
 
-        $slots = PdoQuery::run($this->pdo,
-            "SELECT a.id AS slot_assignment_id, a.field_id, a.page_id, a.slot_column,"
+    /**
+     * ADR 0019 trigger 3 — on demand, for operator triage outside the
+     * daily window. Backs `bin/stardust cardinality:report`.
+     *
+     * Emits the same `cardinality_sampled` / `low_cardinality_index`
+     * pair as the other triggers (with `trigger='on_demand'`) *and*
+     * returns the samples, so the CLI can print a table without running
+     * the aggregates twice — the same contract as
+     * {@see SpreadSampler::report()}.
+     *
+     * **`$modelId` selects which *slots* to sample, not which *rows* to
+     * count.** ADR 0019's aggregate is per `(tenant, slot)` over the
+     * whole page table, because the composite index it describes is
+     * `(tenant_id, slot_column)` and a page is shared by every model
+     * with a slot on it. Filtering by model narrows the slots examined;
+     * each one's row count still covers the tenant's whole partition on
+     * that page.
+     *
+     * Unlike `spread:report` this is **not** registry-only: it runs
+     * `COUNT(*)` and `COUNT(DISTINCT col)` over every matching extension
+     * page. Read-only, but not free.
+     *
+     * @return list<CardinalitySample>
+     */
+    public function report(?int $tenantId = null, ?int $modelId = null): array
+    {
+        return $this->collect($tenantId, $modelId, 'on_demand', UuidV4::generate());
+    }
+
+    /**
+     * The live-slot scan shared by {@see self::sample()} and
+     * {@see self::report()}.
+     *
+     * The join to `stardust_fields` is a LEFT join and must stay one: a
+     * tombstoned or grandfathered slot can carry `field_id = NULL`, and
+     * an INNER join would silently drop rows from the unfiltered scan
+     * that the periodic trigger has always covered.
+     *
+     * @return list<CardinalitySample>
+     */
+    private function collect(?int $tenantId, ?int $modelId, string $trigger, string $correlationId): array
+    {
+        $sql = 'SELECT a.id AS slot_assignment_id, a.field_id, a.page_id, a.slot_column,'
             . ' p.table_name'
             . ' FROM stardust_slot_assignments a'
             . ' JOIN stardust_pages p ON p.id = a.page_id'
-            . " WHERE a.status IN ('assigned','ready')"
-        )->fetchAll(PDO::FETCH_ASSOC);
+            . ' LEFT JOIN stardust_fields f ON f.id = a.field_id'
+            . " WHERE a.status IN ('assigned','ready')";
 
-        foreach ($slots as $slot) {
-            $this->sampleSlotRow($slot, $correlationId, 'periodic');
+        $params = [];
+        if ($modelId !== null) {
+            $sql .= ' AND f.model_id = ?';
+            $params[] = $modelId;
         }
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        $slots = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $samples = [];
+        foreach ($slots as $slot) {
+            foreach ($this->sampleSlotRow($slot, $correlationId, $trigger, $tenantId) as $sample) {
+                $samples[] = $sample;
+            }
+        }
+
+        return $samples;
     }
 
     /**
@@ -96,21 +167,59 @@ final class CardinalitySampler
     }
 
     /**
+     * `[$tenantId]` when that tenant has at least one row on the page,
+     * `[]` otherwise — the filtered counterpart of the `SELECT DISTINCT`
+     * above, and deliberately a confirmation rather than an assumption.
+     *
+     * `tenant_id` is the leading column of every slot's composite index,
+     * so this is an indexed point lookup: the filter still avoids the
+     * full DISTINCT scan it replaces.
+     *
+     * @return list<int>
+     */
+    private function tenantsPresentOn(string $tableName, int $tenantId): array
+    {
+        $stmt = $this->pdo->prepare(
+            "SELECT tenant_id FROM {$tableName} WHERE tenant_id = ? LIMIT 1"
+        );
+        $stmt->execute([$tenantId]);
+
+        return $stmt->fetchColumn() === false ? [] : [$tenantId];
+    }
+
+    /**
      * @param array{slot_assignment_id: int|string, field_id: int|string|null,
      *              page_id: int|string, slot_column: string, table_name: string} $slot
+     * @return list<CardinalitySample>
      */
-    private function sampleSlotRow(array $slot, string $correlationId, string $trigger): void
-    {
+    private function sampleSlotRow(
+        array $slot,
+        string $correlationId,
+        string $trigger,
+        ?int $onlyTenantId = null,
+    ): array {
         $tableName = (string) $slot['table_name'];
         $slotColumn = (string) $slot['slot_column'];
 
         // Sample per-tenant per ADR 0019 — a slot's cardinality is
         // tenant-scoped because the composite index it's read through is
         // `(tenant_id, slot_column)`.
-        $tenants = PdoQuery::run($this->pdo,
-            "SELECT DISTINCT tenant_id FROM {$tableName}"
-        )->fetchAll(PDO::FETCH_COLUMN);
+        //
+        // A tenant filter narrows to a point lookup rather than scanning
+        // the whole DISTINCT set and discarding the rest — but it still
+        // has to CONFIRM the tenant is present on this page, not assume
+        // it. Taking `[$onlyTenantId]` on trust invents a sample: a
+        // tenant with no rows here reports `row_count: 0`,
+        // `distinct_values: 0`, and then trips
+        // `low_cardinality_index` on the distinct floor, warning about
+        // an index that holds none of that tenant's data. Measured —
+        // `report(999)` emitted exactly that.
+        $tenants = $onlyTenantId !== null
+            ? $this->tenantsPresentOn($tableName, $onlyTenantId)
+            : PdoQuery::run($this->pdo, "SELECT DISTINCT tenant_id FROM {$tableName}")
+                ->fetchAll(PDO::FETCH_COLUMN);
 
+        $samples = [];
         foreach ($tenants as $tenantIdRaw) {
             $tenantId = (int) $tenantIdRaw;
             $stmt = $this->pdo->prepare(
@@ -155,6 +264,19 @@ final class CardinalitySampler
                     'threshold_violated' => implode(',', $violations),
                 ]);
             }
+
+            $samples[] = new CardinalitySample(
+                slotAssignmentId: (int) $slot['slot_assignment_id'],
+                fieldId: $slot['field_id'] === null ? null : (int) $slot['field_id'],
+                tenantId: $tenantId,
+                pageId: (int) $slot['page_id'],
+                slotColumn: $slotColumn,
+                rowCount: $rowCount,
+                distinctValues: $distinctValues,
+                selectivity: $selectivity,
+            );
         }
+
+        return $samples;
     }
 }
