@@ -5,27 +5,36 @@ declare(strict_types=1);
 namespace StarDust\Tests\Smoke\Conventions;
 
 use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
+use StarDust\Config\Config;
 use StarDust\StarDust;
 
 /**
- * Guards two documentation conventions that are otherwise only prose.
+ * Guards documentation conventions that are otherwise only prose.
  *
- * Both failures are silent: nothing breaks, the docs simply start
+ * Every failure here is silent: nothing breaks, the docs simply start
  * lying, and nobody notices until a consumer follows them.
  *
  * DB-free by design.
  */
 final class DocsConsistencyTest extends TestCase
 {
-    private const README    = __DIR__ . '/../../../README.md';
-    private const CHANGELOG = __DIR__ . '/../../../CHANGELOG.md';
-    private const DOCS_DIR  = __DIR__ . '/../../../docs';
+    private const README        = __DIR__ . '/../../../README.md';
+    private const CHANGELOG     = __DIR__ . '/../../../CHANGELOG.md';
+    private const GLOSSARY      = __DIR__ . '/../../../GLOSSARY.md';
+    private const CONFIGURATION = __DIR__ . '/../../../docs/configuration.md';
+    private const DOCS_DIR      = __DIR__ . '/../../../docs';
 
     /**
-     * The README, and anything split out of it under docs/, are
-     * consumer-facing; ADRs are internal design records that ship in a
-     * separate repo. A reader who follows "per ADR 0013" finds nothing,
-     * so these docs must explain behaviour on their own terms.
+     * The README, anything split out of it under docs/, and the
+     * consumer-facing glossary are all read by someone outside the
+     * project; ADRs are internal design records that ship in a separate
+     * repo. A reader who follows "per ADR 0013" finds nothing, so these
+     * docs must explain behaviour on their own terms. GLOSSARY.md in
+     * particular has its own explicit "never cite an ADR" rule in
+     * CLAUDE.md precisely because it diverges from the internal
+     * SDDPG/glossary.md on purpose — nothing enforced that rule before
+     * this method covered it.
      *
      * `docs/` is scanned as a directory rather than named file-by-file
      * for the same reason `EventVocabularyTest::scanDir()` is — a
@@ -34,7 +43,10 @@ final class DocsConsistencyTest extends TestCase
      */
     public function testReadmeAndDocsCiteNoAdrs(): void
     {
-        $files = [self::README => 'README.md'];
+        $files = [
+            self::README   => 'README.md',
+            self::GLOSSARY => 'GLOSSARY.md',
+        ];
 
         foreach (glob(self::DOCS_DIR . '/*.md') ?: [] as $path) {
             $files[$path] = 'docs/' . basename($path);
@@ -80,6 +92,43 @@ final class DocsConsistencyTest extends TestCase
             . ' put for the whole release cycle; when it does move, the CHANGELOG entry moves'
             . ' with it. See CLAUDE.md, "Working conventions".',
         );
+    }
+
+    /**
+     * README.md and docs/configuration.md each quote the number of
+     * optional `Config` constructor parameters in prose — a number that
+     * has drifted from the real count before (37 and 39 were both wrong
+     * against a real count of 46) with nothing to catch it. Both files
+     * are pinned to the single canonical sentence "N optional `Config`
+     * parameters" so one regex extracts the quoted number from each and
+     * compares it against `ReflectionMethod`, which is the only source
+     * of truth `Config`'s append-only constructor actually has.
+     */
+    public function testQuotedConfigParameterCountMatchesReflection(): void
+    {
+        $actual = (new ReflectionMethod(Config::class, '__construct'))->getNumberOfParameters() - 1;
+
+        foreach ([self::README => 'README.md', self::CONFIGURATION => 'docs/configuration.md'] as $path => $label) {
+            $contents = (string) file_get_contents($path);
+
+            $matched = preg_match('/(\d+) optional `Config` parameters/', $contents, $matches);
+
+            self::assertSame(
+                1,
+                $matched,
+                "{$label} does not contain the canonical \"N optional `Config` parameters\""
+                . ' sentence this guard looks for — the wording drifted and needs restoring,'
+                . ' or this regex needs updating alongside it.',
+            );
+
+            self::assertSame(
+                $actual,
+                (int) $matches[1],
+                "{$label} says {$matches[1]} optional Config parameters, but"
+                . " Config::__construct() actually has {$actual}. Update the doc — or, if this"
+                . ' assertion itself is wrong, Config just gained or lost a parameter.',
+            );
+        }
     }
 
     /**

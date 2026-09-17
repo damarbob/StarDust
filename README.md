@@ -55,6 +55,7 @@ StarDust ships as a **framework-neutral Composer library** with zero runtime fra
 - [Is StarDust a fit?](#is-stardust-a-fit)
 - [Status](#status)
 - [Requirements](#requirements)
+- [Deployment Requirements](#deployment-requirements)
 - [Installation](#installation)
 - [Complete example](#complete-example)
 - [Testing](#testing)
@@ -141,13 +142,12 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 **A good fit if you:**
 
 - Need user-defined or per-tenant dynamic fields that are still **filterable at native SQL index speed**, without standing up a separate search cluster.
-- Already run **MySQL 8.0.13+ (or Percona)** and can keep persistent background processes alive (systemd, supervisor, or containers).
+- Already run **MySQL 8.0.13+ (or Percona)**, either as persistent background processes (systemd, supervisor, or containers) or as a scheduled `bin/stardust tick` on a host with no persistent-process capability.
 - Want a **framework-neutral** engine you can drop into any PHP app via Composer — no ORM, query builder, or framework pulled in.
 - Can tolerate a newly defined or retyped filterable field becoming queryable **shortly after** the fact rather than instantly.
 
 **Probably not a fit if you:**
 
-- Can only deploy to **cron-only or shell-less shared hosting.** The Watcher, Reconciler, Liberator, and Chronicler must run as long-lived processes. Without the Watcher in particular, slot capacity is never replenished and new filterable writes silently fall back to the (unindexed) JSON payload.
 - Are tied to **MariaDB or MySQL ≤ 5.7** — both are actively rejected (see [Requirements](#requirements)).
 - Need **strong read-after-write consistency on filters immediately after a retype or filterability promotion.** The field is served from the JSON payload (and is not filterable) until its backfill completes.
 - Need **full-text, fuzzy, or substring search** out of the box. The default MySQL driver ships exact-match, comparison, range, set-membership, and *anchored*-prefix (`LIKE 'x%'`) operators — but no substring/suffix matching, no fuzzy matching, and no relevance ranking. Fuzzy/full-text is a capability you'd supply via a custom driver.
@@ -193,7 +193,7 @@ If you need a working library today, stay on `^0.2.0-alpha.x`.
 - **PHP extensions:** `ext-pdo`, `ext-pdo_mysql`
 - **Database:** MySQL 8.0.13+ **or** Percona Server 8.0.13+
 
-The 8.0.13 floor is firm: StarDust leans on functional/conditional unique indexes and common table expressions, and neither exists below 8.0.13. We'd rather refuse to start than corrupt your registry on an engine that silently does the wrong thing.
+The 8.0.13 floor is firm: StarDust leans on functional/conditional unique indexes, which don't exist below 8.0.13. We'd rather refuse to start than corrupt your registry on an engine that silently does the wrong thing.
 
 **Not supported:**
 
@@ -368,7 +368,7 @@ echo $entry?->fields['name']; // Acme Corp
 
 ## Construction & schema bootstrap
 
-Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the thirty-seven optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
+Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the 46 optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
 
 ## Writing entries
 
@@ -402,7 +402,7 @@ Submitting and polling an export, the per-tenant active-job cap, and the Chronic
 
 ## Slot maintenance
 
-`spreadSampler()->report()` and `compactModel()` — the PHP entry points behind `spread:report` and `compact:model`: [docs/slot-maintenance.md](docs/slot-maintenance.md).
+`spreadSampler()->report()`, `cardinalitySampler()->report()`, and `compactModel()` — the PHP entry points behind `spread:report`, `cardinality:report`, and `compact:model`: [docs/slot-maintenance.md](docs/slot-maintenance.md).
 
 ## Tracing a request through the logs
 

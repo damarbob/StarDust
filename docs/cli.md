@@ -25,21 +25,23 @@ vendor/bin/stardust reconciler
 vendor/bin/stardust reconciler:dlq:replay --id=42
 vendor/bin/stardust reconciler:dlq:replay --reason=schema_incompatibility
 
-# Phase 6a: singleton slot-reclamation daemon. Polls
+# Phase 6a: multi-worker slot-reclamation daemon. Polls
 # stardust_slot_assignments for `tombstoned` rows, nullifies the
 # corresponding slot column on entry_slots_page_N in bounded chunks,
 # and transitions the slot back to `free` once the partition is
-# fully nullified. Holds a flock on <pidFileDir>/liberator.pid; a
-# second instance exits with code 2.
+# fully nullified. Run multiple processes for horizontal scale — no
+# PID guard; exclusion is page-table-granularity GET_LOCK, not a
+# process singleton, so two workers divide the sweep instead of one
+# exiting.
 vendor/bin/stardust liberator
 
 # Phase 7: multi-worker async export daemon. Claims pending or
 # abandoned export jobs from stardust_export_jobs, paginates
 # entry_data, streams CSV/JSON artifacts to <artifactDir>, runs
-# idle-cycle GC on completed-artifact TTL + orphaned failed-job
-# partials. Run multiple processes for horizontal scale — no PID
-# guard; SELECT … FOR UPDATE SKIP LOCKED is the only coordination
-# primitive.
+# idle-cycle GC on completed-artifact TTL, orphaned failed-job
+# partials, and any leaked disk-probe file. Run multiple processes
+# for horizontal scale — no PID guard; SELECT … FOR UPDATE SKIP
+# LOCKED is the only coordination primitive.
 vendor/bin/stardust chronicler
 
 # Report slot spread: how many extension pages each model's filterable

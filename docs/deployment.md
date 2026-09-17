@@ -16,7 +16,8 @@ A supported persistent-process deployment target MUST provide all of the followi
 
 | Tier | Verdict |
 | :--- | :--- |
-| Free shared hosting (no shell, no cron, no persistent processes) | Unsupported at any level. |
+| Free shared hosting (no shell, no cron, no persistent processes, no scheduled URL fetch) | Unsupported at any level. |
+| Free shared hosting with a scheduled URL fetch (no shell, no cron) | See **Cron-only / shared hosting** below — drive `StarDust::tick()` from the URL fetch instead of a crontab line. |
 | Paid shared hosting, cron-only, MySQL 8 | See **Cron-only / shared hosting** below. |
 | Paid shared hosting, cron-only, MariaDB | Unsupported — MariaDB is rejected regardless of deployment mode. |
 | VPS with systemd / supervisor | Supported — reference deployment. |
@@ -34,7 +35,7 @@ A supported persistent-process deployment target MUST provide all of the followi
 * * * * * flock -n /home/youraccount/stardust.lock /usr/bin/php /home/youraccount/bin/stardust tick --budget=50 >> /home/youraccount/logs/stardust-tick.log 2>&1
 ```
 
-- `flock -n` stops an overlapping firing from starting a second run if the previous one is still finishing — belt-and-braces alongside `tick`'s own pid-file check, which only guards the Watcher, not the whole run.
+- `flock -n` stops an overlapping firing from starting a second run if the previous one is still finishing — belt-and-braces alongside `tick`'s own pid-file check, which only guards the Watcher, not the whole run. This example's lock file sits under the account home directory, which is unreliable for `flock` on some hosts — see the NFS note below before relying on it in production.
 - `--budget=50` keeps the run comfortably inside a one-minute cron period; StarDust also clamps this against PHP's own `max_execution_time` when the SAPI reports a nonzero ceiling, so a smaller host-imposed limit is respected automatically.
 - Redirect output somewhere the account can actually write — cron's default is to email every line to the account owner, which floods an inbox fast on a per-minute schedule.
 - **The cardinality and spread advisories need no crontab line of their own.** The line above reaches them: the advisory schedule lives in the database, so it survives a process that exits after every run, and the roughly-daily sample fires from whichever `tick` invocation first finds it due. The schedule is shared, so one sample runs per interval across the whole deployment rather than one per host. `--advisories` remains available to force a sample immediately, whatever the schedule says:
@@ -56,6 +57,8 @@ A large export therefore completes over several cron firings rather than one —
 Two things the probe does not do. It proves that *its own* probe size can be written, not that a multi-gigabyte export will fit — an export that outruns the remaining space still ends as `failed:disk_full` mid-write. And garbage collection only runs on idle ticks, so a `tick --exports` schedule that is always busy with in-progress exports never reclaims timed-out artifacts; if you run exports continuously, watch your artifact directory's size rather than assuming the 24-hour cleanup has happened.
 
 **Never run `bin/stardust tick` alongside the individual `watcher` / `reconciler` / `liberator` commands on the same installation.** `tick` takes the Watcher's pid-file lock itself, so a persistent `watcher` process already running makes every `tick` invocation report a harmless no-op skip (exit code 0) rather than doing its job — the two modes are not meant to complement each other, only to substitute for each other. (The Liberator and the Chronicler are the exceptions: both are multi-worker with no pid-file lock, so a `tick --exports` run and a standalone `liberator` or `chronicler` process can coexist without either being skipped — they simply divide the work by whichever rows or pages each claims first. Running either alongside `tick` is harmless, just redundant with what `tick` already covers.)
+
+**Shared `mysqld` needs `lockNamespace` set apart on some hosts.** StarDust takes two MySQL advisory locks, and MySQL scopes advisory lock names to the whole server rather than to your database — so on a shared-hosting `mysqld` serving several accounts, two independent StarDust installations would otherwise compete for the same lock names. `Config::$lockNamespace` defaults to `null`, which derives a private namespace from your database name and needs no action from you; see [Construction & schema bootstrap](configuration.md) for when to set it explicitly. **Upgrading to this version needs a one-time pause**: locks named under the old, unqualified scheme and the new per-installation one do not recognise each other, so stop your `tick` cron line (or your persistent daemons) before deploying rather than letting old and new code race each other — on a cron schedule that costs one skipped run.
 
 **No shell access at all, but scheduled URL fetches are available** (a common paid-tier alternative to cron): drive `StarDust::tick()` from a small script behind a web-accessible URL instead of the CLI. Gate it with a shared secret checked via `hash_equals()` — a public, unauthenticated URL that triggers real database work is a free amplification handle for anyone who finds it — and keep the same budget and single-schedule discipline as the crontab line above.
 

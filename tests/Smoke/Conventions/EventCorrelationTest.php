@@ -27,10 +27,13 @@ use SplFileInfo;
  * which operation is this event part of? — instead of inheriting a
  * plausible-looking answer for free.
  *
- * Scoped to the `registry` source deliberately. The daemon sources mint
- * a per-cycle or per-chunk id at the top of the tick and thread it
- * everywhere, so they have never had this failure mode; `registry` is
- * the source with no owning loop, which is exactly why it drifted.
+ * Scans every `source` value, over all eight sources in the vocabulary
+ * — the pattern below matches `'source' => '...'` regardless of which
+ * name follows. `registry` is where the nine drifted sites were found,
+ * because it is the one source with no owning loop to mint and thread
+ * an id through automatically, but the scan does not special-case it:
+ * a daemon source that grows a new emit site without threading its id
+ * correctly is caught the same way.
  *
  * DB-free by design; a source scan, in the same spirit as
  * {@see \StarDust\Tests\Smoke\EventVocabularyTest} and

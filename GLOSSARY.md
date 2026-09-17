@@ -80,7 +80,7 @@ The opaque token that marks your position in a paginated read. You pass the prev
 
 ### Daemon
 
-A long-lived background process you run alongside your app — StarDust ships four ([Watcher](#watcher), [Reconciler](#reconciler), [Liberator](#liberator), [Chronicler](#chronicler)), all launched through `bin/stardust`. They never talk to each other directly; the database is the only thing they coordinate through. They are not optional extras: without them, capacity is never replenished and background work never completes.
+A long-lived background process you run alongside your app — StarDust ships four ([Watcher](#watcher), [Reconciler](#reconciler), [Liberator](#liberator), [Chronicler](#chronicler)), all launched through `bin/stardust`. They never talk to each other directly; the database is the only thing they coordinate through. Capacity replenishment and background work depend on this maintenance running one way or another: if your host cannot keep long-lived processes alive at all, `bin/stardust tick` runs one bounded pass of the Watcher, Liberator and Reconciler from a cron line instead, so the choice is which mode to run, not whether to run one.
 
 ### Declared type
 
@@ -162,7 +162,7 @@ Whether a field's [slot](#slot) is live *right now* — that is, whether a filte
 
 ### Liberator
 
-The daemon that reclaims [slots](#slot). When a field is demoted or deleted, its slot is [tombstoned](#tombstoned-slot) rather than handed straight to the next field — the old values are still sitting in the column. The Liberator clears them out in bounded chunks and only then marks the slot free, so a recycled slot can never leak a previous field's data into a new one's queries.
+The daemon that reclaims [slots](#slot). When a field is demoted or deleted, its slot is [tombstoned](#tombstoned-slot) rather than handed straight to the next field — the old values are still sitting in the column. The Liberator clears them out in bounded chunks and only then marks the slot free, so a recycled slot can never leak a previous field's data into a new one's queries. Multiple copies can run at once, and they divide the work without stepping on each other.
 
 **See also:** [Tombstoned slot](#tombstoned-slot), [Daemon](#daemon).
 
@@ -286,6 +286,6 @@ The architecture behind StarDust, and the thing that distinguishes it from both 
 
 ### Watcher
 
-The daemon that keeps [slot](#slot) capacity ahead of demand. It provisions new [extension pages](#extension-page) when free capacity drops below a threshold (20% by default) or when a filterable field is waiting for a slot that does not exist yet, and it indexes each new page for the fields currently queued. Exactly one Watcher may run at a time, and it enforces that itself. Without it, capacity is never replenished and filterable writes quietly fall back to unindexed JSON.
+The daemon that keeps [slot](#slot) capacity ahead of demand. It provisions new [extension pages](#extension-page) when free capacity drops below a threshold (20% by default) or when a filterable field is waiting for a slot that does not exist yet, and it indexes each new page for the fields currently queued. Exactly one Watcher may run at a time, and it enforces that itself. On a host that runs it as a persistent process, capacity is never replenished without it, and filterable writes quietly fall back to unindexed JSON until it does; `bin/stardust tick` provisions the same capacity from a cron line instead, for a host that cannot keep a persistent Watcher alive.
 
 **See also:** [Extension page](#extension-page), [Exhaustion fallback](#exhaustion-fallback), [Index headroom](#index-headroom).

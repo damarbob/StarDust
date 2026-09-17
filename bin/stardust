@@ -479,10 +479,12 @@ switch ($command) {
 
             if ($report->stopReason === \StarDust\Daemon\TickStopReason::LOCK_CONTENDED) {
                 // Routine, not an error: an overlapping cron firing (or a
-                // persistent watcher/liberator process already running)
-                // is expected, and a non-zero exit every firing would
-                // mean cron mail every firing.
-                echo "stardust: tick skipped — a watcher or liberator process already holds its pid file.\n";
+                // persistent watcher process already running) is
+                // expected, and a non-zero exit every firing would mean
+                // cron mail every firing. The Liberator has no pid file
+                // to contend on since ADR 0049 (GET_LOCK exclusion), so
+                // it is never the cause of this.
+                echo "stardust: tick skipped — a watcher process already holds its pid file.\n";
                 exit(0);
             }
 

@@ -62,7 +62,7 @@ $company?->indexedFields();
 
 Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
-Phases 5, 6a, 7, model deletion, index headroom, and the combined tick add thirty-nine optional `Config` parameters for daemon tuning:
+Phases 5, 6a, 7, model deletion, index headroom, and the combined tick add 46 optional `Config` parameters for daemon tuning:
 
 ```php
 $engine = new StarDust(new Config(
@@ -71,7 +71,7 @@ $engine = new StarDust(new Config(
     watcherCapacityThreshold:            0.20,      // spare-capacity floor; a field waiting on an
                                                     // index provisions regardless of this
     watcherProvisionLockTimeoutSeconds:  10,        // GET_LOCK wait — production stays at 10
-    cardinalityIntervalSeconds:          86_400,    // 24 h cadence
+    cardinalityIntervalSeconds:          86_400,    // 24 h cadence, persisted fleet-wide — see below
     cardinalityJitterSeconds:            8_640,     // randomized ± window around the cadence (de-correlates a fleet)
     cardinalitySelectivityThreshold:     0.01,
     cardinalityRowFloor:                 10_000,
@@ -80,7 +80,7 @@ $engine = new StarDust(new Config(
     reconcilerInterChunkDelayMicros:     0,         // pace drain throughput (0 = no pacing)
     reconcilerCapacityWaitMillis:        5_000,     // sleep after a capacity_wait tick
     reconcilerImportLeaseTimeoutSeconds: 30,        // import-job abandoned-claim sweep threshold
-    pidFileDir:                          '/var/run/stardust',  // watcher.pid, liberator.pid + *.shutdown flag files
+    pidFileDir:                          '/var/run/stardust',  // watcher.pid + *.shutdown flag files
     liberatorIdleIntervalSeconds:        10,        // poll interval when nothing is tombstoned
     liberatorBatchSize:                  50,        // max tombstoned slots per Liberator tick
     liberatorChunkSize:                  500,       // per-chunk LIMIT on the slot-column nullification
@@ -95,8 +95,8 @@ $engine = new StarDust(new Config(
     chroniclerArtifactSizeCapBytes:      5 * 1024 * 1024 * 1024,  // 5 GB per-artifact cap
     chroniclerArtifactTtlSeconds:        86_400,    // 24 h GC TTL for completed artifacts
     chroniclerOrphanedPartialTtlSeconds: 3_600,     // 1 h GC TTL for failed-job partials
-    chroniclerLowDiskThresholdPct:       0.10,      // pre-claim disk gate, free-space ratio (0..1)
-    chroniclerDiskProbeBytes:            65536,     // pre-claim write probe; 0 disables
+    chroniclerLowDiskThresholdPct:       0.10,      // pre-claim disk gate, first of two checks: free-space ratio (0..1)
+    chroniclerDiskProbeBytes:            65536,     // pre-claim disk gate, second check: write probe; 0 disables — see below
     chroniclerPerTenantActiveCap:        3,         // submission cap on pending+processing
     chroniclerDbDisconnectBackoffSeconds:[1, 4, 16],// fixed backoff schedule
     pdoConnector:                        null,      // reconnect factory for mid-export DB drops (CLI wires one automatically)
@@ -112,6 +112,10 @@ $engine = new StarDust(new Config(
     lockNamespace:                       null,      // null = derive from the database name — see below
 ));
 ```
+
+**The cardinality and spread advisory schedule is stored in the database, not in daemon memory.** A running fleet shares one due time rather than each process keeping its own, so exactly one sample runs per `cardinalityIntervalSeconds` interval across the whole deployment — not one per host or per daemon restart. This is a behaviour change from earlier versions, where the schedule lived only in the Watcher process's own memory and restarted with it. `cardinality:report` and `spread:report` remain available on demand regardless of where the schedule stands.
+
+**The pre-claim disk gate is two checks, not one.** `chroniclerLowDiskThresholdPct` is the original free-space-ratio floor; `chroniclerDiskProbeBytes` adds a small write probe into the artifact directory on every claim attempt, because a per-account quota can leave a filesystem reporting itself mostly free while every write still fails. Set `chroniclerDiskProbeBytes` to `0` to disable the probe and fall back to the ratio-only check. See [Deployment requirements](deployment.md) for what the combined gate does and does not protect you from, and [Async exports](exports.md) for how a claim behaves once it trips.
 
 **`lockNamespace` almost never needs setting, but is worth understanding if you are on shared hosting.** StarDust takes two MySQL advisory locks, and MySQL scopes advisory lock names to the *server*, not to your database — so on a host where many accounts share one MySQL server, two StarDust installations would otherwise compete for the same lock names and each would periodically stall waiting for the other. Left at `null`, StarDust derives a private namespace from your database name, which is correct automatically and needs no action from you.
 
