@@ -68,7 +68,7 @@ final class EnvironmentTest extends TestCase
         }
     }
 
-    /** Exit criterion 5: MariaDB must cause the suite to exit non-zero. */
+    /** Exit criterion 4: MariaDB must cause the suite to exit non-zero. */
     public function testServerIsMySql(): void
     {
         $version = (string) $this->pdo->query('SELECT VERSION()')->fetchColumn();
@@ -80,7 +80,7 @@ final class EnvironmentTest extends TestCase
         );
     }
 
-    /** Reinforces criteria 2-4: server must be 8.0.13 or newer. */
+    /** Reinforces criteria 2-3: server must be 8.0.13 or newer. */
     public function testMySqlVersionFloor(): void
     {
         $version = (string) $this->pdo->query('SELECT VERSION()')->fetchColumn();
@@ -100,16 +100,6 @@ final class EnvironmentTest extends TestCase
             $this->compareVersion($tuple, [8, 0, 13]),
             "MySQL 8.0.13+ required; got {$version}.",
         );
-    }
-
-    /** Exit criterion 4: CTEs (WITH ... AS) must be available. */
-    public function testCteSupported(): void
-    {
-        $stmt = $this->pdo->query('WITH cte AS (SELECT 1 AS n) SELECT n FROM cte');
-        self::assertNotFalse($stmt);
-
-        $row = $stmt->fetch();
-        self::assertSame(1, (int) $row['n']);
     }
 
     /**

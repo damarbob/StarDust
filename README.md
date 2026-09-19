@@ -197,7 +197,7 @@ The 8.0.13 floor is firm: StarDust leans on functional/conditional unique indexe
 
 **Not supported:**
 
-- **MariaDB** — its partial-index syntax and `SKIP LOCKED` semantics diverge from MySQL's in ways that would break the slot registry and the daemon claim model. StarDust detects this and refuses to run, and CI keeps us honest with a dedicated job that *expects* the smoke suite to fail on MariaDB. You find out at boot, not in production.
+- **MariaDB** — its partial-index syntax diverges from MySQL's in a way that would break the slot registry. StarDust detects this and refuses to run, and CI keeps us honest with a dedicated job that *expects* the smoke suite to fail on MariaDB. You find out at boot, not in production.
 - **MySQL 5.7 and older** — no partial-unique-index feature, which the schema registry depends on.
 
 ---
