@@ -6,6 +6,7 @@ namespace StarDust\Bootstrap;
 
 use PDO;
 use PDOException;
+use StarDust\Support\Dialect;
 use StarDust\Support\PdoQuery;
 
 /**
@@ -74,8 +75,8 @@ final class Bootstrapper
                 PRIMARY KEY (id),
                 KEY ix_entry_data_tenant_model (tenant_id, model_id),
                 KEY ix_entry_data_tenant_lifecycle (tenant_id, deleted_at, created_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createSyncQueue(): void
@@ -97,8 +98,8 @@ final class Bootstrapper
                 entry_id    BIGINT   NOT NULL,
                 created_at  DATETIME NOT NULL,
                 PRIMARY KEY (id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createModels(): void
@@ -112,8 +113,8 @@ final class Bootstrapper
                 deleted_at  DATETIME         NULL DEFAULT NULL,
                 PRIMARY KEY (id),
                 UNIQUE KEY ux_models_tenant_name (tenant_id, name)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createFields(): void
@@ -132,8 +133,8 @@ final class Bootstrapper
                 CONSTRAINT fk_fields_model
                     FOREIGN KEY (model_id) REFERENCES stardust_models (id)
                     ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createPages(): void
@@ -146,8 +147,8 @@ final class Bootstrapper
                 provisioned_by  VARCHAR(128) NOT NULL,
                 PRIMARY KEY (id),
                 UNIQUE KEY ux_pages_table_name (table_name)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createSlotAssignments(): void
@@ -177,8 +178,8 @@ final class Bootstrapper
                     FOREIGN KEY (page_id) REFERENCES stardust_pages (id),
                 CONSTRAINT fk_slot_assignments_field
                     FOREIGN KEY (field_id) REFERENCES stardust_fields (id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createSchemaVersion(): void
@@ -198,8 +199,8 @@ final class Bootstrapper
                 updated_at  DATETIME         NOT NULL,
                 PRIMARY KEY (id),
                 CONSTRAINT ck_schema_version_singleton CHECK (id = 1)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createExportJobs(): void
@@ -226,8 +227,8 @@ final class Bootstrapper
                 KEY ix_export_jobs_tenant_status (tenant_id, status),
                 KEY ix_export_jobs_status_heartbeat (status, heartbeat_at),
                 KEY ix_export_jobs_completed (completed_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     /**
@@ -264,8 +265,8 @@ final class Bootstrapper
                 KEY ix_import_jobs_status_created (status, created_at),
                 KEY ix_import_jobs_tenant_status (tenant_id, status),
                 KEY ix_import_jobs_status_heartbeat (status, heartbeat_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createReconcilerDlq(): void
@@ -287,8 +288,8 @@ final class Bootstrapper
                 PRIMARY KEY (id),
                 KEY ix_dlq_source_failed_at (source, failed_at),
                 KEY ix_dlq_entry (entry_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     private function createBackfillCheckpoints(): void
@@ -307,8 +308,8 @@ final class Bootstrapper
                 PRIMARY KEY (id),
                 UNIQUE KEY ux_backfill_job_name (job_name),
                 KEY ix_backfill_status_updated (status, updated_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     /**
@@ -344,16 +345,15 @@ final class Bootstrapper
                 updated_at      DATETIME NOT NULL,
                 PRIMARY KEY (id),
                 CONSTRAINT ck_advisory_schedule_singleton CHECK (id = 1)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        SQL);
+            )
+        SQL . ' ' . Dialect::tableOptionsClause());
     }
 
     /**
-     * Implements ADR 0017's "at most one live slot per field" invariant via
-     * a functional unique index. The CASE expression yields field_id only
-     * while the row is live (assigned, backfilling, ready) and NULL
-     * otherwise — and NULLs are exempt from MySQL's UNIQUE constraint, so
-     * tombstoned and free rows do not block reassignment.
+     * Implements ADR 0017's "at most one live slot per field" invariant.
+     * The DDL text itself — a MySQL 8.0.13+ functional unique index —
+     * lives in {@see Dialect::liveSlotUniqueIndexDdl()}, which is also
+     * where its CASE-expression semantics are documented.
      *
      * MySQL has no CREATE INDEX IF NOT EXISTS, so we self-check via
      * information_schema to stay idempotent across re-runs. The follow-up
@@ -378,13 +378,7 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                CREATE UNIQUE INDEX ux_slot_assignments_field_live
-                    ON stardust_slot_assignments (
-                        (CASE WHEN status IN ('assigned', 'backfilling', 'ready')
-                              THEN field_id END)
-                    )
-            SQL);
+            $this->pdo->exec(Dialect::liveSlotUniqueIndexDdl());
         } catch (PDOException $e) {
             // MySQL ER_DUP_KEYNAME = 1061. We only swallow this one
             // — anything else (permissions, syntax, connection) must

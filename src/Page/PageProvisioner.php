@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\Dialect;
 use StarDust\Support\PdoQuery;
 use StarDust\Support\UuidV4;
 use Throwable;
@@ -313,7 +314,7 @@ final class PageProvisioner
         // prefix needs the 3072-byte key limit; COMPACT/REDUNDANT cap at 767
         // bytes and would fail CREATE TABLE with errno 1071 on servers whose
         // innodb_default_row_format is not dynamic.
-        $lines[] = ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC';
+        $lines[] = ') ' . Dialect::tableOptionsClause() . ' ROW_FORMAT=DYNAMIC';
 
         return implode("\n", $lines);
     }
