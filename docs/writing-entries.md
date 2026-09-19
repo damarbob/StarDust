@@ -94,6 +94,8 @@ for an end-to-end JSON loop: JSON in, JSON-filtered out.
 
 `tenant_id` is validated at every entry point (must be `>= 1`) before any SQL executes. All write-path operations emit structured NDJSON log events — `entry_written`, `entry_updated`, `entry_deleted`, `exhaustion_fallback`, `bulk_chunk_committed`, `bulk_chunk_rolled_back`, `bulk_accepted`, `payload_too_large`.
 
+A `datetime` field's value must be a `DateTimeInterface`, a naive `Y-m-d H:i:s` string (assumed UTC), or an RFC 3339 string with an explicit UTC offset (`Z` or `±HH:MM`, converted to UTC on write) — the same offset requirement [Searching with the JSON wire format](query-filter.md) already documents for filter bounds. Any other string shape, including a locale-formatted date such as `05/01/2026`, is rejected with `UncoercibleSlotValueException` rather than guessed at: a slash-separated date is read as month-first regardless of what the caller intended, so a day-first value only *looks* like it worked — it lands on the wrong date, silently, for any day ≤ 12.
+
 ## Updating and deleting entries
 
 ```php

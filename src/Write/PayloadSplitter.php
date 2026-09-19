@@ -35,8 +35,34 @@ use StarDust\Filter\Limits\FilterLimits;
  *     that fits in BIGINT (PHP_INT_MIN … PHP_INT_MAX); floats are
  *     accepted only if they have no fractional part.
  *   - declared_type=`numeric`:  int, float, or numeric-string ⇒ float.
- *   - declared_type=`datetime`: DateTimeInterface or
- *     `Y-m-d H:i:s` / RFC 3339 string ⇒ `Y-m-d H:i:s` UTC.
+ *   - declared_type=`datetime`: DateTimeInterface, or a string in one
+ *     of exactly two unambiguous shapes — naive `Y-m-d H:i:s` /
+ *     `Y-m-d\TH:i:s` (treated as already UTC, never resolved against
+ *     the host's runtime default timezone) or RFC 3339 with an
+ *     explicit offset (`Z` or `±HH:MM`, converted to UTC) — ⇒
+ *     `Y-m-d H:i:s` UTC.
+ *
+ * **Any other string shape is rejected, not guessed.** `coerceDatetime()`
+ * used to hand any string straight to `new DateTimeImmutable($value)`,
+ * which accepts far more than the two shapes above. Two consequences,
+ * both silent: a naive string was resolved against `date_default_timezone_get()`
+ * rather than treated as UTC, so the same input coerced to a different
+ * instant depending on the host's `date.timezone` ini setting; and a
+ * slash-separated day-first date (`05/01/2026`, the default format in
+ * most non-US locales, Indonesia included) was silently reinterpreted
+ * as month-first (5 January read back as 1 May) whenever the day was
+ * ≤ 12, and outright rejected — but only then — once the day exceeded
+ * 12. Confirmed on PHP 8.4: `new DateTimeImmutable('13/06/2026')`
+ * throws while `new DateTimeImmutable('12/06/2026')` silently returns
+ * 2026-12-06. Sorting or ranging on a field fed that way does not read
+ * as "broken" so much as "scrambled" — most rows land close to right,
+ * a few land months away, and nothing in the write path complained.
+ * The two accepted shapes are validated by strict regex before any
+ * `DateTimeImmutable` construction is attempted, the same posture
+ * {@see \StarDust\Search\PreFlight\ValueTypeValidator::isRfc3339WithOffset()}
+ * already takes on the filter side — this closes the asymmetry between
+ * the two: the filter side has required an explicit offset since it
+ * shipped, the write side did not.
  *
  * Anything else throws {@see UncoercibleSlotValueException}; the
  * EntryWriter catches the throw at its transaction boundary and rolls
@@ -188,6 +214,21 @@ final class PayloadSplitter
         );
     }
 
+    /**
+     * Naive `Y-m-d H:i:s` / `Y-m-d\TH:i:s`, optional fractional seconds,
+     * no offset — treated as already UTC.
+     */
+    private const NAIVE_DATETIME_PATTERN =
+        '/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/';
+
+    /**
+     * RFC 3339 with an explicit offset — same shape
+     * {@see \StarDust\Search\PreFlight\ValueTypeValidator::isRfc3339WithOffset()}
+     * requires on the filter side.
+     */
+    private const OFFSET_DATETIME_PATTERN =
+        '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+\-]\d{2}:\d{2})$/';
+
     private static function coerceDatetime(mixed $value, string $fieldName): string
     {
         if ($value instanceof DateTimeInterface) {
@@ -196,8 +237,28 @@ final class PayloadSplitter
                 ->format('Y-m-d H:i:s');
         }
         if (is_string($value) && $value !== '') {
+            // Reject before attempting to parse. `new DateTimeImmutable()`
+            // accepts far more than these two shapes, including strings
+            // that silently mean something other than what the caller
+            // intended — see the class docblock.
+            $isNaive  = preg_match(self::NAIVE_DATETIME_PATTERN, $value) === 1;
+            $isOffset = ! $isNaive && preg_match(self::OFFSET_DATETIME_PATTERN, $value) === 1;
+            if (! $isNaive && ! $isOffset) {
+                throw new UncoercibleSlotValueException(
+                    "Field '{$fieldName}': cannot coerce '{$value}' to datetime — expected"
+                    . " 'Y-m-d H:i:s' (assumed UTC) or RFC 3339 with an explicit UTC offset"
+                    . " ('Z' or '+HH:MM')."
+                );
+            }
             try {
-                $dt = new DateTimeImmutable($value);
+                // UTC context is always safe: an offset-carrying string
+                // is parsed by its own explicit offset regardless of the
+                // constructor's timezone argument (PHP resolves it from
+                // the string content), and a naive string is what this
+                // makes deterministic — resolved as UTC rather than
+                // against whatever the host's runtime default timezone
+                // happens to be.
+                $dt = new DateTimeImmutable($value, new DateTimeZone('UTC'));
             } catch (\Throwable $e) {
                 throw new UncoercibleSlotValueException(
                     "Field '{$fieldName}': cannot parse '{$value}' as datetime: " . $e->getMessage()
