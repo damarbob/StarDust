@@ -529,7 +529,7 @@ final class SlotAffinityTest extends TestCase
     /** A pre-ADR-0043 page: sixty columns, none indexed. */
     private function provisionLegacyPage(): int
     {
-        return LegacyPage::provision($this->pdo, 'phpunit/0');
+        return LegacyPage::provision($this->pdo, $this->engine, 'phpunit/0');
     }
 
     private function createModel(int $tenantId = 1): int

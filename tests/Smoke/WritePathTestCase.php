@@ -111,7 +111,7 @@ abstract class WritePathTestCase extends TestCase
      */
     protected function provisionLegacyPage(): int
     {
-        return LegacyPage::provision($this->pdo, 'phpunit/0');
+        return LegacyPage::provision($this->pdo, $this->engine, 'phpunit/0');
     }
 
     /**

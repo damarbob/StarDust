@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Tests\Smoke\Support;
 
 use PDO;
+use StarDust\Support\ServerEngine;
 
 /**
  * Builds a **pre-ADR-0043 extension page**: all sixty slot columns, none
@@ -27,6 +28,15 @@ use PDO;
  * bypass precedent as `Phase6aTestCase::seedSlotValues()` and
  * `SlotAffinityTest`'s direct registry writes: fixtures may construct
  * states the production path refuses to.
+ *
+ * **`$engine` (ADR 0055 item 3) branches the collation only, inlined
+ * directly rather than delegated to `Support\Dialect`.** The column
+ * layout must stay frozen against `PageProvisioner`'s evolution, and
+ * that same independence argues for not taking on a dependency on
+ * `Dialect` either — a future change to that class's signature would
+ * otherwise break a fixture whose entire job is to hold still. The
+ * MariaDB literal is `Dialect::tableOptionsClause(ServerEngine::MARIADB)`'s
+ * value, copied rather than called, for the same reason.
  */
 final class LegacyPage
 {
@@ -49,14 +59,17 @@ final class LegacyPage
      * 0043 — DDL first (it auto-commits), then the registry row, the
      * full inventory and the schema-version bump in one transaction.
      */
-    public static function provision(PDO $pdo, string $provisionerIdentity = 'phpunit/legacy'): int
-    {
+    public static function provision(
+        PDO $pdo,
+        ServerEngine $engine,
+        string $provisionerIdentity = 'phpunit/legacy',
+    ): int {
         $pageNumber = (int) $pdo
             ->query('SELECT COALESCE(MAX(id), 0) + 1 FROM stardust_pages')
             ->fetchColumn();
         $tableName = "entry_slots_page_{$pageNumber}";
 
-        $pdo->exec(self::ddl($tableName));
+        $pdo->exec(self::ddl($tableName, $engine));
 
         $now = gmdate('Y-m-d H:i:s');
 
@@ -102,7 +115,7 @@ final class LegacyPage
         return $pageNumber;
     }
 
-    private static function ddl(string $tableName): string
+    private static function ddl(string $tableName, ServerEngine $engine): string
     {
         $lines = [
             "CREATE TABLE IF NOT EXISTS {$tableName} (",
@@ -126,7 +139,11 @@ final class LegacyPage
         // it: COMPACT/REDUNDANT cap index keys at 767 bytes, and a test
         // that later indexes a string slot on this page would hit errno
         // 1071 on a server whose innodb_default_row_format differs.
-        $lines[] = ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC';
+        $collation = match ($engine) {
+            ServerEngine::MYSQL   => 'utf8mb4_0900_ai_ci',
+            ServerEngine::MARIADB => 'utf8mb4_unicode_520_nopad_ci',
+        };
+        $lines[] = ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE={$collation} ROW_FORMAT=DYNAMIC";
 
         return implode("\n", $lines);
     }
