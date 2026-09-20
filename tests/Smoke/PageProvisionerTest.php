@@ -12,6 +12,8 @@ use Psr\Log\NullLogger;
 use StarDust\Clock\SystemClock;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Page\PageProvisioner;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 
 /**
@@ -25,6 +27,7 @@ use StarDust\Tests\Smoke\Support\SchemaFixture;
 final class PageProvisionerTest extends TestCase
 {
     private PDO $pdo;
+    private ServerEngine $engine;
 
     protected function setUp(): void
     {
@@ -46,6 +49,7 @@ final class PageProvisionerTest extends TestCase
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
 
+        $this->engine = ServerEngineDetector::detect($this->pdo);
         SchemaFixture::reset($this->pdo);
     }
 
@@ -55,6 +59,7 @@ final class PageProvisionerTest extends TestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new NullLogger(),
+            engine: $this->engine,
             provisionerIdentity: 'phpunit/0',
         );
     }
@@ -269,6 +274,7 @@ final class PageProvisionerTest extends TestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new StdoutNdjsonLogger(new SystemClock(), $stream),
+            engine: $this->engine,
             provisionerIdentity: 'phpunit/0',
         );
 
@@ -326,6 +332,7 @@ final class PageProvisionerTest extends TestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new StdoutNdjsonLogger(new SystemClock(), $stream),
+            engine: $this->engine,
             provisionerIdentity: 'phpunit/0',
         );
 

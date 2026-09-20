@@ -10,6 +10,8 @@ use PHPUnit\Framework\TestCase;
 use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Config\Config;
 use StarDust\StarDust;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 
 /**
@@ -30,6 +32,7 @@ use StarDust\Tests\Smoke\Support\SchemaFixture;
 final class BootstrapTest extends TestCase
 {
     private PDO $pdo;
+    private ServerEngine $engine;
 
     protected function setUp(): void
     {
@@ -51,6 +54,7 @@ final class BootstrapTest extends TestCase
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
 
+        $this->engine = ServerEngineDetector::detect($this->pdo);
         $this->dropAllTables();
     }
 
@@ -81,10 +85,16 @@ final class BootstrapTest extends TestCase
         SchemaFixture::dropAll($this->pdo);
     }
 
+    /** `(new Bootstrapper($this->pdo, $this->engine))->run()`, spelled once. */
+    private function bootstrap(): void
+    {
+        (new Bootstrapper($this->pdo, $this->engine))->run();
+    }
+
     /** Exit criterion 1: blank database → all tables present. */
     public function testBootstrapCreatesEveryTableOnBlankDatabase(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         foreach (SchemaFixture::CORE_TABLES as $table) {
             self::assertTrue(
@@ -101,7 +111,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapIsIdempotentAndNonDestructive(): void
     {
-        $bootstrapper = new Bootstrapper($this->pdo);
+        $bootstrapper = new Bootstrapper($this->pdo, $this->engine);
         $bootstrapper->run();
 
         $this->pdo->exec(
@@ -128,7 +138,7 @@ final class BootstrapTest extends TestCase
     /** Exit criterion 3: stardust_schema_version is seeded with exactly one row, id = 1. */
     public function testSchemaVersionSingletonSeeded(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $rows = $this->pdo
             ->query('SELECT id, version FROM stardust_schema_version')
@@ -139,7 +149,7 @@ final class BootstrapTest extends TestCase
         self::assertSame(0, (int) $rows[0]['version'], 'Initial version counter should be 0.');
 
         // Re-running must not duplicate the singleton.
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
         $count = (int) $this->pdo->query('SELECT COUNT(*) FROM stardust_schema_version')->fetchColumn();
         self::assertSame(1, $count, 'Bootstrap re-run must not duplicate the singleton row.');
     }
@@ -151,7 +161,7 @@ final class BootstrapTest extends TestCase
      */
     public function testSlotAssignmentStatusEnumRejectsInvalidValue(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         // Seed a page so the FK on stardust_slot_assignments.page_id is satisfied.
         $this->pdo->exec(
@@ -170,7 +180,7 @@ final class BootstrapTest extends TestCase
     /** Sanity: each of the five legitimate status values is accepted. */
     public function testSlotAssignmentStatusEnumAcceptsAllFiveStates(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $this->pdo->exec(
             "INSERT INTO stardust_pages (table_name, provisioned_at, provisioned_by)"
@@ -201,7 +211,7 @@ final class BootstrapTest extends TestCase
      */
     public function testPartialUniqueIndexOnSlotAssignmentsIsPresent(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $rows = $this->pdo
             ->query('SHOW INDEX FROM stardust_slot_assignments')
@@ -239,7 +249,7 @@ final class BootstrapTest extends TestCase
      */
     public function testPartialUniqueIndexEnforcesAtMostOneLiveSlotPerField(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $this->pdo->exec(
             "INSERT INTO stardust_models (tenant_id, name, created_at)"
@@ -290,7 +300,7 @@ final class BootstrapTest extends TestCase
      */
     public function testEntryDataCompositeIndexesPresent(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $rows = $this->pdo->query('SHOW INDEX FROM entry_data')->fetchAll();
 
@@ -331,7 +341,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsLiberatorSweepGapCountColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -345,8 +355,8 @@ final class BootstrapTest extends TestCase
 
         // Idempotent: re-running must not error and must not duplicate
         // the column.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -374,7 +384,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsBackfillCheckpointsCorrelationIdColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $column = $this->pdo
             ->query(
@@ -399,8 +409,8 @@ final class BootstrapTest extends TestCase
             'correlation_id must hold a canonical hyphenated v4 UUID.',
         );
 
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -434,7 +444,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsCorrelationColumns(string $table, string $column): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $stmt = $this->pdo->prepare(
             'SELECT IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH'
@@ -454,8 +464,8 @@ final class BootstrapTest extends TestCase
             "{$table}.{$column} must hold a canonical hyphenated v4 UUID.",
         );
 
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $count = $this->pdo->prepare(
             'SELECT COUNT(*) FROM information_schema.COLUMNS'
@@ -500,7 +510,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsExportJobsArtifactBytesColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $column = $this->pdo
             ->query(
@@ -518,8 +528,8 @@ final class BootstrapTest extends TestCase
 
         // Idempotent: re-running must not error and must not duplicate
         // the column.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -540,7 +550,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsFieldsPreviousNameColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $column = $this->pdo
             ->query(
@@ -563,8 +573,8 @@ final class BootstrapTest extends TestCase
 
         // Idempotent: re-running must not error and must not duplicate
         // the column.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -589,7 +599,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsModelsDeletedAtColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $column = $this->pdo
             ->query(
@@ -617,8 +627,8 @@ final class BootstrapTest extends TestCase
         self::assertSame(0, $updatedAt, 'stardust_models still has no updated_at — ModelRenamer takes no clock.');
 
         // Idempotent across re-runs.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -645,7 +655,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsSyncQueueEntryIdIndex(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $rows = $this->pdo->query('SHOW INDEX FROM stardust_sync_queue')->fetchAll(\PDO::FETCH_ASSOC);
         $matching = array_values(array_filter(
@@ -659,8 +669,8 @@ final class BootstrapTest extends TestCase
         self::assertSame(1, (int) $matching[0]['Non_unique'], 'The index must not be unique — many rows may queue one entry.');
 
         // Idempotent across re-runs.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $again = $this->pdo->query('SHOW INDEX FROM stardust_sync_queue')->fetchAll(\PDO::FETCH_ASSOC);
         $count = count(array_filter(

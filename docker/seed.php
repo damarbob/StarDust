@@ -61,7 +61,7 @@ $alreadySeeded = ((int) $pdo->query(
 )->fetchColumn()) > 0;
 
 if (! $alreadySeeded) {
-    (new PageProvisioner($pdo, $engine->config()->clock, $engine->logger()))
+    (new PageProvisioner($pdo, $engine->config()->clock, $engine->logger(), $engine->serverEngine()))
         ->provision(filterableSlots: ['i_str_01', 'i_str_02', 'i_int_01', 'i_dt_01']);
 
     $reserver = new SlotReserver($pdo, $engine->config()->clock, $engine->logger());

@@ -266,7 +266,7 @@ use StarDust\Slot\SlotReserver;
 // Provision a page carrying the two slots the filterable fields will use.
 // The page is created with exactly these columns, each with its own
 // composite (tenant_id, slot) index — the list may not be empty.
-(new PageProvisioner($pdo, $engine->config()->clock, $engine->logger()))
+(new PageProvisioner($pdo, $engine->config()->clock, $engine->logger(), $engine->serverEngine()))
     ->provision(filterableSlots: ['i_str_01', 'i_int_01']);
 
 // Reserve one slot per field (free → assigned). Reservation takes the

@@ -6,6 +6,7 @@ namespace StarDust\Tests\Smoke\Support;
 
 use PDO;
 use StarDust\Bootstrap\Bootstrapper;
+use StarDust\Support\ServerEngineDetector;
 
 /**
  * The smoke suite's per-test database reset.
@@ -139,7 +140,7 @@ final class SchemaFixture
         // rather than issuing DELETE against a table that isn't there.
         if (array_diff(self::CORE_TABLES, $present) !== []) {
             self::dropAll($pdo, $pageTables);
-            (new Bootstrapper($pdo))->run();
+            (new Bootstrapper($pdo, ServerEngineDetector::detect($pdo)))->run();
 
             return;
         }
@@ -176,7 +177,7 @@ final class SchemaFixture
 
         // Reseeds the schema-version singleton the sweep just deleted,
         // and re-creates anything CORE_TABLES failed to describe.
-        (new Bootstrapper($pdo))->run();
+        (new Bootstrapper($pdo, ServerEngineDetector::detect($pdo)))->run();
     }
 
     /**

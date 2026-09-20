@@ -84,6 +84,8 @@ use StarDust\Search\SearchService;
 use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Watcher\AdvisoryScheduleRepository;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
@@ -141,6 +143,7 @@ final class StarDust
     private ?ExportJobSubmitter $exportSubmitter = null;
     private ?SchemaBuilder $schemaBuilder = null;
     private ?SchemaReader $schemaReader = null;
+    private ?ServerEngine $serverEngine = null;
 
     public function __construct(private readonly Config $config)
     {
@@ -169,7 +172,27 @@ final class StarDust
      */
     public function bootstrap(): void
     {
-        (new Bootstrapper($this->config->pdo))->run();
+        (new Bootstrapper($this->config->pdo, $this->serverEngine()))->run();
+    }
+
+    /**
+     * ADR 0055: the target engine, detected from the live connection —
+     * never configured. Memoised on the same {@see self::lockNamespace()}
+     * precedent (a PDO-derived fact resolved once, not a construction-time
+     * `Config` input), and it has to live here rather than as a local in
+     * {@see self::bootstrap()}: {@see PageProvisioner} emits DDL at
+     * Watcher time, arbitrarily later and possibly in a different
+     * process, so a value resolved only inside `bootstrap()` would never
+     * reach it.
+     *
+     * Throws {@see \StarDust\Exception\UnsupportedServerException} for a
+     * server this engine does not recognise, or one below its floor
+     * (MySQL/Percona 8.0.13, MariaDB 10.11) — detection fails closed
+     * rather than defaulting to MySQL.
+     */
+    public function serverEngine(): ServerEngine
+    {
+        return $this->serverEngine ??= ServerEngineDetector::detect($this->config->pdo);
     }
 
     /**
@@ -663,6 +686,7 @@ final class StarDust
                 pdo: $this->config->pdo,
                 clock: $this->config->clock,
                 logger: $this->config->logger,
+                engine: $this->serverEngine(),
             ),
             cardinalitySampler: $this->cardinalitySampler(),
             spreadSampler: $this->spreadSampler(),
