@@ -183,7 +183,7 @@ final class RetypeCheckpointRepository
      * Only *terminal* rows are relaxed. A genuinely concurrent
      * lifecycle is still refused by the caller's
      * {@see self::existsRunningForField()} pre-check, which now runs
-     * under {@see RetypeInitiator}'s `FOR UPDATE OF f` lock on the field
+     * under {@see RetypeInitiator}'s `FOR UPDATE` lock on the field
      * row and so cannot interleave with a second initiator. That lock is
      * what keeps this upsert from silently resetting a live checkpoint.
      *

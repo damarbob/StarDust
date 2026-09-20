@@ -1133,6 +1133,7 @@ final class StarDust
                 pdo:    $this->config->pdo,
                 logger: $this->config->logger,
                 cache:  $this->schemaVersionCache(),
+                engine: $this->serverEngine(),
             );
     }
 
