@@ -48,9 +48,18 @@ final class JsonFilterDecoderTest extends TestCase
         self::assertNull($this->decoder()->decode('{"version":"1"}'));
     }
 
+    public function testEnvelopeMalformedWhenRootIsNotAnObject(): void
+    {
+        // Rejected by the leading-`{` guard, before json_decode() runs.
+        $this->assertRejects(ValidationErrorCode::ENVELOPE_MALFORMED, 'not json');
+    }
+
     public function testEnvelopeMalformedOnInvalidJson(): void
     {
-        $this->assertRejects(ValidationErrorCode::ENVELOPE_MALFORMED, 'not json');
+        // Passes the leading-`{` guard, so this is the case that actually
+        // reaches json_decode() and its JsonException catch.
+        $e = $this->assertRejects(ValidationErrorCode::ENVELOPE_MALFORMED, '{"filter":');
+        self::assertSame('', $e->jsonPointer);
     }
 
     public function testEnvelopeMalformedOnArrayRoot(): void
@@ -191,6 +200,84 @@ final class JsonFilterDecoderTest extends TestCase
         ]);
         $e = $this->assertRejects(ValidationErrorCode::VALUE_COUNT_MISMATCH, (string) $payload);
         self::assertSame('/filter/args/1/value', $e->jsonPointer);
+    }
+
+    /**
+     * One row per reject branch in the decoder, each pinned to the code
+     * and the JSON Pointer it must report.
+     *
+     * @dataProvider rejectCases
+     */
+    public function testRejectsWithCodeAndPointer(string $expectedCode, string $payload, string $expectedPointer): void
+    {
+        $e = $this->assertRejects($expectedCode, $payload);
+        self::assertSame($expectedPointer, $e->jsonPointer);
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string, 2: string}>
+     */
+    public static function rejectCases(): array
+    {
+        $field = ['model' => 'm', 'name' => 'n'];
+        $leaf = ['op' => 'eq', 'field' => $field, 'value' => 'x'];
+        $tooLong = str_repeat('a', FilterLimits::DEFAULT_MAX_STRING_LENGTH + 1);
+
+        $filter = static fn (mixed $node): string => (string) json_encode(['filter' => $node]);
+        $malformed = ValidationErrorCode::NODE_MALFORMED;
+        $bounds = ValidationErrorCode::VALUE_OUT_OF_BOUNDS;
+
+        return [
+            // ---- envelope ----
+            'filter is a string'       => [ValidationErrorCode::ENVELOPE_MALFORMED, '{"filter":"x"}', '/filter'],
+            'filter is a JSON array'   => [ValidationErrorCode::ENVELOPE_MALFORMED, '{"filter":[1]}', '/filter'],
+            'filter is an empty object' => [$malformed, '{"filter":{}}', '/filter'],
+
+            // ---- node ----
+            'op is not a string'       => [$malformed, $filter(['op' => 1]), '/filter'],
+            'not without arg'          => [$malformed, $filter(['op' => 'not']), '/filter'],
+            'not arg is a scalar'      => [$malformed, $filter(['op' => 'not', 'arg' => 'x']), '/filter/arg'],
+            'and without args'         => [$malformed, $filter(['op' => 'and']), '/filter'],
+            'and args is an object'    => [$malformed, $filter(['op' => 'and', 'args' => ['a' => $leaf]]), '/filter/args'],
+            'or child is a scalar'     => [$malformed, $filter(['op' => 'or', 'args' => ['x']]), '/filter/args/0'],
+            'and args over the limit'  => [$bounds, $filter(['op' => 'and', 'args' => array_fill(0, FilterLimits::DEFAULT_MAX_ARGS + 1, $leaf)]), '/filter/args'],
+
+            // ---- field ref ----
+            'field is a string'        => [$malformed, $filter(['op' => 'eq', 'field' => 'm.n', 'value' => 'x']), '/filter/field'],
+            'field.model missing'      => [$malformed, $filter(['op' => 'eq', 'field' => ['name' => 'n'], 'value' => 'x']), '/filter/field/model'],
+            'field.model empty'        => [$malformed, $filter(['op' => 'eq', 'field' => ['model' => '', 'name' => 'n'], 'value' => 'x']), '/filter/field/model'],
+            'field.name empty'         => [$malformed, $filter(['op' => 'eq', 'field' => ['model' => 'm', 'name' => ''], 'value' => 'x']), '/filter/field/name'],
+
+            // ---- single-value leaf ----
+            'eq without value'         => [$malformed, $filter(['op' => 'eq', 'field' => $field]), '/filter'],
+            'eq value is an array'     => [$malformed, $filter(['op' => 'eq', 'field' => $field, 'value' => [1]]), '/filter/value'],
+            'eq value is null'         => [$malformed, $filter(['op' => 'eq', 'field' => $field, 'value' => null]), '/filter/value'],
+            'prefix value is a number' => [$malformed, $filter(['op' => 'prefix', 'field' => $field, 'value' => 7]), '/filter/value'],
+
+            // ---- set / range leaf ----
+            'in value is a scalar'     => [$malformed, $filter(['op' => 'in', 'field' => $field, 'value' => 'x']), '/filter/value'],
+            'in value is an object'    => [$malformed, $filter(['op' => 'in', 'field' => $field, 'value' => ['a' => 1]]), '/filter/value'],
+            'in element is null'       => [$malformed, $filter(['op' => 'in', 'field' => $field, 'value' => ['a', null]]), '/filter/value/1'],
+            'between value is a scalar' => [$malformed, $filter(['op' => 'between', 'field' => $field, 'value' => 1]), '/filter/value'],
+            'between element is array' => [$malformed, $filter(['op' => 'between', 'field' => $field, 'value' => [[1], 2]]), '/filter/value/0'],
+
+            // ---- string length bound, on every operator that carries a string ----
+            'eq string over the limit'      => [$bounds, $filter(['op' => 'eq', 'field' => $field, 'value' => $tooLong]), '/filter/value'],
+            'prefix string over the limit'  => [$bounds, $filter(['op' => 'prefix', 'field' => $field, 'value' => $tooLong]), '/filter/value'],
+            'in element over the limit'     => [$bounds, $filter(['op' => 'in', 'field' => $field, 'value' => ['a', $tooLong]]), '/filter/value/1'],
+            'between element over the limit' => [$bounds, $filter(['op' => 'between', 'field' => $field, 'value' => ['a', $tooLong]]), '/filter/value/1'],
+        ];
+    }
+
+    public function testStringLimitCountsCharactersNotBytes(): void
+    {
+        // 4096 two-byte characters is 8192 bytes but exactly at the limit.
+        $atLimit = str_repeat('é', FilterLimits::DEFAULT_MAX_STRING_LENGTH);
+        $node = $this->decoder()->decode((string) json_encode([
+            'filter' => ['op' => 'eq', 'field' => ['model' => 'm', 'name' => 'n'], 'value' => $atLimit],
+        ]));
+        self::assertInstanceOf(LeafNode::class, $node);
+        self::assertSame($atLimit, $node->value?->value);
     }
 
     public function testHappyPathEq(): void

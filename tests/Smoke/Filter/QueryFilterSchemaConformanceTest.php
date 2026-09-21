@@ -156,6 +156,23 @@ final class QueryFilterSchemaConformanceTest extends TestCase
             'empty-prefix'       => $reject(['filter' => ['op' => 'prefix', 'field' => $field, 'value' => '']]),
             'empty-and-args'     => $reject(['filter' => ['op' => 'and', 'args' => []]]),
             'over-limit-in'      => $reject(['filter' => ['op' => 'in', 'field' => $field, 'value' => range(0, 1024)]]),
+            'eq-null-value'      => $reject(['filter' => ['op' => 'eq', 'field' => $field, 'value' => null]]),
+            'filter-is-string'   => $reject('{"filter":"x"}'),
+            'not-without-arg'    => $reject(['filter' => ['op' => 'not']]),
+            'empty-field-name'   => $reject(['filter' => ['op' => 'eq', 'field' => ['model' => 'inv', 'name' => ''], 'value' => 'x']]),
+            'over-limit-args'    => $reject(['filter' => [
+                'op'   => 'or',
+                'args' => array_fill(0, 65, ['op' => 'eq', 'field' => $field, 'value' => 'x']),
+            ]]),
+
+            // ---- string length: 4096 characters, on every operator that carries a string ----
+            'eq-string-at-limit'        => $accept(['filter' => ['op' => 'eq', 'field' => $field, 'value' => str_repeat('a', 4096)]]),
+            'eq-multibyte-at-limit'     => $accept(['filter' => ['op' => 'eq', 'field' => $field, 'value' => str_repeat('é', 4096)]]),
+            'eq-string-over-limit'      => $reject(['filter' => ['op' => 'eq', 'field' => $field, 'value' => str_repeat('a', 4097)]]),
+            'neq-string-over-limit'     => $reject(['filter' => ['op' => 'neq', 'field' => $field, 'value' => str_repeat('a', 4097)]]),
+            'in-element-over-limit'     => $reject(['filter' => ['op' => 'in', 'field' => $field, 'value' => ['a', str_repeat('a', 4097)]]]),
+            'between-element-over-limit' => $reject(['filter' => ['op' => 'between', 'field' => $field, 'value' => ['a', str_repeat('a', 4097)]]]),
+            'prefix-string-over-limit'  => $reject(['filter' => ['op' => 'prefix', 'field' => $field, 'value' => str_repeat('a', 4097)]]),
         ];
     }
 
