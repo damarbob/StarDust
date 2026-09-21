@@ -86,6 +86,8 @@ Each window's transaction writes the running `manifest` **and** `heartbeat_at` v
 
 This is reliable because `manifest.entries_written` strictly increases, so a matched row is always *changed* — `rowCount()===0` can only mean an identity mismatch, never a no-op update.
 
+**`rowCount()===0` is not the only shape this takes.** Verified against a real MariaDB 11 container (2026-09-21): the checkpoint UPDATE can throw SQLSTATE HY000 errno 1020 ("Record has changed since last read in table") for the identical race instead of matching zero rows — root-caused to `manifest` being a JSON column, which MariaDB backs with an implicit `CHECK (json_valid(manifest))` that collides with InnoDB's semi-consistent read for this statement's `WHERE` clause under concurrent modification. MySQL and MariaDB 10.11 never raise it here; the Chronicler's equivalent checkpoints update no JSON column and don't hit it either. `ImportJobWorkSource::isRowChangedSinceLastRead()` gives errno 1020 the same lease-lost treatment as `rowCount()===0` rather than letting it fall through to the generic `catch (Throwable)` and `failJob()`. Dated addendum in ADR 0040's Consequences section.
+
 ### The manifest (ADR 0011 §26, shaped by ADR 0040)
 
 `{chunks, entries_written}` is the resume checkpoint above. `chunk_manifest` is the per-chunk enumeration §26 requires: one record per chunk carrying `index`, `size`, `outcome`, and the chunk's `entry_id_first` / `entry_id_last`. The write path already had the ids — `writeWithinTransaction()` returns an `EntryWriteResult` — so the records cost no extra query.

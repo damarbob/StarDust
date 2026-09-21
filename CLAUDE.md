@@ -160,7 +160,7 @@ bin/stardust --help
 
 The smoke suite **skips** (does not fail) when `STARDUST_TEST_DSN` / `STARDUST_TEST_USER` are unset. CI provides them via the MySQL service container. `phpunit.xml.dist` sets `failOnWarning`, `failOnRisky`, `beStrictAboutOutputDuringTests`, and `beStrictAboutTestsThatDoNotTestAnything` — keep tests strict-clean.
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs four jobs: `static-analysis` (PHPStan, no DB), `markdown-lint` (markdownlint, no DB), `mysql-smoke` (the suite across the full PHP matrix), and `mariadb-rejection` (below).
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs five jobs: `static-analysis` (PHPStan, no DB), `markdown-lint` (markdownlint, no DB), `mysql-smoke` (the suite across the full PHP matrix), `mariadb-smoke` (the suite across the full PHP matrix x MariaDB 10.11 and 11), and `mariadb-rejection` (below).
 
 ## PHP floor and static analysis
 
@@ -174,7 +174,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs four jobs: `stati
 
 - **Supported:** MySQL 8.0.13+ / Percona 8.0.13+, and — since ADR 0054/0055, landed 2026-09-20 — **MariaDB 10.11+**. The engine's target is *detected* from the live connection (`Support\ServerEngineDetector`), never configured; `StarDust::serverEngine()` is the public accessor. `Support\Dialect` branches the two constructs that diverge (table collation, the ADR 0017 live-slot invariant — a functional index on MySQL, a generated-column substitute on MariaDB). **One documented behavioural caveat on MariaDB**: range filters and field sorts order supplementary-plane characters at the opposite end from MySQL (ADR 0041's Consequences section, ADR 0054 §3) — a real divergence, accepted rather than engineered around.
 - **Unsupported and actively rejected:** MariaDB ≤ 10.6 (the JSON-fallback collation divergence ADR 0054 found has no configuration-only fix) and MySQL/Percona ≤ 8.0.12. `ServerEngineDetector::detect()` enforces both floors at the runtime level, failing closed with `Exception\UnsupportedServerException` — verified directly against a real MariaDB 10.6 container. **`EnvironmentTest::testServerIsASupportedEngine`** (renamed from `testServerIsMySql`) is the smoke-suite mirror of that gate, and the full 937-test smoke suite is verified green on both MySQL 8.0.13 and MariaDB 10.11 as of this line.
-- **CI is not yet caught up with the above and this is a known, open gap (ROADMAP.md Stage 5, not started):** the `mariadb-rejection` job still targets `mariadb:11` expecting the suite to fail — which it likely no longer does, since MariaDB 11 is matched by the same `MariaDB` version-string marker as 10.11 and the suite passes there too. Retargeting that job at a genuinely below-floor MariaDB (10.6) is the fix, and it has not landed. Until it does, treat a red `mariadb-rejection` job as **expected** rather than a regression to chase.
+- **CI now covers both engines (ROADMAP.md Stage 5, done):** `mariadb-smoke` runs the full PHP matrix against both MariaDB 10.11 and 11 (must pass), and `mariadb-rejection` was retargeted at `mariadb:10.6` — genuinely below the floor — so its "must fail" assertion stays meaningful (it no longer proves anything against `mariadb:11`, which the suite now passes).
 - `EXPLAIN ANALYZE` is an 8.0.18+ runbook tool only (ADR 0019/0023) — do **not** add it to the smoke suite.
 
 ## Architecture
