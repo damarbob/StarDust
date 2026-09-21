@@ -8,11 +8,14 @@ run, and which conventions check themselves so you don't have to memorise them.
 - **PHP 8.1 or newer.** 8.1 is the floor, and CI runs the test suite on 8.1, 8.2,
   8.3, and 8.4. Do not use syntax newer than 8.1 — it will compile on your machine
   and fail on the oldest matrix job.
-- **MySQL 8.0.13+ or Percona 8.0.13+.** The floor is non-negotiable; the schema
-  registry depends on functional partial unique indexes introduced in 8.0.13.
-- **MariaDB is actively rejected**, and a CI job exists specifically to assert that
-  the suite *fails* against it. That is a feature, not a bug — see the README's
-  Requirements section for why.
+- **MySQL 8.0.13+ or Percona 8.0.13+, or MariaDB 10.11+.** Whichever engine you
+  point it at is detected, not configured. MySQL's floor is non-negotiable — the
+  schema registry depends on functional partial unique indexes introduced in
+  8.0.13; MariaDB has no such index type at any version and gets a generated-column
+  substitute instead, which is why its own floor (10.11) was set independently.
+- **MariaDB 10.6 and older is actively rejected**, and a CI job exists specifically
+  to assert that the suite *fails* against it. That is a feature, not a bug — see
+  the README's Requirements section for why.
 - Composer, and Node (only if you want to run the markdown linter locally).
 
 ## Setup
@@ -44,8 +47,9 @@ npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md" ".agent/**/*.md" "docs/*
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-CI runs four jobs: PHPStan, markdownlint, the suite across the full PHP matrix,
-and the MariaDB rejection check.
+CI runs five jobs: PHPStan, markdownlint, the suite across the full PHP matrix
+against MySQL, the same matrix against MariaDB 10.11+ (must pass, same as MySQL),
+and the MariaDB-below-floor rejection check (targets 10.6, must fail).
 
 Two notes on static analysis. PHPStan runs at level 8 over `src/` and `bin/`, and
 it is pinned to analyse the whole supported PHP range rather than your local

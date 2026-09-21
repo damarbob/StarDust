@@ -142,13 +142,13 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 **A good fit if you:**
 
 - Need user-defined or per-tenant dynamic fields that are still **filterable at native SQL index speed**, without standing up a separate search cluster.
-- Already run **MySQL 8.0.13+ (or Percona)**, either as persistent background processes (systemd, supervisor, or containers) or as a scheduled `bin/stardust tick` on a host with no persistent-process capability.
+- Already run **MySQL 8.0.13+ (or Percona)**, or **MariaDB 10.11+**, either as persistent background processes (systemd, supervisor, or containers) or as a scheduled `bin/stardust tick` on a host with no persistent-process capability.
 - Want a **framework-neutral** engine you can drop into any PHP app via Composer — no ORM, query builder, or framework pulled in.
 - Can tolerate a newly defined or retyped filterable field becoming queryable **shortly after** the fact rather than instantly.
 
 **Probably not a fit if you:**
 
-- Are tied to **MariaDB or MySQL ≤ 5.7** — both are actively rejected (see [Requirements](#requirements)).
+- Are tied to **MariaDB ≤ 10.6 or MySQL ≤ 5.7** — both are actively rejected (see [Requirements](#requirements)). MariaDB 10.11+ is supported, with one caveat: range filters and field sorts order supplementary-plane characters (rare outside emoji) at the opposite end from MySQL.
 - Need **strong read-after-write consistency on filters immediately after a retype or filterability promotion.** The field is served from the JSON payload (and is not filterable) until its backfill completes.
 - Need **full-text, fuzzy, or substring search** out of the box. The default MySQL driver ships exact-match, comparison, range, set-membership, and *anchored*-prefix (`LIKE 'x%'`) operators — but no substring/suffix matching, no fuzzy matching, and no relevance ranking. Fuzzy/full-text is a capability you'd supply via a custom driver.
 - Need **page numbers, jump-to-page navigation, or a total result count.** Reads are cursor-paginated and forward-sequential: every page hands you an opaque cursor for the next one, and the absence of a cursor means you have reached the end. There is no offset parameter and no total count, and that is deliberate rather than pending — both require the database to read the entire matching set, so a query that is quick today would slow down purely because the tenant grew. Infinite scroll and a Next button work naturally; a Back button means holding on to the cursors you have already used, and "Page 7 of 214" or a deep link to an arbitrary page cannot be served at all. A driver backed by an external search service can maintain its own index and supply them.
@@ -191,14 +191,18 @@ If you need a working library today, stay on `^0.2.0-alpha.x`.
 
 - **PHP:** 8.1 or later
 - **PHP extensions:** `ext-pdo`, `ext-pdo_mysql`
-- **Database:** MySQL 8.0.13+ **or** Percona Server 8.0.13+
+- **Database:** MySQL 8.0.13+ **or** Percona Server 8.0.13+ **or** MariaDB 10.11+
 
-The 8.0.13 floor is firm: StarDust leans on functional/conditional unique indexes, which don't exist below 8.0.13. We'd rather refuse to start than corrupt your registry on an engine that silently does the wrong thing.
+The engine detects which one it's talking to at boot — there is no configuration flag to set. MySQL's floor is firm: StarDust leans on functional/conditional unique indexes, which don't exist below 8.0.13. MariaDB has no equivalent index type at any version; the same "at most one live slot per field" invariant is instead enforced there by a generated column plus a plain unique index, which is why MariaDB's own floor (10.11) was chosen independently rather than by mirroring MySQL's. We'd rather refuse to start than corrupt your registry on an engine that silently does the wrong thing.
+
+**One documented behavioral difference on MariaDB:** range filters (`lt`, `lte`, `gt`, `gte`, and a `between` whose bounds straddle it) and field sorts order supplementary-plane Unicode characters — mostly emoji, well outside everyday text — at the opposite end from MySQL. Every other comparison, and ordinary text in any language, is unaffected.
 
 **Not supported:**
 
-- **MariaDB** — its partial-index syntax diverges from MySQL's in a way that would break the slot registry. StarDust detects this and refuses to run, and CI keeps us honest with a dedicated job that *expects* the smoke suite to fail on MariaDB. You find out at boot, not in production.
+- **MariaDB 10.6 and older** — a JSON-column collation divergence found below the 10.11 floor has no configuration-only fix.
 - **MySQL 5.7 and older** — no partial-unique-index feature, which the schema registry depends on.
+
+Either unsupported engine is detected and refused at boot, not discovered in production.
 
 ---
 
@@ -420,7 +424,7 @@ The framework-neutral `bin/stardust` entry point — bootstrap, the four daemons
 
 ## Testing
 
-StarDust is covered by a smoke suite that runs against a **real MySQL** — no mocked databases. It skips cleanly when no test database is configured, so a fresh clone runs green out of the box:
+StarDust is covered by a smoke suite that runs against a **real MySQL or MariaDB** — no mocked databases. It skips cleanly when no test database is configured, so a fresh clone runs green out of the box:
 
 ```bash
 composer install
@@ -430,7 +434,7 @@ vendor/bin/phpunit --testsuite Smoke
 
 A handful of the suite's tests need no database at all (e.g. the wire-format decoder, the event-vocabulary guard, and the schema-conformance cross-check), so they run even on a bare clone.
 
-GitHub Actions runs the same suite on every push, plus a second job that asserts the suite **fails** against MariaDB.
+GitHub Actions runs the same suite on every push against MySQL and against MariaDB 10.11+ (both **must pass**), plus a job that asserts the suite **fails** against MariaDB 10.6, which is below the supported floor.
 
 For the full setup guide and a phase-by-phase breakdown of exactly what each behaviour the suite proves, see **[TESTING.md](TESTING.md)**.
 

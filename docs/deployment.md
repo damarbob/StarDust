@@ -7,7 +7,7 @@ StarDust ships two ways to keep its slot machinery healthy: four persistent back
 A supported persistent-process deployment target MUST provide all of the following.
 
 1. **Persistent background processes or long-running containers** — systemd, supervisor, Docker / Kubernetes / ECS, or equivalent.
-2. **MySQL 8.0.13+ or Percona 8.0.13+** (also covered by [Requirements](../README.md#requirements)). MariaDB is not supported at any version — StarDust detects it and refuses to run.
+2. **MySQL 8.0.13+ or Percona 8.0.13+, or MariaDB 10.11+** (also covered by [Requirements](../README.md#requirements)). MariaDB 10.6 and older is rejected — StarDust detects the server and version at boot and refuses to run below either floor.
 3. **PHP 8.x with CLI access** for the `bin/stardust` entry point.
 4. **Local filesystem write access** for the Chronicler's async export artifacts (a mounted volume in container deployments).
 5. **PID-file or orchestrator-level singleton enforcement for the Watcher** — the in-database advisory lock is a safety net, not the primary enforcement mechanism. The Liberator is multi-worker (page-table-granularity `GET_LOCK` exclusion, not a process singleton) — run as many `bin/stardust liberator` processes as you want reclaim throughput.
@@ -18,14 +18,14 @@ A supported persistent-process deployment target MUST provide all of the followi
 | :--- | :--- |
 | Free shared hosting (no shell, no cron, no persistent processes, no scheduled URL fetch) | Unsupported at any level. |
 | Free shared hosting with a scheduled URL fetch (no shell, no cron) | See **Cron-only / shared hosting** below — drive `StarDust::tick()` from the URL fetch instead of a crontab line. |
-| Paid shared hosting, cron-only, MySQL 8 | See **Cron-only / shared hosting** below. |
-| Paid shared hosting, cron-only, MariaDB | Unsupported — MariaDB is rejected regardless of deployment mode. |
+| Paid shared hosting, cron-only, MySQL 8 or MariaDB 10.11+ | See **Cron-only / shared hosting** below. |
+| Paid shared hosting, cron-only, MariaDB ≤ 10.6 | Unsupported — rejected regardless of deployment mode. |
 | VPS with systemd / supervisor | Supported — reference deployment. |
 | Containerized (Docker Compose, Kubernetes, ECS) | Supported — recommended for production at scale. |
 
 ## Cron-only / shared hosting
 
-**The real exclusion is shell-less and cron-less hosting, not "shared hosting" as a category.** A cPanel-style account with a real MySQL 8 database and a crontab is a supported target, including async exports with `--exports` (below); the exclusion above only bites a host with none of those. And **shared hosting commonly means MariaDB**, which StarDust rejects outright at boot regardless of deployment mode — check with your host before anything else here. This section is written for the MySQL-8 slice of shared hosting; if your host only offers MariaDB, none of it applies to you.
+**The real exclusion is shell-less and cron-less hosting, not "shared hosting" as a category.** A cPanel-style account with a real MySQL 8 (or MariaDB 10.11+) database and a crontab is a supported target, including async exports with `--exports` (below); the exclusion above only bites a host with none of those. **Shared hosting commonly means MariaDB** — check the version with your host: 10.11 or newer works exactly as described in this section, while 10.6 or older is rejected outright at boot regardless of deployment mode.
 
 `bin/stardust tick` runs the Watcher, Liberator and Reconciler as one bounded pass over a single database connection, stopping when it runs out of work, runs out of its time budget, or is asked to shut down. One cron line replaces the four persistent daemons above — which matters beyond convenience: four permanently-resident daemon processes hold four MySQL connections continuously, and shared hosts commonly cap the account's total connections in the low tens, shared with the site itself.
 
