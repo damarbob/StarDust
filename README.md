@@ -1,6 +1,22 @@
+<div align="center">
+
+<img src=".github/assets/logo.svg" width="128" height="128" alt="StarDust logo">
+
 # StarDust
 
 **Schemaless dynamic fields, queried at native SQL index speed — no separate search cluster, no EAV join swamp.**
+
+[![Smoke Suite](https://github.com/damarbob/StarDust/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/damarbob/StarDust/actions/workflows/ci.yml)
+[![Coverage](https://coveralls.io/repos/github/damarbob/StarDust/badge.svg?branch=main)](https://coveralls.io/github/damarbob/StarDust?branch=main)
+[![PHP](https://img.shields.io/packagist/dependency-v/damarbob/stardust/php?version=dev-main)](composer.json)
+[![PHPStan level 8](https://img.shields.io/badge/PHPStan-level%208-brightgreen)](phpstan.neon.dist)
+[![MySQL 8.0.13+](https://img.shields.io/badge/MySQL-8.0.13%2B-4479A1)](docs/deployment.md)
+[![MariaDB 10.11+](https://img.shields.io/badge/MariaDB-10.11%2B-003545)](docs/deployment.md)
+[![License: MIT](https://img.shields.io/github/license/damarbob/StarDust)](LICENSE)
+
+[Quickstart](#try-it-in-five-minutes) · [Documentation](#contents) · [Glossary](GLOSSARY.md) · [Examples](examples/) · [Website](https://stardust.konstelasi.co.id)
+
+</div>
 
 Give every tenant their own fields, then filter them like first-class columns:
 

@@ -62,6 +62,11 @@ jobs:
       matrix:
         php-version: ["8.1", "8.2", "8.3", "8.4"]
 
+    # One cell per engine collects coverage; Coveralls merges it with the
+    # mariadb-smoke upload, so the MariaDB-only Dialect branches count.
+    env:
+      COVERAGE: ${{ matrix.php-version == '8.4' && 'pcov' || 'none' }}
+
     services:
       mysql:
         image: mysql:8.0
@@ -84,7 +89,7 @@ jobs:
         with:
           php-version: ${{ matrix.php-version }}
           extensions: pdo, pdo_mysql
-          coverage: none
+          coverage: ${{ env.COVERAGE }}
 
       - name: Cache Composer
         uses: actions/cache@v4
@@ -111,7 +116,24 @@ jobs:
           STARDUST_TEST_DSN: "mysql:host=127.0.0.1;port=3306;dbname=stardust_test"
           STARDUST_TEST_USER: "root"
           STARDUST_TEST_PASS: "root"
-        run: vendor/bin/phpunit --testsuite Smoke
+        run: |
+          if [ "$COVERAGE" = "pcov" ]; then
+            vendor/bin/phpunit --testsuite Smoke --coverage-clover build/clover.xml
+          else
+            vendor/bin/phpunit --testsuite Smoke
+          fi
+
+      # Never fails the job: a Coveralls outage must not turn a green
+      # suite red. Coverage is reported, not gated.
+      - name: Upload coverage
+        if: env.COVERAGE == 'pcov'
+        uses: coverallsapp/github-action@v2
+        with:
+          file: build/clover.xml
+          format: clover
+          flag-name: mysql
+          parallel: true
+          fail-on-error: false
 
   mariadb-smoke:
     name: Smoke against MariaDB ${{ matrix.mariadb-version }} on PHP ${{ matrix.php-version }} (must pass)
@@ -122,6 +144,10 @@ jobs:
       matrix:
         php-version: ["8.1", "8.2", "8.3", "8.4"]
         mariadb-version: ["10.11", "11"]
+
+    # Pairs with mysql-smoke's coverage cell; 10.11 because it is the floor.
+    env:
+      COVERAGE: ${{ (matrix.php-version == '8.4' && matrix.mariadb-version == '10.11') && 'pcov' || 'none' }}
 
     services:
       mariadb:
@@ -145,7 +171,7 @@ jobs:
         with:
           php-version: ${{ matrix.php-version }}
           extensions: pdo, pdo_mysql
-          coverage: none
+          coverage: ${{ env.COVERAGE }}
 
       - name: Cache Composer
         uses: actions/cache@v4
@@ -173,7 +199,39 @@ jobs:
           STARDUST_TEST_DSN: "mysql:host=127.0.0.1;port=3307;dbname=stardust_test"
           STARDUST_TEST_USER: "root"
           STARDUST_TEST_PASS: "root"
-        run: vendor/bin/phpunit --testsuite Smoke
+        run: |
+          if [ "$COVERAGE" = "pcov" ]; then
+            vendor/bin/phpunit --testsuite Smoke --coverage-clover build/clover.xml
+          else
+            vendor/bin/phpunit --testsuite Smoke
+          fi
+
+      - name: Upload coverage
+        if: env.COVERAGE == 'pcov'
+        uses: coverallsapp/github-action@v2
+        with:
+          file: build/clover.xml
+          format: clover
+          flag-name: mariadb
+          parallel: true
+          fail-on-error: false
+
+  # Closes the parallel Coveralls build opened by the two uploads above, so
+  # the badge reflects both engines merged rather than whichever landed last.
+  # always(): a failing smoke cell must not leave the build open forever.
+  coverage-finish:
+    name: Coverage (merge MySQL + MariaDB)
+    needs: [mysql-smoke, mariadb-smoke]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Close parallel Coveralls build
+        uses: coverallsapp/github-action@v2
+        with:
+          parallel-finished: true
+          carryforward: "mysql,mariadb"
+          fail-on-error: false
 
   mariadb-rejection:
     name: Smoke against below-floor MariaDB (must fail)

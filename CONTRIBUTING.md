@@ -47,9 +47,11 @@ npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md" ".agent/**/*.md" "docs/*
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-CI runs five jobs: PHPStan, markdownlint, the suite across the full PHP matrix
+CI runs six jobs: PHPStan, markdownlint, the suite across the full PHP matrix
 against MySQL, the same matrix against MariaDB 10.11+ (must pass, same as MySQL),
-and the MariaDB-below-floor rejection check (targets 10.6, must fail).
+the MariaDB-below-floor rejection check (targets 10.6, must fail), and a job that
+merges the coverage reports from one MySQL and one MariaDB cell. Coverage is
+reported, never a gate, so it cannot fail your pull request.
 
 Two notes on static analysis. PHPStan runs at level 8 over `src/` and `bin/`, and
 it is pinned to analyse the whole supported PHP range rather than your local
