@@ -1,11 +1,12 @@
 {
     "name": "damarbob/stardust",
-    "description": "MySQL-native, framework-neutral Vertical Schema Partitioning engine for dynamic data models. Zero runtime framework dependencies.",
+    "description": "MySQL & MariaDB-native, framework-neutral Vertical Schema Partitioning engine for dynamic data models. Zero runtime framework dependencies.",
     "type": "library",
     "license": "MIT",
     "keywords": [
         "stardust",
         "mysql",
+        "mariadb",
         "schema-partitioning",
         "dynamic-fields",
         "json",
