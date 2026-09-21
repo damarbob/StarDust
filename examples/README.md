@@ -54,8 +54,10 @@ of rows and call `deleteModel()`, which physically deletes `entry_data`
 rows with no undo. Do not aim them at the smoke suite's database, or at
 anything you would miss.
 
-MariaDB 10.11+ works the same as MySQL. Older MariaDB (≤ 10.6) will not —
-the engine detects it and refuses to boot.
+MariaDB 10.11+ works too, with one caveat: range filters and field sorts
+order supplementary-plane characters (mostly emoji) at the opposite end
+from MySQL — see the README's Requirements section. Older MariaDB
+(≤ 10.6) will not run at all — the engine detects it and refuses to boot.
 
 The scripts tick the daemons **in-process**, so you do not need to start
 any. That is a teaching device, not how you would deploy: in production
