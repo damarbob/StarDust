@@ -23,9 +23,9 @@ use StarDust\Tests\Smoke\Phase6bTestCase;
  * checkpoint. `RetypeBackfillWorkSource` reads that to choose the ADR
  * 0024 matrix cell, so the second backfill would coerce through the
  * wrong one — silently, with no event and no exception. `loadField()`
- * therefore runs `FOR UPDATE OF f` inside the initiator's transaction,
- * which makes the loser block and then re-read what the winner
- * committed.
+ * therefore runs `FOR UPDATE` on the field row inside the initiator's
+ * transaction, which makes the loser block and then re-read what the
+ * winner committed.
  *
  * ## Why this asserts on an *incompatible* retype
  *
@@ -47,17 +47,25 @@ use StarDust\Tests\Smoke\Phase6bTestCase;
  *   - snapshot read  → proceeds → `IncompatibleRetypeException`
  *
  * Different exception types, so the fixture discriminates. Validated by
- * removing `FOR UPDATE OF f` and confirming this test fails.
+ * removing the `FOR UPDATE` on `loadField()`'s first statement and
+ * confirming this test fails.
+ *
+ * `loadField()` used to be one `stardust_fields JOIN stardust_models`
+ * statement with MySQL's `FOR UPDATE OF f`, so this fixture's sibling
+ * lock mirrored that exact text. MariaDB has no `OF` clause at all, so
+ * the implementation moved to two single-table statements (the join's
+ * `tenant_id` half needs no lock — see `RetypeInitiator::loadField()`'s
+ * docblock) — this fixture only needs to reproduce the part that still
+ * matters: a `FOR UPDATE` on the `stardust_fields` row for this field.
  */
 final class RetypeInitiatorConcurrencyTest extends Phase6bTestCase
 {
-    /** The statement `RetypeInitiator::loadField()` issues, verbatim. */
+    /** The statement `RetypeInitiator::loadField()` locks the field row with, verbatim. */
     private const LOCK_FIELD_SQL =
-        'SELECT f.declared_type, f.is_filterable, f.model_id, f.deleted_at, m.tenant_id'
-        . ' FROM stardust_fields f'
-        . ' JOIN stardust_models m ON m.id = f.model_id'
-        . ' WHERE f.id = ?'
-        . ' FOR UPDATE OF f';
+        'SELECT declared_type, is_filterable, model_id, deleted_at'
+        . ' FROM stardust_fields'
+        . ' WHERE id = ?'
+        . ' FOR UPDATE';
 
     public function testTheFieldReadBlocksBehindASiblingLockOnTheSameRow(): void
     {

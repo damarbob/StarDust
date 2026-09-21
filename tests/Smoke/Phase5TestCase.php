@@ -375,6 +375,7 @@ abstract class Phase5TestCase extends ReadPathTestCase
                 pdo: $this->pdo,
                 clock: new SystemClock(),
                 logger: $log,
+                engine: $this->engine,
             ),
             cardinalitySampler: new CardinalitySampler(
                 pdo: $this->pdo,

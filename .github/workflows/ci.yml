@@ -113,13 +113,75 @@ jobs:
           STARDUST_TEST_PASS: "root"
         run: vendor/bin/phpunit --testsuite Smoke
 
+  mariadb-smoke:
+    name: Smoke against MariaDB ${{ matrix.mariadb-version }} on PHP ${{ matrix.php-version }} (must pass)
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ["8.1", "8.2", "8.3", "8.4"]
+        mariadb-version: ["10.11", "11"]
+
+    services:
+      mariadb:
+        image: mariadb:${{ matrix.mariadb-version }}
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: stardust_test
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: pdo, pdo_mysql
+          coverage: none
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-php${{ matrix.php-version }}-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php-version }}-composer-
+
+      - name: Composer install
+        run: composer install --no-progress --no-interaction --prefer-dist
+
+      - name: Wait for MariaDB
+        run: |
+          for i in $(seq 1 30); do
+            if mariadb-admin ping -h 127.0.0.1 -P 3307 -uroot -proot --silent 2>/dev/null \
+               || mysqladmin ping -h 127.0.0.1 -P 3307 -uroot -proot --silent 2>/dev/null; then
+              echo "MariaDB is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "MariaDB did not become ready in time"; exit 1
+
+      - name: Run smoke suite
+        env:
+          STARDUST_TEST_DSN: "mysql:host=127.0.0.1;port=3307;dbname=stardust_test"
+          STARDUST_TEST_USER: "root"
+          STARDUST_TEST_PASS: "root"
+        run: vendor/bin/phpunit --testsuite Smoke
+
   mariadb-rejection:
-    name: Smoke against MariaDB (must fail)
+    name: Smoke against below-floor MariaDB (must fail)
     runs-on: ubuntu-latest
 
     services:
       mariadb:
-        image: mariadb:11
+        image: mariadb:10.6
         env:
           MARIADB_ROOT_PASSWORD: root
           MARIADB_DATABASE: stardust_test
@@ -162,14 +224,14 @@ jobs:
           done
           echo "MariaDB did not become ready in time"; exit 1
 
-      - name: Smoke suite must reject MariaDB
+      - name: Smoke suite must reject below-floor MariaDB
         env:
           STARDUST_TEST_DSN: "mysql:host=127.0.0.1;port=3307;dbname=stardust_test"
           STARDUST_TEST_USER: "root"
           STARDUST_TEST_PASS: "root"
         run: |
           if vendor/bin/phpunit --testsuite Smoke; then
-            echo "::error::Smoke suite unexpectedly passed against MariaDB"
+            echo "::error::Smoke suite unexpectedly passed against below-floor MariaDB"
             exit 1
           fi
-          echo "Smoke suite rejected MariaDB as expected"
+          echo "Smoke suite rejected below-floor MariaDB as expected"

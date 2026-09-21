@@ -104,9 +104,9 @@ final class RenameCheckpointRepository
      * {@see \StarDust\Retype\RetypeCheckpointRepository::insertOrReset()}
      * was the last convert and is deliberately not a copy of this one —
      * it must also reset `source_declared_type`, and its initiator holds
-     * a `FOR UPDATE OF f` row lock this one does not need, because a
-     * lost retype race mis-coerces stored data where a lost rename race
-     * only resets a cursor.
+     * a `FOR UPDATE` row lock on the field this one does not need,
+     * because a lost retype race mis-coerces stored data where a lost
+     * rename race only resets a cursor.
      */
     public function insertOrReset(int $fieldId, string $now, ?string $correlationId = null): int
     {

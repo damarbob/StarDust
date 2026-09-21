@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
 use Psr\Log\LoggerInterface;
+use StarDust\Filter\Limits\FilterLimits;
 use StarDust\Filter\Operator;
 use StarDust\Read\BoundedFetch;
 use StarDust\Read\CursorCodec;
@@ -20,6 +21,8 @@ use StarDust\Search\ConsistencyModel;
 use StarDust\Search\EntrySearchInterface;
 use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchResult;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Support\UuidV4;
 
 /**
@@ -50,6 +53,18 @@ final class MysqlNativeDriver implements EntrySearchInterface
     private readonly BoundedFetch $fetch;
     private readonly ResultAssembler $assembler;
 
+    /**
+     * `$engine` defaults to self-detection (`ServerEngineDetector::detect()`)
+     * rather than a required parameter — unlike `Bootstrapper` and
+     * `PageProvisioner`, this class is constructed by the legacy
+     * `Read\EntryReader` façade too, whose own constructor is
+     * deliberately frozen at `(PDO, LoggerInterface)` for Phase 4
+     * backward compatibility, so it cannot thread one through. Passing
+     * it explicitly (as `StarDust::searchDriver()` does, via
+     * `StarDust::serverEngine()`) only avoids a redundant detection
+     * call; omitting it is safe, per ADR 0055 — detection, not a
+     * config declaration, so there is no wrong-guess risk to avoid.
+     */
     public function __construct(
         private readonly PDO $pdo,
         // Kept for EntrySearchInterface implementation uniformity: a custom
@@ -62,7 +77,37 @@ final class MysqlNativeDriver implements EntrySearchInterface
         ?PaginatedProbe $probe = null,
         ?BoundedFetch $fetch = null,
         ?ResultAssembler $assembler = null,
+        ?ServerEngine $engine = null,
     ) {
+        $engine ??= ServerEngineDetector::detect($this->pdo);
+
+        // MariaDB genuinely truncates ORDER BY comparison at
+        // max_sort_length (default 1024 bytes, same as MySQL) for TEXT
+        // columns — measured directly in SQL on real 10.6/10.11/11
+        // servers: rows sharing an identical ≥1024-byte prefix come
+        // back in scan order, not sort order, collation-independent
+        // (reproduced with both utf8mb4_unicode_520_nopad_ci and
+        // utf8mb4_general_ci). MySQL 8.0.13 does not have this problem
+        // at all — verified exact even with the setting forced to 8 —
+        // which is the documented premise `src/Read/CLAUDE.md`'s
+        // "String slots sort exactly, on the full value" relies on and
+        // ADR 0041 assumes. Silently wrong here is worse than slow: the
+        // keyset pagination predicate in `SqlFilterCompiler` compares
+        // the FULL value, so a truncated ORDER BY that disagrees with
+        // it can skip or repeat rows across a page boundary. Raised to
+        // cover the full string-slot bound (4 bytes/char utf8mb4 worst
+        // case) rather than a guessed constant, so a future change to
+        // `FilterLimits::DEFAULT_MAX_STRING_LENGTH` keeps this correct
+        // without anyone having to remember it lives here. MySQL is
+        // left untouched — its correctness does not depend on this
+        // setting, so there is nothing to fix there and no reason to
+        // change its resource profile.
+        if ($engine === ServerEngine::MARIADB) {
+            $this->pdo->exec(
+                'SET SESSION max_sort_length = ' . (FilterLimits::DEFAULT_MAX_STRING_LENGTH * 4)
+            );
+        }
+
         $this->compiler  = $compiler ?? new SqlFilterCompiler();
         $this->probe     = $probe ?? new PaginatedProbe($this->pdo, $this->compiler);
         $this->fetch     = $fetch ?? new BoundedFetch($this->pdo);

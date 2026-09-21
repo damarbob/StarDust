@@ -167,7 +167,7 @@ final class RetypeInitiator
 
         // The field read and all four guards run INSIDE the transaction
         // that performs the mutation, not before it. `loadField()` takes
-        // `FOR UPDATE OF f` on the field row, and that lock is only
+        // `FOR UPDATE` on the field row, and that lock is only
         // worth anything while a transaction holds it — in autocommit it
         // would be dropped the instant the SELECT finished, which is the
         // same reason `RenameInitiator::assertNameAvailable()` sits
@@ -376,12 +376,29 @@ final class RetypeInitiator
      * Reads the field under a row lock, and rejects the three states no
      * shape may start from.
      *
-     * **`FOR UPDATE OF f`, not a bare `FOR UPDATE`.** The statement
-     * joins `stardust_models` only to resolve the tenant, and locking
-     * that row too would contend with `deleteModel()` for nothing.
-     * Verified on MySQL 8.0.13: the `OF` clause parses, a concurrent
-     * `UPDATE stardust_models` on the joined row proceeds untouched, and
-     * a second initiator's identical SELECT serialises behind this one.
+     * **Two single-table statements, not one join with `FOR UPDATE OF f`.**
+     * The original shape locked only `stardust_fields` in a
+     * `stardust_fields JOIN stardust_models` read via MySQL 8.0's
+     * `FOR UPDATE OF <alias>` clause, specifically so a concurrent
+     * `UPDATE stardust_models` (e.g. `deleteModel()`) would proceed
+     * untouched. MariaDB has no `OF` clause at all — `SQLSTATE[42000]`
+     * errno 1064 on the `OF f` token, measured against real MariaDB
+     * 10.6/10.11/11 containers — so that shape is MySQL-only by
+     * construction, not merely untested there.
+     *
+     * The replacement achieves the identical locking property — lock
+     * `stardust_fields`, never lock `stardust_models` — without needing
+     * per-table lock syntax at all: a plain `FOR UPDATE` locks only the
+     * table it targets, so splitting the join into two statements and
+     * running the second (`stardust_models`, for `tenant_id` only)
+     * unlocked reproduces the same two facts the original query
+     * established, portably. This is safe because `stardust_fields.model_id`
+     * is immutable once set (no code path ever updates it) and
+     * `fk_fields_model` guarantees the referenced model row exists, so
+     * nothing can invalidate the second read between the two statements
+     * — there is no window for `model_id` to point somewhere else, and
+     * the field row is already locked against everything else that
+     * matters (a competing retype/promote/demote/delete initiation).
      *
      * The lock only holds because `runTuple()` calls this inside its
      * transaction — see the note there for what it is defending.
@@ -391,11 +408,10 @@ final class RetypeInitiator
     private function loadField(int $tenantId, int $fieldId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT f.declared_type, f.is_filterable, f.model_id, f.deleted_at, m.tenant_id'
-            . ' FROM stardust_fields f'
-            . ' JOIN stardust_models m ON m.id = f.model_id'
-            . ' WHERE f.id = ?'
-            . ' FOR UPDATE OF f'
+            'SELECT declared_type, is_filterable, model_id, deleted_at'
+            . ' FROM stardust_fields'
+            . ' WHERE id = ?'
+            . ' FOR UPDATE'
         );
         $stmt->execute([$fieldId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -403,7 +419,12 @@ final class RetypeInitiator
         if ($row === false) {
             throw new FieldNotFoundException("Field {$fieldId} does not exist.");
         }
-        if ((int) $row['tenant_id'] !== $tenantId) {
+
+        $tenantStmt = $this->pdo->prepare('SELECT tenant_id FROM stardust_models WHERE id = ?');
+        $tenantStmt->execute([(int) $row['model_id']]);
+        $modelTenantId = $tenantStmt->fetchColumn();
+
+        if ((int) $modelTenantId !== $tenantId) {
             throw new FieldNotFoundException(
                 "Field {$fieldId} does not belong to tenant {$tenantId}."
             );

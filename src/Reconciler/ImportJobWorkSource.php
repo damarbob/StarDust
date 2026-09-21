@@ -657,23 +657,37 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
                 . ' SET heartbeat_at = ?, manifest = ?'
                 . ' WHERE id = ? AND worker_identity = ?'
             );
-            $checkpoint->execute([$this->utcNow(), $manifest, $jobId, $workerIdentity]);
+            try {
+                $checkpoint->execute([$this->utcNow(), $manifest, $jobId, $workerIdentity]);
+            } catch (PDOException $e) {
+                // MariaDB 11 only — verified against a real container.
+                // This exact statement can throw SQLSTATE HY000 errno
+                // 1020 ("Record has changed since last read in table")
+                // instead of matching zero rows. Root cause: `manifest`
+                // is a JSON column, and MariaDB attaches an implicit
+                // `CHECK (json_valid(manifest))` to every JSON column;
+                // that constraint's row re-check collides with InnoDB's
+                // semi-consistent read for this statement's `WHERE ...
+                // AND worker_identity = ?` when a sibling connection
+                // changes the row between read and write. MySQL,
+                // MariaDB 10.11, and the Chronicler's equivalent
+                // checkpoints (which update no JSON column) never raise
+                // this. The failure means exactly what `rowCount() ===
+                // 0` below means — the row no longer matches our
+                // identity — so it gets the identical lease-lost
+                // treatment rather than falling through to failJob().
+                if (self::isRowChangedSinceLastRead($e)) {
+                    return $this->leaseLost($jobId, $tenantId, $chunkCorrelationId);
+                }
+
+                throw $e;
+            }
             if ($checkpoint->rowCount() === 0) {
                 // Lease lost — roll back this chunk's writes so the
                 // re-claimer's copy is authoritative, and stop WITHOUT
                 // failing the row (the re-claimer owns terminal state,
                 // per schema_reference §5.5 / ADR 0025).
-                $this->pdo->rollBack();
-                $this->logger->warning('import_job lease lost', [
-                    'event'          => 'lease_lost',
-                    'source'         => 'reconciler',
-                    'correlation_id' => $chunkCorrelationId,
-                    'queue'          => 'import_jobs',
-                    'job_id'         => $jobId,
-                    'tenant_id'      => $tenantId,
-                ]);
-
-                return self::WINDOW_LEASE_LOST;
+                return $this->leaseLost($jobId, $tenantId, $chunkCorrelationId);
             }
 
             $this->pdo->commit();
@@ -744,6 +758,51 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
 
             return self::WINDOW_FAILED;
         }
+    }
+
+    /**
+     * Shared tail of both lease-loss detection paths in {@see self::writeWindow()}
+     * — a `rowCount() === 0` match and the MariaDB-11-only errno 1020 case
+     * {@see self::isRowChangedSinceLastRead()} documents. Rolls back this
+     * chunk's writes so the re-claimer's copy is authoritative, and stops
+     * WITHOUT failing the row (the re-claimer owns terminal state, per
+     * schema_reference §5.5 / ADR 0025).
+     */
+    private function leaseLost(int $jobId, int $tenantId, string $chunkCorrelationId): string
+    {
+        $this->pdo->rollBack();
+        $this->logger->warning('import_job lease lost', [
+            'event'          => 'lease_lost',
+            'source'         => 'reconciler',
+            'correlation_id' => $chunkCorrelationId,
+            'queue'          => 'import_jobs',
+            'job_id'         => $jobId,
+            'tenant_id'      => $tenantId,
+        ]);
+
+        return self::WINDOW_LEASE_LOST;
+    }
+
+    /**
+     * MariaDB 11 only — verified against a real container on 2026-09-21;
+     * MySQL and MariaDB 10.11 never raise this for the same statement.
+     * Errno 1020 / SQLSTATE HY000, "Record has changed since last read
+     * in table". Root cause: `manifest` is a JSON column, and MariaDB
+     * attaches an implicit `CHECK (json_valid(manifest))` to every JSON
+     * column; that constraint's row re-check collides with InnoDB's
+     * semi-consistent read for the checkpoint UPDATE's `WHERE ... AND
+     * worker_identity = ?` when a sibling connection changes the row
+     * between read and write. The Chronicler's equivalent checkpoints
+     * update no JSON column and were verified not to hit this.
+     */
+    private static function isRowChangedSinceLastRead(PDOException $e): bool
+    {
+        $info = $e->errorInfo;
+        if (! is_array($info) || ! isset($info[1])) {
+            return false;
+        }
+
+        return (int) $info[1] === 1020;
     }
 
     /**

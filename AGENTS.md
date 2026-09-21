@@ -25,8 +25,9 @@ here.
   this codebase resolves to `SDDPG/adrs/`. Search there before treating a design
   question as open — most already have a ruling, and the record wins over any
   doc that disagrees with it.
-- **MySQL 8.0.13+ only.** MariaDB is deliberately rejected, and a CI job asserts
-  the suite fails against it.
+- **MySQL 8.0.13+ or MariaDB 10.11+, detected not configured.** MariaDB 10.6 and
+  older, and MySQL 5.7 and older, are rejected and a CI job asserts the suite
+  fails against a below-floor MariaDB.
 - **PHP 8.1 is the floor**, even though CI also tests up to 8.4.
 - **Run the three checks** in CONTRIBUTING.md before claiming a change is done.
   Several conventions are enforced by tests and will tell you when you break them.

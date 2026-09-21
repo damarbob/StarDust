@@ -336,7 +336,7 @@ final class AdvisoryScheduleTest extends Phase5TestCase
         $repository = new AdvisoryScheduleRepository($this->pdo, new SystemClock());
         self::assertTrue($repository->scheduleFirst(4_242));
 
-        (new \StarDust\Bootstrap\Bootstrapper($this->pdo))->run();
+        (new \StarDust\Bootstrap\Bootstrapper($this->pdo, $this->engine))->run();
 
         self::assertSame(4_242, $this->storedNextSampleAt());
     }
@@ -409,7 +409,7 @@ final class AdvisoryScheduleTest extends Phase5TestCase
             logger: $logger,
             capacityReporter: new CapacityReporter($pdo),
             pendingDemandReader: new PendingDemandReader($pdo),
-            pageProvisioner: new PageProvisioner(pdo: $pdo, clock: new SystemClock(), logger: $logger),
+            pageProvisioner: new PageProvisioner(pdo: $pdo, clock: new SystemClock(), logger: $logger, engine: $this->engine),
             cardinalitySampler: new CardinalitySampler(
                 pdo: $pdo,
                 logger: $logger,

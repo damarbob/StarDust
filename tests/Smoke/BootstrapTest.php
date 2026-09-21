@@ -10,6 +10,8 @@ use PHPUnit\Framework\TestCase;
 use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Config\Config;
 use StarDust\StarDust;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 
 /**
@@ -30,6 +32,7 @@ use StarDust\Tests\Smoke\Support\SchemaFixture;
 final class BootstrapTest extends TestCase
 {
     private PDO $pdo;
+    private ServerEngine $engine;
 
     protected function setUp(): void
     {
@@ -51,6 +54,7 @@ final class BootstrapTest extends TestCase
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
 
+        $this->engine = ServerEngineDetector::detect($this->pdo);
         $this->dropAllTables();
     }
 
@@ -81,10 +85,16 @@ final class BootstrapTest extends TestCase
         SchemaFixture::dropAll($this->pdo);
     }
 
+    /** `(new Bootstrapper($this->pdo, $this->engine))->run()`, spelled once. */
+    private function bootstrap(): void
+    {
+        (new Bootstrapper($this->pdo, $this->engine))->run();
+    }
+
     /** Exit criterion 1: blank database → all tables present. */
     public function testBootstrapCreatesEveryTableOnBlankDatabase(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         foreach (SchemaFixture::CORE_TABLES as $table) {
             self::assertTrue(
@@ -101,7 +111,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapIsIdempotentAndNonDestructive(): void
     {
-        $bootstrapper = new Bootstrapper($this->pdo);
+        $bootstrapper = new Bootstrapper($this->pdo, $this->engine);
         $bootstrapper->run();
 
         $this->pdo->exec(
@@ -128,7 +138,7 @@ final class BootstrapTest extends TestCase
     /** Exit criterion 3: stardust_schema_version is seeded with exactly one row, id = 1. */
     public function testSchemaVersionSingletonSeeded(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $rows = $this->pdo
             ->query('SELECT id, version FROM stardust_schema_version')
@@ -139,7 +149,7 @@ final class BootstrapTest extends TestCase
         self::assertSame(0, (int) $rows[0]['version'], 'Initial version counter should be 0.');
 
         // Re-running must not duplicate the singleton.
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
         $count = (int) $this->pdo->query('SELECT COUNT(*) FROM stardust_schema_version')->fetchColumn();
         self::assertSame(1, $count, 'Bootstrap re-run must not duplicate the singleton row.');
     }
@@ -151,7 +161,7 @@ final class BootstrapTest extends TestCase
      */
     public function testSlotAssignmentStatusEnumRejectsInvalidValue(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         // Seed a page so the FK on stardust_slot_assignments.page_id is satisfied.
         $this->pdo->exec(
@@ -170,7 +180,7 @@ final class BootstrapTest extends TestCase
     /** Sanity: each of the five legitimate status values is accepted. */
     public function testSlotAssignmentStatusEnumAcceptsAllFiveStates(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $this->pdo->exec(
             "INSERT INTO stardust_pages (table_name, provisioned_at, provisioned_by)"
@@ -198,10 +208,21 @@ final class BootstrapTest extends TestCase
      * Exit criterion 5: the partial unique index UNIQUE (field_id)
      * WHERE status IN ('assigned','backfilling','ready') is present.
      * Verified via SHOW INDEX per the criterion's literal wording.
+     *
+     * **MySQL** enforces it with a genuine functional index, so
+     * `SHOW INDEX` leaves `Column_name` NULL and populates `Expression`
+     * with the `CASE` text. **MariaDB** has no functional-index syntax
+     * at all (ADR 0054 §4), so the same invariant is enforced by a
+     * plain `UNIQUE` index over `live_field_id` — a `PERSISTENT`
+     * generated column holding the identical `CASE` expression — and
+     * `SHOW INDEX` reports that column name instead, with no
+     * `Expression` at all. The `CASE` text lives on the column's own
+     * `information_schema.COLUMNS.GENERATION_EXPRESSION` there, which
+     * is what the MariaDB branch checks instead.
      */
     public function testPartialUniqueIndexOnSlotAssignmentsIsPresent(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $rows = $this->pdo
             ->query('SHOW INDEX FROM stardust_slot_assignments')
@@ -223,13 +244,33 @@ final class BootstrapTest extends TestCase
             'Functional partial index must be UNIQUE (Non_unique = 0).',
         );
 
-        // MySQL functional indexes leave Column_name NULL and populate Expression.
-        $expression = $matching[0]['Expression'] ?? '';
-        self::assertNotSame('', (string) $expression, 'Functional index must expose its expression.');
-        self::assertStringContainsString('assigned', (string) $expression);
-        self::assertStringContainsString('backfilling', (string) $expression);
-        self::assertStringContainsString('ready', (string) $expression);
-        self::assertStringContainsString('field_id', (string) $expression);
+        if ($this->engine === ServerEngine::MYSQL) {
+            // MySQL functional indexes leave Column_name NULL and populate Expression.
+            $expression = $matching[0]['Expression'] ?? '';
+            self::assertNotSame('', (string) $expression, 'Functional index must expose its expression.');
+            self::assertStringContainsString('assigned', (string) $expression);
+            self::assertStringContainsString('backfilling', (string) $expression);
+            self::assertStringContainsString('ready', (string) $expression);
+            self::assertStringContainsString('field_id', (string) $expression);
+        } else {
+            self::assertSame(
+                'live_field_id',
+                $matching[0]['Column_name'] ?? null,
+                'MariaDB must index the live_field_id generated column, not a functional expression.',
+            );
+
+            $generation = $this->pdo->query(
+                'SELECT GENERATION_EXPRESSION FROM information_schema.COLUMNS'
+                . " WHERE table_schema = DATABASE()"
+                . " AND table_name = 'stardust_slot_assignments'"
+                . " AND column_name = 'live_field_id'"
+            )->fetchColumn();
+            self::assertNotSame('', (string) $generation, 'Generated column must expose its expression.');
+            self::assertStringContainsString('assigned', (string) $generation);
+            self::assertStringContainsString('backfilling', (string) $generation);
+            self::assertStringContainsString('ready', (string) $generation);
+            self::assertStringContainsString('field_id', (string) $generation);
+        }
     }
 
     /**
@@ -239,7 +280,7 @@ final class BootstrapTest extends TestCase
      */
     public function testPartialUniqueIndexEnforcesAtMostOneLiveSlotPerField(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $this->pdo->exec(
             "INSERT INTO stardust_models (tenant_id, name, created_at)"
@@ -290,7 +331,7 @@ final class BootstrapTest extends TestCase
      */
     public function testEntryDataCompositeIndexesPresent(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $rows = $this->pdo->query('SHOW INDEX FROM entry_data')->fetchAll();
 
@@ -331,7 +372,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsLiberatorSweepGapCountColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -345,8 +386,8 @@ final class BootstrapTest extends TestCase
 
         // Idempotent: re-running must not error and must not duplicate
         // the column.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -374,7 +415,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsBackfillCheckpointsCorrelationIdColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $column = $this->pdo
             ->query(
@@ -399,8 +440,8 @@ final class BootstrapTest extends TestCase
             'correlation_id must hold a canonical hyphenated v4 UUID.',
         );
 
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -434,7 +475,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsCorrelationColumns(string $table, string $column): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $stmt = $this->pdo->prepare(
             'SELECT IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH'
@@ -454,8 +495,8 @@ final class BootstrapTest extends TestCase
             "{$table}.{$column} must hold a canonical hyphenated v4 UUID.",
         );
 
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $count = $this->pdo->prepare(
             'SELECT COUNT(*) FROM information_schema.COLUMNS'
@@ -500,7 +541,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsExportJobsArtifactBytesColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $column = $this->pdo
             ->query(
@@ -518,8 +559,8 @@ final class BootstrapTest extends TestCase
 
         // Idempotent: re-running must not error and must not duplicate
         // the column.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -540,7 +581,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsFieldsPreviousNameColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $column = $this->pdo
             ->query(
@@ -563,8 +604,8 @@ final class BootstrapTest extends TestCase
 
         // Idempotent: re-running must not error and must not duplicate
         // the column.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -586,10 +627,17 @@ final class BootstrapTest extends TestCase
      * still has no `updated_at`, which is why `ModelRenamer` takes no
      * clock; that negative is asserted here so a future migration adding
      * one is a decision rather than a drift.
+     *
+     * **`COLUMN_DEFAULT` for an explicit `DEFAULT NULL` reports
+     * differently per engine.** MySQL reports SQL `NULL`; MariaDB
+     * reports the literal string `'NULL'` (four characters), measured
+     * directly against a real 10.11 server. Both mean the same thing —
+     * "no default, defaults to NULL" — so the assertion checks the
+     * fact rather than the driver-specific representation of it.
      */
     public function testBootstrapAddsModelsDeletedAtColumn(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $column = $this->pdo
             ->query(
@@ -604,7 +652,12 @@ final class BootstrapTest extends TestCase
         self::assertIsArray($column, 'deleted_at column must be present on stardust_models.');
         self::assertSame('YES', $column['IS_NULLABLE'], 'deleted_at must be nullable.');
         self::assertSame('datetime', $column['DATA_TYPE']);
-        self::assertNull($column['COLUMN_DEFAULT'], 'deleted_at must default to NULL.');
+
+        if ($this->engine === ServerEngine::MYSQL) {
+            self::assertNull($column['COLUMN_DEFAULT'], 'deleted_at must default to NULL.');
+        } else {
+            self::assertSame('NULL', $column['COLUMN_DEFAULT'], 'deleted_at must default to NULL.');
+        }
 
         $updatedAt = (int) $this->pdo
             ->query(
@@ -617,8 +670,8 @@ final class BootstrapTest extends TestCase
         self::assertSame(0, $updatedAt, 'stardust_models still has no updated_at — ModelRenamer takes no clock.');
 
         // Idempotent across re-runs.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $exists = (int) $this->pdo
             ->query(
@@ -645,7 +698,7 @@ final class BootstrapTest extends TestCase
      */
     public function testBootstrapAddsSyncQueueEntryIdIndex(): void
     {
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
 
         $rows = $this->pdo->query('SHOW INDEX FROM stardust_sync_queue')->fetchAll(\PDO::FETCH_ASSOC);
         $matching = array_values(array_filter(
@@ -659,8 +712,8 @@ final class BootstrapTest extends TestCase
         self::assertSame(1, (int) $matching[0]['Non_unique'], 'The index must not be unique — many rows may queue one entry.');
 
         // Idempotent across re-runs.
-        (new Bootstrapper($this->pdo))->run();
-        (new Bootstrapper($this->pdo))->run();
+        $this->bootstrap();
+        $this->bootstrap();
 
         $again = $this->pdo->query('SHOW INDEX FROM stardust_sync_queue')->fetchAll(\PDO::FETCH_ASSOC);
         $count = count(array_filter(

@@ -13,6 +13,8 @@ use StarDust\Page\PageProvisioner;
 use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Slot\SlotAssignment;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 use StarDust\Watcher\SpreadSampler;
@@ -39,6 +41,7 @@ use StarDust\Watcher\SpreadSampler;
 final class SlotAffinityTest extends TestCase
 {
     private PDO $pdo;
+    private ServerEngine $engine;
 
     protected function setUp(): void
     {
@@ -50,6 +53,7 @@ final class SlotAffinityTest extends TestCase
         }
 
         $this->pdo = $this->newConnection();
+        $this->engine = ServerEngineDetector::detect($this->pdo);
         SchemaFixture::reset($this->pdo);
     }
 
@@ -517,6 +521,7 @@ final class SlotAffinityTest extends TestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new NullLogger(),
+            engine: $this->engine,
             provisionerIdentity: 'phpunit/0',
         ))->provision($filterableSlots);
     }
@@ -524,7 +529,7 @@ final class SlotAffinityTest extends TestCase
     /** A pre-ADR-0043 page: sixty columns, none indexed. */
     private function provisionLegacyPage(): int
     {
-        return LegacyPage::provision($this->pdo, 'phpunit/0');
+        return LegacyPage::provision($this->pdo, $this->engine, 'phpunit/0');
     }
 
     private function createModel(int $tenantId = 1): int

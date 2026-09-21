@@ -11,6 +11,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Support\Dialect;
 use StarDust\Support\PdoQuery;
+use StarDust\Support\ServerEngine;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -93,10 +94,20 @@ final class PageProvisioner
 
     private readonly string $provisionerIdentity;
 
+    /**
+     * `$engine` (ADR 0055) picks the collation {@see Dialect::tableOptionsClause()}
+     * emits for the page's `CREATE TABLE`. Required rather than defaulted
+     * for the same reason {@see \StarDust\Bootstrap\Bootstrapper}'s is:
+     * this is one of the two call sites ADR 0055 §2 names, and a silent
+     * MySQL default here would reintroduce exactly the wrong-DDL failure
+     * mode detection exists to rule out. `StarDust::watcher()` resolves
+     * it via `StarDust::serverEngine()`.
+     */
     public function __construct(
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
+        private readonly ServerEngine $engine,
         ?string $provisionerIdentity = null,
     ) {
         $this->provisionerIdentity = $provisionerIdentity
@@ -314,7 +325,7 @@ final class PageProvisioner
         // prefix needs the 3072-byte key limit; COMPACT/REDUNDANT cap at 767
         // bytes and would fail CREATE TABLE with errno 1071 on servers whose
         // innodb_default_row_format is not dynamic.
-        $lines[] = ') ' . Dialect::tableOptionsClause() . ' ROW_FORMAT=DYNAMIC';
+        $lines[] = ') ' . Dialect::tableOptionsClause($this->engine) . ' ROW_FORMAT=DYNAMIC';
 
         return implode("\n", $lines);
     }

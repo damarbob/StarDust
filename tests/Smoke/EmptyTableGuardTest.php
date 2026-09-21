@@ -10,6 +10,8 @@ use PDOException;
 use PHPUnit\Framework\TestCase;
 use StarDust\Page\EmptyTableGuard;
 use StarDust\Page\PopulatedPageDDLException;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 
@@ -24,6 +26,7 @@ use StarDust\Tests\Smoke\Support\SchemaFixture;
 final class EmptyTableGuardTest extends TestCase
 {
     private PDO $pdo;
+    private ServerEngine $engine;
 
     protected function setUp(): void
     {
@@ -45,6 +48,7 @@ final class EmptyTableGuardTest extends TestCase
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
 
+        $this->engine = ServerEngineDetector::detect($this->pdo);
         SchemaFixture::reset($this->pdo);
     }
 
@@ -53,7 +57,7 @@ final class EmptyTableGuardTest extends TestCase
         // A legacy-shaped page: the guard is about page *rows*, not page
         // width, and this keeps the fixture independent of whatever
         // column set the provisioner currently emits.
-        LegacyPage::provision($this->pdo, 'phpunit/0');
+        LegacyPage::provision($this->pdo, $this->engine, 'phpunit/0');
     }
 
     public function testAssertEmptyAcceptsEmptyPage(): void

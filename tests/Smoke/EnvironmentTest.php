@@ -8,28 +8,36 @@ use PDO;
 use PDOException;
 use PHPUnit\Framework\TestCase;
 use StarDust\Config\Config;
+use StarDust\Exception\UnsupportedServerException;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\StarDust;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 
 /**
  * Phase 0 smoke suite — verifies the operating environment satisfies
- * the Phase 0 exit criteria (MySQL 8.0.13+ feature surface, MariaDB
- * rejection, package boots with defaults).
+ * the Phase 0 exit criteria (MySQL 8.0.13+ / MariaDB 10.11+ feature
+ * surface per ADR 0055, unsupported-server rejection, package boots
+ * with defaults).
  *
  * Connection parameters are read from env vars:
  *   STARDUST_TEST_DSN   (required, e.g. "mysql:host=127.0.0.1;port=3306")
  *   STARDUST_TEST_USER  (required)
  *   STARDUST_TEST_PASS  (optional, defaults to "")
  *
- * When pointed at a MariaDB instance, this suite is expected to fail
- * (the version-string check and the partial-unique-index check both
- * reject MariaDB). CI exploits that to satisfy the rejection criterion.
+ * When pointed at a server `ServerEngineDetector` does not recognise —
+ * MariaDB 10.6 or earlier, MySQL/Percona below 8.0.13, or anything
+ * else entirely — `testServerIsASupportedEngine` throws and the suite
+ * exits non-zero. CI's `mariadb-rejection` job exploits that against a
+ * below-floor MariaDB target to prove the floor is enforced rather
+ * than merely documented.
  */
 final class EnvironmentTest extends TestCase
 {
     private const PARTIAL_INDEX_TABLE = 'stardust_smoke_partial_unique';
 
     private PDO $pdo;
+    private ServerEngine $engine;
 
     protected function setUp(): void
     {
@@ -50,6 +58,11 @@ final class EnvironmentTest extends TestCase
         } catch (PDOException $e) {
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
+
+        // Deliberately NOT wrapped: testServerIsASupportedEngine is what
+        // proves this call fails closed on an unsupported server, and
+        // catching it here would swallow that for every other test too.
+        $this->engine = ServerEngineDetector::detect($this->pdo);
     }
 
     protected function tearDown(): void
@@ -68,15 +81,29 @@ final class EnvironmentTest extends TestCase
         }
     }
 
-    /** Exit criterion 4: MariaDB must cause the suite to exit non-zero. */
-    public function testServerIsMySql(): void
+    /**
+     * Exit criterion 4 (ADR 0055 §4): an unsupported server must cause
+     * the suite to exit non-zero. `setUp()` already ran detection to
+     * populate `$this->engine` — this method exists to name the
+     * criterion explicitly and to assert on the result, since a test
+     * with no assertion of its own is risky under
+     * `beStrictAboutTestsThatDoNotTestAnything`.
+     *
+     * Renamed from `testServerIsMySql`, which pre-dated MariaDB support
+     * and unconditionally failed on any `MariaDB`-marked version
+     * string. The floor itself — MySQL/Percona 8.0.13+ or MariaDB
+     * 10.11+ — is enforced by `ServerEngineDetector::detect()`, not
+     * re-derived here; this method's job is only to prove the *smoke
+     * suite* observes the same floor the runtime does; see
+     * `ServerEngineDetectorTest` for the mechanism's own boundary
+     * coverage.
+     */
+    public function testServerIsASupportedEngine(): void
     {
-        $version = (string) $this->pdo->query('SELECT VERSION()')->fetchColumn();
-
-        self::assertStringNotContainsString(
-            'MariaDB',
-            $version,
-            'StarDust does not support MariaDB; MySQL 8.0.13+ or Percona 8.0.13+ required.',
+        self::assertContains(
+            $this->engine,
+            [ServerEngine::MYSQL, ServerEngine::MARIADB],
+            'ServerEngineDetector::detect() returned an engine outside the closed enum — this should be unreachable; it throws UnsupportedServerException for anything else.',
         );
     }
 
@@ -103,9 +130,23 @@ final class EnvironmentTest extends TestCase
     }
 
     /**
-     * Exit criterion 3: functional / conditional unique indexes must work
+     * Exit criterion 3: a partial/conditional unique index must work
      * (this is the mechanism that enforces the registry's "at most one
-     * live slot per field" invariant per ADR 0017 / 0023).
+     * live slot per field" invariant per ADR 0017 / 0023) — on **either**
+     * supported engine, via whichever mechanism that engine has.
+     *
+     * MySQL gets the literal 8.0.13+ functional index this test always
+     * used. MariaDB has no functional-index syntax at all (errno 1064,
+     * measured on 10.6/10.11/11) and gets the ADR 0054 §4 substitute
+     * instead: a `PERSISTENT` generated column holding the identical
+     * `CASE` expression, plus a plain `UNIQUE` index over it — the same
+     * construct `Bootstrap\Bootstrapper::ensureSlotAssignmentLiveFieldIdColumn()`
+     * adds to the real registry table. **The two branches are asserted
+     * on identically past table setup**: same insert sequence, same
+     * expected `PDOException` on the second live row. That is the
+     * point — this test exists to prove the *observable behaviour* the
+     * registry actually depends on, not to prove MySQL's specific DDL
+     * syntax parses.
      */
     public function testPartialUniqueIndexSupported(): void
     {
@@ -120,14 +161,29 @@ final class EnvironmentTest extends TestCase
             ) ENGINE=InnoDB
         ");
 
-        // MySQL 8.0.13+ functional index. MariaDB rejects this syntax.
-        $this->pdo->exec("
-            CREATE UNIQUE INDEX ux_{$table}_live
-                ON {$table} (
-                    (CASE WHEN status IN ('assigned', 'backfilling', 'ready')
-                          THEN field_id END)
-                )
-        ");
+        if ($this->engine === ServerEngine::MYSQL) {
+            // MySQL 8.0.13+ functional index. MariaDB rejects this syntax.
+            $this->pdo->exec("
+                CREATE UNIQUE INDEX ux_{$table}_live
+                    ON {$table} (
+                        (CASE WHEN status IN ('assigned', 'backfilling', 'ready')
+                              THEN field_id END)
+                    )
+            ");
+        } else {
+            // MariaDB substitute (ADR 0054 §4): a PERSISTENT generated
+            // column holding the identical CASE expression, plus a plain
+            // UNIQUE index over it.
+            $this->pdo->exec("
+                ALTER TABLE {$table}
+                    ADD COLUMN live_field_id INT
+                        GENERATED ALWAYS AS (
+                            CASE WHEN status IN ('assigned', 'backfilling', 'ready')
+                                 THEN field_id END
+                        ) PERSISTENT
+            ");
+            $this->pdo->exec("CREATE UNIQUE INDEX ux_{$table}_live ON {$table} (live_field_id)");
+        }
 
         // Inserting two 'free' rows with the same field_id must succeed
         // (CASE returns NULL, and NULLs are not unique-constrained).
@@ -138,7 +194,7 @@ final class EnvironmentTest extends TestCase
         $this->pdo->exec("INSERT INTO {$table} (field_id, status) VALUES (1, 'assigned')");
 
         // A second 'assigned' row for the same field_id must violate the
-        // partial unique constraint.
+        // partial unique constraint — same observable behaviour on both engines.
         $this->expectException(PDOException::class);
         $this->pdo->exec("INSERT INTO {$table} (field_id, status) VALUES (1, 'assigned')");
     }

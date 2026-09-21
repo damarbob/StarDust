@@ -8,6 +8,7 @@ use PDO;
 use PDOException;
 use StarDust\Support\Dialect;
 use StarDust\Support\PdoQuery;
+use StarDust\Support\ServerEngine;
 
 /**
  * Phase 1 migration runner.
@@ -17,16 +18,26 @@ use StarDust\Support\PdoQuery;
  * safe on an already-bootstrapped database (no-op, no duplicate-table
  * errors, no data destruction).
  *
- * Normative references: registry contract (ADR 0017), MySQL 8.0.13+ floor
- * (ADR 0023) — the partial unique index on stardust_slot_assignments uses
- * 8.0.13+ functional-index syntax — and the schema reference (§1–§5),
- * which is the source of truth for column shapes, indexes, and atomicity
- * invariants implemented here.
+ * Normative references: registry contract (ADR 0017), MySQL 8.0.13+ /
+ * MariaDB 10.11+ floor (ADR 0023, ADR 0054) — the live-slot invariant on
+ * `stardust_slot_assignments` uses 8.0.13+ functional-index syntax on
+ * MySQL and a generated-column substitute on MariaDB — and the schema
+ * reference (§1–§5), which is the source of truth for column shapes,
+ * indexes, and atomicity invariants implemented here.
+ *
+ * `$engine` (ADR 0055) is required rather than defaulted: every
+ * `CREATE TABLE` in this class ends with {@see Dialect::tableOptionsClause()},
+ * so silently assuming MySQL here is exactly the class of bug detection
+ * exists to rule out. `StarDust::bootstrap()` resolves it via
+ * `StarDust::serverEngine()`; nothing constructs a `Bootstrapper` without
+ * first knowing which engine it is talking to.
  */
 final class Bootstrapper
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly ServerEngine $engine,
+    ) {
     }
 
     public function run(): void
@@ -44,6 +55,7 @@ final class Bootstrapper
         $this->createBackfillCheckpoints();
         $this->createAdvisorySchedule();
 
+        $this->ensureSlotAssignmentLiveFieldIdColumn();
         $this->ensureSlotAssignmentFieldLiveUniqueIndex();
         $this->ensureSlotAssignmentSweepGapColumn();
         $this->ensureBackfillCheckpointsSourceTypeColumn();
@@ -76,7 +88,7 @@ final class Bootstrapper
                 KEY ix_entry_data_tenant_model (tenant_id, model_id),
                 KEY ix_entry_data_tenant_lifecycle (tenant_id, deleted_at, created_at)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createSyncQueue(): void
@@ -99,7 +111,7 @@ final class Bootstrapper
                 created_at  DATETIME NOT NULL,
                 PRIMARY KEY (id)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createModels(): void
@@ -114,7 +126,7 @@ final class Bootstrapper
                 PRIMARY KEY (id),
                 UNIQUE KEY ux_models_tenant_name (tenant_id, name)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createFields(): void
@@ -134,7 +146,7 @@ final class Bootstrapper
                     FOREIGN KEY (model_id) REFERENCES stardust_models (id)
                     ON DELETE CASCADE
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createPages(): void
@@ -148,7 +160,7 @@ final class Bootstrapper
                 PRIMARY KEY (id),
                 UNIQUE KEY ux_pages_table_name (table_name)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createSlotAssignments(): void
@@ -179,7 +191,7 @@ final class Bootstrapper
                 CONSTRAINT fk_slot_assignments_field
                     FOREIGN KEY (field_id) REFERENCES stardust_fields (id)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createSchemaVersion(): void
@@ -200,7 +212,7 @@ final class Bootstrapper
                 PRIMARY KEY (id),
                 CONSTRAINT ck_schema_version_singleton CHECK (id = 1)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createExportJobs(): void
@@ -228,7 +240,7 @@ final class Bootstrapper
                 KEY ix_export_jobs_status_heartbeat (status, heartbeat_at),
                 KEY ix_export_jobs_completed (completed_at)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     /**
@@ -266,7 +278,7 @@ final class Bootstrapper
                 KEY ix_import_jobs_tenant_status (tenant_id, status),
                 KEY ix_import_jobs_status_heartbeat (status, heartbeat_at)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createReconcilerDlq(): void
@@ -289,7 +301,7 @@ final class Bootstrapper
                 KEY ix_dlq_source_failed_at (source, failed_at),
                 KEY ix_dlq_entry (entry_id)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createBackfillCheckpoints(): void
@@ -309,7 +321,7 @@ final class Bootstrapper
                 UNIQUE KEY ux_backfill_job_name (job_name),
                 KEY ix_backfill_status_updated (status, updated_at)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     /**
@@ -346,23 +358,83 @@ final class Bootstrapper
                 PRIMARY KEY (id),
                 CONSTRAINT ck_advisory_schedule_singleton CHECK (id = 1)
             )
-        SQL . ' ' . Dialect::tableOptionsClause());
+        SQL . ' ' . Dialect::tableOptionsClause($this->engine));
+    }
+
+    /**
+     * MariaDB-only. Creates `live_field_id`, the `PERSISTENT` generated
+     * column {@see Dialect::liveSlotUniqueIndexDdl()}'s MariaDB branch
+     * indexes (ADR 0054 §4). MySQL enforces the ADR 0017 invariant with
+     * a functional index directly over the `CASE` expression and needs
+     * no such column, so this is a no-op there.
+     *
+     * A single-caller literal rather than a `Dialect` method — unlike
+     * the index DDL, this construct has exactly one call site, below
+     * the more-than-one-package threshold {@see Dialect}'s own docblock
+     * sets for living there. Same idempotency shape as every other
+     * `ensureXxx` column in this class: probe `information_schema.COLUMNS`
+     * first, defensively swallow MySQL/MariaDB's shared `ER_DUP_FIELDNAME`
+     * (1060) if a stale connection cache lets the probe miss a column the
+     * engine still holds.
+     *
+     * Verified on MariaDB 10.6/10.11/11: the exact DDL text below creates
+     * cleanly, and the follow-up `UNIQUE` index
+     * {@see self::ensureSlotAssignmentFieldLiveUniqueIndex()} builds over
+     * it allows a second *tombstoned* slot for one field while refusing a
+     * second *live* one with SQLSTATE 23000 — matching MySQL's functional
+     * index exactly.
+     */
+    private function ensureSlotAssignmentLiveFieldIdColumn(): void
+    {
+        if ($this->engine !== ServerEngine::MARIADB) {
+            return;
+        }
+
+        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE table_schema = DATABASE()
+              AND table_name = 'stardust_slot_assignments'
+              AND column_name = 'live_field_id'
+        SQL)->fetchColumn();
+
+        if ($exists > 0) {
+            return;
+        }
+
+        try {
+            $this->pdo->exec(<<<'SQL'
+                ALTER TABLE stardust_slot_assignments
+                    ADD COLUMN live_field_id BIGINT
+                        GENERATED ALWAYS AS (
+                            CASE WHEN status IN ('assigned', 'backfilling', 'ready')
+                                 THEN field_id END
+                        ) PERSISTENT
+            SQL);
+        } catch (PDOException $e) {
+            if (! $this->isDuplicateFieldName($e)) {
+                throw $e;
+            }
+        }
     }
 
     /**
      * Implements ADR 0017's "at most one live slot per field" invariant.
-     * The DDL text itself — a MySQL 8.0.13+ functional unique index —
-     * lives in {@see Dialect::liveSlotUniqueIndexDdl()}, which is also
-     * where its CASE-expression semantics are documented.
+     * The DDL text itself — a MySQL 8.0.13+ functional unique index, or
+     * a plain `UNIQUE` index over `live_field_id` on MariaDB — lives in
+     * {@see Dialect::liveSlotUniqueIndexDdl()}, which is also where its
+     * CASE-expression semantics are documented. On MariaDB this runs
+     * after {@see self::ensureSlotAssignmentLiveFieldIdColumn()}, which
+     * the index depends on.
      *
-     * MySQL has no CREATE INDEX IF NOT EXISTS, so we self-check via
-     * information_schema to stay idempotent across re-runs. The follow-up
-     * catch on SQLSTATE 42000 / 1061 is defense in depth: a stale
-     * information_schema cache on the connection can let the probe miss an
-     * index that the storage engine still holds — without the catch, an
-     * otherwise-correct re-bootstrap would explode on the duplicate-name
-     * collision. Treating it as "already there" matches the table-level
-     * `IF NOT EXISTS` semantics every other DDL in this runner uses.
+     * Neither engine has `CREATE INDEX IF NOT EXISTS`, so we self-check
+     * via information_schema to stay idempotent across re-runs. The
+     * follow-up catch on SQLSTATE 42000 / 1061 is defense in depth: a
+     * stale information_schema cache on the connection can let the probe
+     * miss an index that the storage engine still holds — without the
+     * catch, an otherwise-correct re-bootstrap would explode on the
+     * duplicate-name collision. Treating it as "already there" matches
+     * the table-level `IF NOT EXISTS` semantics every other DDL in this
+     * runner uses.
      */
     private function ensureSlotAssignmentFieldLiveUniqueIndex(): void
     {
@@ -378,9 +450,10 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(Dialect::liveSlotUniqueIndexDdl());
+            $this->pdo->exec(Dialect::liveSlotUniqueIndexDdl($this->engine));
         } catch (PDOException $e) {
-            // MySQL ER_DUP_KEYNAME = 1061. We only swallow this one
+            // MySQL ER_DUP_KEYNAME = 1061; MariaDB reports the same code
+            // for the plain UNIQUE index branch. We only swallow this one
             // — anything else (permissions, syntax, connection) must
             // surface so the bootstrap genuinely fails fast.
             if (! $this->isDuplicateKeyName($e)) {

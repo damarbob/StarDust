@@ -98,10 +98,11 @@ SortSpec::byField('price', SortDirection::Desc);
 
 Sorting composes with filters and with cursor pagination — keep passing the `nextCursor` back as usual.
 
-Three things worth knowing:
+Four things worth knowing:
 
 - **Only indexed fields are sortable.** A field must be declared filterable and hold a live slot, the same requirement filtering has. Sorting on anything else raises `FieldNotSortableException`, and on an unregistered name `UnknownFieldException`. `describeModel()` reports which fields qualify right now via `ModelDescription::indexedFields()`.
 - **Entries with no value for the sort field sort first ascending, last descending** — they are not dropped from the page.
 - **A cursor belongs to the ordering that produced it.** Change the sort key or its direction and the old cursor is refused with `InvalidCursorException`; start again from the first page. This is a guard, not a limitation to work around — reusing it would silently walk a different sequence.
+- **On MariaDB, a field sort orders supplementary-plane characters** — mostly emoji, well outside everyday text — **at the opposite end from MySQL.** Every other comparison, and ordinary text in any language, sorts identically on both engines.
 
 Sorting by `id` or by creation time costs nothing extra. Sorting by one of your own fields makes the database order the whole matching set on each page, so it is measurably more expensive on large models — prefer the built-in orderings when either will do.

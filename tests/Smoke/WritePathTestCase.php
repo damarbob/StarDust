@@ -11,6 +11,8 @@ use Psr\Log\NullLogger;
 use StarDust\Clock\SystemClock;
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 use StarDust\Write\BulkIngestor;
@@ -32,6 +34,7 @@ use StarDust\Write\SlotRowUpserter;
 abstract class WritePathTestCase extends TestCase
 {
     protected PDO $pdo;
+    protected ServerEngine $engine;
 
     protected function setUp(): void
     {
@@ -53,6 +56,7 @@ abstract class WritePathTestCase extends TestCase
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
 
+        $this->engine = ServerEngineDetector::detect($this->pdo);
         SchemaFixture::reset($this->pdo);
     }
 
@@ -91,6 +95,7 @@ abstract class WritePathTestCase extends TestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new NullLogger(),
+            engine: $this->engine,
             provisionerIdentity: 'phpunit/0',
         ))->provision($filterableSlots);
     }
@@ -106,7 +111,7 @@ abstract class WritePathTestCase extends TestCase
      */
     protected function provisionLegacyPage(): int
     {
-        return LegacyPage::provision($this->pdo, 'phpunit/0');
+        return LegacyPage::provision($this->pdo, $this->engine, 'phpunit/0');
     }
 
     /**

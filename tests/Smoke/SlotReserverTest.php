@@ -13,6 +13,8 @@ use StarDust\Exception\NonFilterableFieldSlotException;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\ServerEngine;
+use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 
@@ -29,6 +31,7 @@ use StarDust\Tests\Smoke\Support\SchemaFixture;
 final class SlotReserverTest extends TestCase
 {
     private PDO $pdo;
+    private ServerEngine $engine;
 
     protected function setUp(): void
     {
@@ -50,13 +53,14 @@ final class SlotReserverTest extends TestCase
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
 
+        $this->engine = ServerEngineDetector::detect($this->pdo);
         SchemaFixture::reset($this->pdo);
     }
 
     /** A pre-ADR-0043 page: sixty columns, none indexed. */
     private function provisionLegacyPage(): int
     {
-        return LegacyPage::provision($this->pdo, 'phpunit/0');
+        return LegacyPage::provision($this->pdo, $this->engine, 'phpunit/0');
     }
 
     private function newProvisioner(): PageProvisioner
@@ -65,6 +69,7 @@ final class SlotReserverTest extends TestCase
             pdo: $this->pdo,
             clock: new SystemClock(),
             logger: new NullLogger(),
+            engine: $this->engine,
             provisionerIdentity: 'phpunit/0',
         );
     }
