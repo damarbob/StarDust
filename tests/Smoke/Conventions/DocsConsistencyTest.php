@@ -43,16 +43,7 @@ final class DocsConsistencyTest extends TestCase
      */
     public function testReadmeAndDocsCiteNoAdrs(): void
     {
-        $files = [
-            self::README   => 'README.md',
-            self::GLOSSARY => 'GLOSSARY.md',
-        ];
-
-        foreach (glob(self::DOCS_DIR . '/*.md') ?: [] as $path) {
-            $files[$path] = 'docs/' . basename($path);
-        }
-
-        foreach ($files as $path => $label) {
+        foreach ($this->consumerDocs() as $path => $label) {
             $contents = (string) file_get_contents($path);
 
             self::assertSame(
@@ -62,6 +53,51 @@ final class DocsConsistencyTest extends TestCase
                 . ' instead. See CLAUDE.md, "Sibling docs and what each owns".',
             );
         }
+    }
+
+    /**
+     * Build phases ("Phase 5", "Phase 6a") are internal sequencing
+     * vocabulary, defined only in CLAUDE.md's status table. A consumer
+     * has never seen that table, so "Phase 6a's Liberator" tells them
+     * nothing "the Liberator" does not — name the feature or daemon.
+     * CHANGELOG.md is included: it is read by the same Packagist
+     * audience. Only a numbered phase is rejected: the bare word "phase" has
+     * ordinary uses (a sampling phase, a rollout phase).
+     */
+    public function testConsumerDocsNameNoBuildPhases(): void
+    {
+        $files = $this->consumerDocs() + [self::CHANGELOG => 'CHANGELOG.md'];
+
+        foreach ($files as $path => $label) {
+            $contents = (string) file_get_contents($path);
+
+            self::assertSame(
+                0,
+                preg_match('/\bphases?\s+\d/i', $contents),
+                "{$label} refers to a numbered build phase. Phases are internal — name the"
+                . ' feature or daemon instead. See CLAUDE.md, "Sibling docs and what each owns".',
+            );
+        }
+    }
+
+    /**
+     * README.md, GLOSSARY.md and every page under docs/, keyed by path
+     * with a repo-relative label.
+     *
+     * @return array<string, string>
+     */
+    private function consumerDocs(): array
+    {
+        $files = [
+            self::README   => 'README.md',
+            self::GLOSSARY => 'GLOSSARY.md',
+        ];
+
+        foreach (glob(self::DOCS_DIR . '/*.md') ?: [] as $path) {
+            $files[$path] = 'docs/' . basename($path);
+        }
+
+        return $files;
     }
 
     /**

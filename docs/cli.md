@@ -6,26 +6,26 @@ The framework-neutral CLI entry point is `bin/stardust`:
 vendor/bin/stardust --version
 vendor/bin/stardust --help
 
-# Phase 1: idempotently bootstrap the schema on a configured database.
+# Idempotently bootstrap the schema on a configured database.
 # Reads STARDUST_DSN / STARDUST_USER / STARDUST_PASS from the environment.
 STARDUST_DSN='mysql:host=127.0.0.1;dbname=app' \
 STARDUST_USER=root STARDUST_PASS=root \
 vendor/bin/stardust bootstrap
 
-# Phase 5: singleton page-provisioning daemon. Holds a flock on
+# Watcher: singleton page-provisioning daemon. Holds a flock on
 # <pidFileDir>/watcher.pid; a second instance exits with code 2.
 vendor/bin/stardust watcher
 
-# Phase 5: multi-worker sync_queue + import_jobs drain. Run as many
+# Reconciler: multi-worker sync_queue + import_jobs drain. Run as many
 # replicas as you need — SKIP LOCKED keeps them disjoint.
 vendor/bin/stardust reconciler
 
-# Phase 5: operator-initiated DLQ replay (re-enqueues into
+# Operator-initiated DLQ replay (re-enqueues into
 # stardust_sync_queue and removes the DLQ row in one transaction).
 vendor/bin/stardust reconciler:dlq:replay --id=42
 vendor/bin/stardust reconciler:dlq:replay --reason=schema_incompatibility
 
-# Phase 6a: multi-worker slot-reclamation daemon. Polls
+# Liberator: multi-worker slot-reclamation daemon. Polls
 # stardust_slot_assignments for `tombstoned` rows, nullifies the
 # corresponding slot column on entry_slots_page_N in bounded chunks,
 # and transitions the slot back to `free` once the partition is
@@ -35,7 +35,7 @@ vendor/bin/stardust reconciler:dlq:replay --reason=schema_incompatibility
 # exiting.
 vendor/bin/stardust liberator
 
-# Phase 7: multi-worker async export daemon. Claims pending or
+# Chronicler: multi-worker async export daemon. Claims pending or
 # abandoned export jobs from stardust_export_jobs, paginates
 # entry_data, streams CSV/JSON artifacts to <artifactDir>, runs
 # idle-cycle GC on completed-artifact TTL, orphaned failed-job

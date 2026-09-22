@@ -175,7 +175,7 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 
 ## Status
 
-**This is a v0.3.0 pre-release.** Phases 0 (operating-environment verification and the package skeleton), 1 (schema registry and core data plane), 2 (slot & page system), 3 (write path), 4 (read path), 5 (resilience daemons: Watcher + Reconciler), 6a (slot reclamation: Liberator), 6b (field retype & filterability-promotion pipeline), 7 (async exports: Chronicler), and 8 (search driver: JSON query-filter wire format, filter AST, and a swappable execution adapter) are implemented.
+**This is a v0.3.0 pre-release.** Everything listed below is implemented and covered by the test suite, but the public API may still change before the stable release.
 
 **What works today:**
 
@@ -199,8 +199,6 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 - **Sorting accepts one key.** You can order by entry id, creation time, or a single indexed field. Ordering by two fields at once — "by status, then by name" — is not supported; a second key would need a different pagination protocol.
 - **Exports cannot be filtered.** An export always covers every non-deleted entry in the model. A `submitExport()` call carrying a non-empty `filter` is **rejected** with `ExportFilterNotSupportedException` rather than accepted and quietly ignored, so you find out at submission instead of discovering a full extract in the artifact. The argument is kept on the request DTO so filtering can be added later without a breaking signature change.
 - **Keeping an external search index in sync is up to you.** A custom driver can serve reads from a search service such as Meilisearch or Elasticsearch, but drivers are read-only and StarDust does not yet notify you when entries change. Mirroring your own write calls is not enough either: some changes are applied in the background rather than by a write you made — a field rename rewrites every entry, a type change converts stored values, and a deletion removes them. Until a change feed exists, rebuild the external index from a full export rather than by mirroring writes.
-
-The remaining build sequence toward the v0.3.0 GA contract is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
 If you need a working library today, stay on `^0.2.0-alpha.x`.
 
@@ -465,7 +463,7 @@ A handful of the suite's tests need no database at all (e.g. the wire-format dec
 
 GitHub Actions runs the same suite on every push against MySQL and against MariaDB 10.11+ (both **must pass**), plus a job that asserts the suite **fails** against MariaDB 10.6, which is below the supported floor.
 
-For the full setup guide and a phase-by-phase breakdown of exactly what each behaviour the suite proves, see **[TESTING.md](TESTING.md)**.
+For the full setup guide and a breakdown of exactly which behaviours the suite proves, see **[TESTING.md](TESTING.md)**.
 
 ---
 

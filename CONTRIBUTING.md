@@ -75,7 +75,7 @@ immediately rather than in review. You do not need to memorise them.
 | `Conventions/BootstrapperTableAllowlistTest` | `SchemaFixture::CORE_TABLES` matches the tables the bootstrapper creates |
 | `Conventions/ConfigAppendOnlyTest` | `Config`'s constructor is append-only; reordering silently rebinds positional callers |
 | `Conventions/FinalClassGuardTest` | Every class under `src/` is `final` — this engine composes rather than inherits |
-| `Conventions/DocsConsistencyTest` | The README and `docs/` stay free of internal design-record citations, the version constant matches the changelog, and `docs/` stays flat |
+| `Conventions/DocsConsistencyTest` | The README and `docs/` stay free of internal design-record citations and numbered build phases, the version constant matches the changelog, and `docs/` stays flat |
 | `Conventions/DocLinkIntegrityTest` | Every anchor and relative link in README and `docs/` resolves, and every reference page is listed in the README's Contents |
 | `EventVocabularyTest` | Structured-log event names stay inside the documented closed vocabulary |
 | `Slot/IndexedSlotPredicateTest` | The "is this slot indexed?" predicate has exactly one definition |

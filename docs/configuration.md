@@ -19,7 +19,7 @@ $engine = new StarDust(new Config(pdo: $pdo));
 // where async bulk-ingest payloads are persisted (defaults to
 // sys_get_temp_dir() . '/stardust').
 
-// Phase 1: idempotently provision every physical table the engine
+// Idempotently provision every physical table the engine
 // needs (data plane, schema registry, operational/coordination).
 // Safe to call on an already-bootstrapped database.
 $engine->bootstrap();
@@ -27,7 +27,7 @@ $engine->bootstrap();
 
 **Both PDO attributes above are required, not decoration.** PHP's MySQL driver emulates prepared statements by default, which sends every bound value as a quoted string. That breaks StarDust's paginated reads, which bind the page size into `LIMIT`: the first `read()` or `search()` fails with a MySQL syntax error (errno 1064). Turning emulation off also makes values come back from the database with their native types, which the engine relies on. `ERRMODE_EXCEPTION` matters because several of the engine's guards need a failed statement to raise rather than quietly return `false`. If your application shares one connection with other code, create a separate PDO for StarDust rather than changing these attributes under that code.
 
-Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`); Phase 5's Watcher daemon (`bin/stardust watcher`) wires them automatically.
+The page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`); the Watcher daemon (`bin/stardust watcher`) wires them automatically.
 
 > ℹ️ **Defining models and fields.** Use `StarDust::schemaBuilder()` to register models and fields without hand-writing registry SQL. It's get-or-create (safe to re-run) and returns the ids you'll need:
 >
@@ -65,7 +65,7 @@ $company?->indexedFields();
 
 Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
-Phases 5, 6a, 7, model deletion, index headroom, and the combined tick add 46 optional `Config` parameters for daemon tuning:
+The daemons, exports, model deletion, index headroom, and the combined tick are tuned through 46 optional `Config` parameters:
 
 ```php
 $engine = new StarDust(new Config(
