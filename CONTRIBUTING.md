@@ -13,8 +13,8 @@ run, and which conventions check themselves so you don't have to memorise them.
   schema registry depends on functional partial unique indexes introduced in
   8.0.13; MariaDB has no such index type at any version and gets a generated-column
   substitute instead, which is why its own floor (10.11) was set independently.
-- **MariaDB 10.6 and older is actively rejected**, and a CI job exists specifically
-  to assert that the suite *fails* against it. That is a feature, not a bug — see
+- **MariaDB older than 10.11 is actively rejected**, and a CI job exists specifically
+  to assert that the suite *fails* against one (10.6). That is a feature, not a bug — see
   the README's Requirements section for why.
 - Composer, and Node (only if you want to run the markdown linter locally).
 

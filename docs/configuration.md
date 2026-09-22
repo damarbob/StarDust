@@ -7,7 +7,8 @@ use StarDust\Config\Config;
 use StarDust\StarDust;
 
 $pdo = new PDO('mysql:host=127.0.0.1;dbname=app', $user, $pass, [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_EMULATE_PREPARES => false, // required — see below
 ]);
 
 $engine = new StarDust(new Config(pdo: $pdo));
@@ -23,6 +24,8 @@ $engine = new StarDust(new Config(pdo: $pdo));
 // Safe to call on an already-bootstrapped database.
 $engine->bootstrap();
 ```
+
+**Both PDO attributes above are required, not decoration.** PHP's MySQL driver emulates prepared statements by default, which sends every bound value as a quoted string. That breaks StarDust's paginated reads, which bind the page size into `LIMIT`: the first `read()` or `search()` fails with a MySQL syntax error (errno 1064). Turning emulation off also makes values come back from the database with their native types, which the engine relies on. `ERRMODE_EXCEPTION` matters because several of the engine's guards need a failed statement to raise rather than quietly return `false`. If your application shares one connection with other code, create a separate PDO for StarDust rather than changing these attributes under that code.
 
 Phase 2's page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`); Phase 5's Watcher daemon (`bin/stardust watcher`) wires them automatically.
 

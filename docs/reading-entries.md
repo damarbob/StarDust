@@ -54,18 +54,24 @@ $filter = new AndNode([
 // $page->pageSize       — echo of the requested size
 
 // Page through to exhaustion. The cursor is opaque — pass it back
-// unchanged; do not inspect it.
-$cursor = $page->nextCursor;
-while ($cursor !== null) {
-    $next = $engine->read(new EntryQuery(
-        tenantId: 42,
-        modelId:  $modelId,
-        pageSize: 100,
-        cursor:   $cursor,
+// unchanged; do not inspect it. It marks only a position, not the
+// query, so send the same filter, selectFields and page size with
+// every page. A changed sort is refused outright, but a missing
+// filter is not: the pages after the first silently come back
+// unfiltered.
+$cursor = null;
+do {
+    $page = $engine->read(new EntryQuery(
+        tenantId:     42,
+        modelId:      $modelId,
+        filter:       $filter,
+        selectFields: ['name', 'employees'],
+        pageSize:     100,
+        cursor:       $cursor,
     ));
-    // ...
-    $cursor = $next->nextCursor;
-}
+    // ... use $page->rows
+    $cursor = $page->nextCursor;
+} while ($cursor !== null);
 
 // Point read by (tenant_id, entry_id). Returns null when the entry
 // does not exist for this tenant (or has been soft-deleted).
@@ -96,13 +102,13 @@ SortSpec::byField('title');                        // ascending
 SortSpec::byField('price', SortDirection::Desc);
 ```
 
-Sorting composes with filters and with cursor pagination — keep passing the `nextCursor` back as usual.
+Sorting composes with filters and with cursor pagination — keep passing the `nextCursor` back as usual, together with the same filter and sort.
 
 Four things worth knowing:
 
 - **Only indexed fields are sortable.** A field must be declared filterable and hold a live slot, the same requirement filtering has. Sorting on anything else raises `FieldNotSortableException`, and on an unregistered name `UnknownFieldException`. `describeModel()` reports which fields qualify right now via `ModelDescription::indexedFields()`.
 - **Entries with no value for the sort field sort first ascending, last descending** — they are not dropped from the page.
-- **A cursor belongs to the ordering that produced it.** Change the sort key or its direction and the old cursor is refused with `InvalidCursorException`; start again from the first page. This is a guard, not a limitation to work around — reusing it would silently walk a different sequence.
+- **A cursor belongs to the ordering that produced it.** Change the sort key or its direction and the old cursor is refused with `InvalidCursorException`; start again from the first page. This is a guard, not a limitation to work around — reusing it would silently walk a different sequence. **The filter gets no such guard:** a cursor records a position and the ordering, never the filter, so a follow-up request that omits or changes the filter is accepted and walks the unfiltered sequence from that point.
 - **On MariaDB, a field sort orders supplementary-plane characters** — mostly emoji, well outside everyday text — **at the opposite end from MySQL.** Every other comparison, and ordinary text in any language, sorts identically on both engines.
 
 Sorting by `id` or by creation time costs nothing extra. Sorting by one of your own fields makes the database order the whole matching set on each page, so it is measurably more expensive on large models — prefer the built-in orderings when either will do.

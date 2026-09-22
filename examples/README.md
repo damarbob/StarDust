@@ -57,7 +57,7 @@ anything you would miss.
 MariaDB 10.11+ works too, with one caveat: range filters and field sorts
 order supplementary-plane characters (mostly emoji) at the opposite end
 from MySQL — see the README's Requirements section. Older MariaDB
-(≤ 10.6) will not run at all — the engine detects it and refuses to boot.
+(anything before 10.11) will not run at all — the engine detects it and refuses to boot.
 
 The scripts tick the daemons **in-process**, so you do not need to start
 any. That is a teaching device, not how you would deploy: in production

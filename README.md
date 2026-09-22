@@ -144,9 +144,11 @@ Four background daemons keep the slot machinery healthy. They never talk to each
       │ singleton│  │multi-worker│  │multi-worker│  │multi-worker│
       └──────────┘  └────────────┘  └────────────┘  └────────────┘
    adds indexed   backfills the    sweeps tombstoned  writes async
-   pages when     sync queue,      slot columns back  CSV/JSON
-   capacity is    async imports,   to free for reuse  export
-   low            and retypes                         artifacts
+   pages when     sync queue and   slot columns back  CSV/JSON
+   capacity is    async imports;   to free for reuse  export
+   low            finishes field                      artifacts
+                  retypes, renames
+                  and deletions
 ```
 
 Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *backfill window*. **[GLOSSARY.md](GLOSSARY.md)** defines every term in plain language and opens with a short walkthrough that threads them together, if you would rather get the whole model in one pass before reading on.
@@ -164,7 +166,7 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 
 **Probably not a fit if you:**
 
-- Are tied to **MariaDB ≤ 10.6 or MySQL ≤ 5.7** — both are actively rejected (see [Requirements](#requirements)). MariaDB 10.11+ is supported, with one caveat: range filters and field sorts order supplementary-plane characters (rare outside emoji) at the opposite end from MySQL.
+- Are tied to **MariaDB older than 10.11 or MySQL older than 8.0.13** — both are actively rejected (see [Requirements](#requirements)). MariaDB 10.11+ is supported, with one caveat: range filters and field sorts order supplementary-plane characters (rare outside emoji) at the opposite end from MySQL.
 - Need **strong read-after-write consistency on filters immediately after a retype or filterability promotion.** The field is served from the JSON payload (and is not filterable) until its backfill completes.
 - Need **full-text, fuzzy, or substring search** out of the box. The default MySQL driver ships exact-match, comparison, range, set-membership, and *anchored*-prefix (`LIKE 'x%'`) operators — but no substring/suffix matching, no fuzzy matching, and no relevance ranking. Fuzzy/full-text is a capability you'd supply via a custom driver.
 - Need **page numbers, jump-to-page navigation, or a total result count.** Reads are cursor-paginated and forward-sequential: every page hands you an opaque cursor for the next one, and the absence of a cursor means you have reached the end. There is no offset parameter and no total count, and that is deliberate rather than pending — both require the database to read the entire matching set, so a query that is quick today would slow down purely because the tenant grew. Infinite scroll and a Next button work naturally; a Back button means holding on to the cursors you have already used, and "Page 7 of 214" or a deep link to an arbitrary page cannot be served at all. A driver backed by an external search service can maintain its own index and supply them.
@@ -196,6 +198,7 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 
 - **Sorting accepts one key.** You can order by entry id, creation time, or a single indexed field. Ordering by two fields at once — "by status, then by name" — is not supported; a second key would need a different pagination protocol.
 - **Exports cannot be filtered.** An export always covers every non-deleted entry in the model. A `submitExport()` call carrying a non-empty `filter` is **rejected** with `ExportFilterNotSupportedException` rather than accepted and quietly ignored, so you find out at submission instead of discovering a full extract in the artifact. The argument is kept on the request DTO so filtering can be added later without a breaking signature change.
+- **Keeping an external search index in sync is up to you.** A custom driver can serve reads from a search service such as Meilisearch or Elasticsearch, but drivers are read-only and StarDust does not yet notify you when entries change. Mirroring your own write calls is not enough either: some changes are applied in the background rather than by a write you made — a field rename rewrites every entry, a type change converts stored values, and a deletion removes them. Until a change feed exists, rebuild the external index from a full export rather than by mirroring writes.
 
 The remaining build sequence toward the v0.3.0 GA contract is documented in the project's design notes (maintained separately). Each phase is a gate with explicit exit criteria.
 
@@ -215,8 +218,8 @@ The engine detects which one it's talking to at boot — there is no configurati
 
 **Not supported:**
 
-- **MariaDB 10.6 and older** — a JSON-column collation divergence found below the 10.11 floor has no configuration-only fix.
-- **MySQL 5.7 and older** — no partial-unique-index feature, which the schema registry depends on.
+- **MariaDB older than 10.11** — a JSON-column collation divergence found below the 10.11 floor has no configuration-only fix.
+- **MySQL and Percona older than 8.0.13** — no functional unique indexes, which the schema registry depends on. This includes the early 8.0 releases (8.0.0–8.0.12), not only 5.7.
 
 Either unsupported engine is detected and refused at boot, not discovered in production.
 
@@ -248,8 +251,11 @@ A minimal end-to-end walkthrough: bootstrap the schema, define a model, make its
 use StarDust\Config\Config;
 use StarDust\StarDust;
 
+// Both attributes are required: with emulated prepares (PHP's default)
+// the first read fails with a MySQL syntax error. See docs/configuration.md.
 $pdo = new PDO('mysql:host=127.0.0.1;dbname=app', $user, $pass, [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_EMULATE_PREPARES => false,
 ]);
 
 $engine = new StarDust(new Config(pdo: $pdo));
@@ -366,10 +372,17 @@ foreach ($page->rows as $entry) {
 
 // Page through to exhaustion (this dataset fits in one page, so
 // nextCursor is null — the loop exits immediately after page 1).
+// A cursor only marks a position: send the same filter, selectFields
+// and page size with it, or later pages come back unfiltered.
 $cursor = $page->nextCursor;
 while ($cursor !== null) {
     $page   = $engine->read(new EntryQuery(
-        tenantId: 1, modelId: $modelId, pageSize: 2, cursor: $cursor,
+        tenantId:     1,
+        modelId:      $modelId,
+        filter:       $filter,
+        selectFields: ['name', 'employees'],
+        pageSize:     2,
+        cursor:       $cursor,
     ));
     foreach ($page->rows as $entry) { /* ... */ }
     $cursor = $page->nextCursor;
