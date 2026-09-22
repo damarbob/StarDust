@@ -46,7 +46,7 @@ What still works during the window is deliberate and worth knowing: **reads keep
 
 ### Bounded read
 
-The two-query strategy behind every read and search. The first query finds only the matching entry IDs for one page, using indexes and a [cursor](#cursor) bound; the second fetches the full rows for just those IDs. The point is that the database never assembles a result set larger than your page size, so a query costs the same whether the tenant has a thousand entries or ten million.
+The two-query strategy behind every read and search. The first query finds only the matching entry IDs for one page, using indexes and a [cursor](#cursor) bound; the second fetches the full rows for just those IDs. The point is that the database never assembles a result set larger than your page size — that part holds regardless of tenant size. Finding the IDs for that page is not free at every selectivity, though: a filter that matches a broad-but-not-huge slice of the data can cost more to discover than one matching only a handful of rows, so it is the *result set* that stays bounded, not necessarily the work to find it.
 
 **See also:** [Cursor](#cursor).
 

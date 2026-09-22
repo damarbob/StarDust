@@ -4,7 +4,7 @@
 
 # StarDust
 
-**Schemaless dynamic fields, queried at native SQL index speed — no separate search cluster, no EAV join swamp.**
+**Schemaless dynamic fields, filterable through native SQL indexes — no separate search cluster, no EAV join swamp.**
 
 [![Smoke Suite](https://github.com/damarbob/StarDust/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/damarbob/StarDust/actions/workflows/ci.yml)
 [![Coverage](https://coveralls.io/repos/github/damarbob/StarDust/badge.svg?branch=main)](https://coveralls.io/github/damarbob/StarDust?branch=main)
@@ -159,7 +159,7 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 
 **A good fit if you:**
 
-- Need user-defined or per-tenant dynamic fields that are still **filterable at native SQL index speed**, without standing up a separate search cluster.
+- Need user-defined or per-tenant dynamic fields that are still **filterable through native SQL indexes**, without standing up a separate search cluster.
 - Already run **MySQL 8.0.13+ (or Percona)**, or **MariaDB 10.11+**, either as persistent background processes (systemd, supervisor, or containers) or as a scheduled `bin/stardust tick` on a host with no persistent-process capability.
 - Want a **framework-neutral** engine you can drop into any PHP app via Composer — no ORM, query builder, or framework pulled in.
 - Can tolerate a newly defined or retyped filterable field becoming queryable **shortly after** the fact rather than instantly.
