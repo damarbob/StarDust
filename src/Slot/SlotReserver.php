@@ -278,8 +278,8 @@ final class SlotReserver
         );
         $update->execute([$targetStatus, $fieldId, $now, $assignmentId]);
 
-        // The engine takes an *injected* PDO (ADR 0026), so a consumer
-        // on `ERRMODE_SILENT` gets no exception from that constraint —
+        // The engine takes an *injected* PDO, so a consumer on
+        // `ERRMODE_SILENT` gets no exception from that constraint —
         // `execute()` merely returns false. Without this check the
         // method would then bump the schema version and hand back a
         // SlotAssignment for a slot it never claimed, and the ADR 0007

@@ -10,10 +10,11 @@ use PHPUnit\Framework\TestCase;
  * Closed-event-vocabulary guard for Phase 5 through Phase 8.
  *
  * Greps `src/Watcher/`, `src/Reconciler/`, `src/Liberator/`,
- * `src/Retype/`, `src/Rename/`, `src/Chronicler/`, `src/Export/`,
- * `src/Search/`, `src/Filter/`, `src/Compaction/`, `src/Write/`, and
- * `src/Daemon/` for `'event' => '...'` literals and asserts the
- * union is a subset of the ADR 0020 allowlist for each source.
+ * `src/Retype/`, `src/Rename/`, `src/Delete/`, `src/Chronicler/`,
+ * `src/Export/`, `src/Search/`, `src/Filter/`, `src/Compaction/`,
+ * `src/Write/`, and `src/Daemon/` for `'event' => '...'` literals and
+ * asserts the union is a subset of the ADR 0020 allowlist for each
+ * source.
  * Adding a new event name without updating ADR 0020 must fail this
  * test.
  */

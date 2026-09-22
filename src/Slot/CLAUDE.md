@@ -20,7 +20,7 @@ The resolver is called from the two wrappers *before* `beginTransaction()` on th
 
 ### `reserveCore()` checks `rowCount()`, and that check is not decoration
 
-The claiming UPDATE can be refused by `ux_slot_assignments_field_live`. Under `ERRMODE_EXCEPTION` that raises and the caller's catch handles it — but the engine takes an **injected** PDO (ADR 0026), and on `ERRMODE_SILENT` `execute()` merely returns `false`. Without the `rowCount() === 0` guard the method bumped the schema version and returned a `SlotAssignment` for a slot it never claimed.
+The claiming UPDATE can be refused by `ux_slot_assignments_field_live`. Under `ERRMODE_EXCEPTION` that raises and the caller's catch handles it — but the engine takes an **injected** PDO, and on `ERRMODE_SILENT` `execute()` merely returns `false`. Without the `rowCount() === 0` guard the method bumped the schema version and returned a `SlotAssignment` for a slot it never claimed.
 
 That phantom is worse than a crash on the ADR 0007 path: the caller logs `slot_reserved`, counts progress, suppresses `capacity_wait`, and repeats the identical no-op every tick — a silent loop with nothing in the event stream to show an operator. `rowCount() === 0` is the same "my write did not land" detector `ImportJobWorkSource` uses for lease loss, and it is exact here because the UPDATE always changes `status`, so a matched row is always a changed row.
 

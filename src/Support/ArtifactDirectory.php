@@ -19,9 +19,9 @@ namespace StarDust\Support;
  * copy that drops it turns two workers starting together into a
  * spurious failure for whichever one loses the `mkdir`.
  *
- * Config itself stays side-effect-free per ADR 0026, which is why
- * directory creation lives here and happens on first use rather than
- * at construction.
+ * Config itself stays side-effect-free, which is why directory
+ * creation lives here and happens on first use rather than at
+ * construction.
  *
  * **Returns `bool` and deliberately does not throw.** What a caller
  * does with `false` is caller policy, exactly as

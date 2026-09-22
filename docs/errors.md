@@ -4,6 +4,7 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 
 | Exception | Thrown when |
 | :--- | :--- |
+| `UnsupportedServerException` | The connected server is below the supported floor — MySQL/Percona older than 8.0.13, or MariaDB older than 10.11.0. Detected from the live connection the first time the engine needs to know its dialect (e.g. `bootstrap()`, or any call to `StarDust::serverEngine()`), not at construction. |
 | `InvalidTenantIdException` | `tenantId` is `<= 0` (checked before any SQL at every entry point). |
 | `PayloadTooLargeException` | A synchronous `bulkWrite()` exceeds 1 000 entities — use `submitBulkWrite()` instead. |
 | `UncoercibleSlotValueException` | A first-write payload value cannot be coerced to its slot's declared type (the write path is fail-fast). |

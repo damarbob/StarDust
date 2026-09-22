@@ -379,8 +379,8 @@ final class SlotReserverTest extends TestCase
      * A reservation that the database refuses must report `null`, never
      * a `SlotAssignment` for a slot it did not claim.
      *
-     * The engine takes an *injected* PDO (ADR 0026), so a consumer can
-     * hand it one on `ERRMODE_SILENT`, where a constraint violation
+     * The engine takes an *injected* PDO, so a consumer can hand it
+     * one on `ERRMODE_SILENT`, where a constraint violation
      * makes `execute()` return false instead of raising. Without the
      * `rowCount()` check in `reserveCore()` this returned a phantom
      * `SlotAssignment`: the ADR 0007 caller would log `slot_reserved`,

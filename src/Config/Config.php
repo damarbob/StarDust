@@ -14,7 +14,9 @@ use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Search\EntrySearchInterface;
 
 /**
- * Construction-time configuration object per ADR 0026.
+ * Construction-time configuration object. (ADR 0026 grounds only the
+ * search-driver-injection field below; the DTO shape itself is an
+ * implementation choice its Consequences section leaves open.)
  *
  * The constructor is append-only: every new optional field arrives
  * after every existing one and defaults to a value that preserves
@@ -135,7 +137,7 @@ final class Config
         // ADR 0011 async bulk-ingest artifacts (Phase 3) and ADR 0010
         // export artifacts (Phase 7) land here. Directory creation is
         // deferred to the consumer that actually writes — Config stays
-        // side-effect-free per ADR 0026.
+        // side-effect-free.
         $this->artifactDir = $artifactDir ?? (sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'stardust');
 
         // Phase 5 daemon tuning. Blueprint defaults: 60 s poll, 20 %

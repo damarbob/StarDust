@@ -114,10 +114,10 @@ final class ModelRenamer
 
             // "Did my write actually land?" — the same guard
             // reserveCore() carries, and for the same reason: the
-            // engine takes an INJECTED PDO (ADR 0026), so on
-            // ERRMODE_SILENT execute() merely returns false instead
-            // of raising. Without this we would commit and emit
-            // model_renamed for a rename that never happened.
+            // engine takes an INJECTED PDO, so on ERRMODE_SILENT
+            // execute() merely returns false instead of raising.
+            // Without this we would commit and emit model_renamed
+            // for a rename that never happened.
             //
             // rowCount() is exact here: the same-name case already
             // returned above, so a matched row is always a changed

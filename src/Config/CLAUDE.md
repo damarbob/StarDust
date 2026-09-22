@@ -1,6 +1,6 @@
 # Config
 
-Single construction-time DTO per **ADR 0026**. Required: `PDO`. Everything else is optional with a default.
+Single construction-time DTO — an implementation choice, not an ADR 0026 requirement (that ADR grounds only the search-driver-injection field; its own Consequences section explicitly leaves the rest of the Config shape "outside SDDPG's scope"). Required: `PDO`. Everything else is optional with a default.
 
 Fields are `readonly`. **New phases append constructor params, never repurpose existing ones.** Note the asymmetry: the *property declarations* are grouped by subsystem for readability, while the *constructor parameters* are strictly append-ordered. The constructor is the compatibility surface — append there, and place the property declaration wherever it reads best.
 

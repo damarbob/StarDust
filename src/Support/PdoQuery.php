@@ -15,8 +15,8 @@ use RuntimeException;
  * `false` really is reachable here even though it looks like it should
  * not be. PHP 8 defaults `PDO::ATTR_ERRMODE` to `ERRMODE_EXCEPTION`, and
  * `bin/stardust` sets it explicitly, so the engine's own processes always
- * get an exception on failure. But the engine takes an **injected** PDO
- * (ADR 0026): a consumer running `ERRMODE_SILENT` — the pre-8.0 default,
+ * get an exception on failure. But the engine takes an **injected** PDO:
+ * a consumer running `ERRMODE_SILENT` — the pre-8.0 default,
  * and still what plenty of framework bootstraps configure — gets `false`
  * back instead, and `->fetchColumn()` on that is a fatal.
  *

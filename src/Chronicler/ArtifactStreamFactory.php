@@ -33,7 +33,7 @@ use StarDust\Support\UuidV4;
  *
  * Creating the artifact directory on demand (recursive `mkdir`) is
  * symmetric with {@see \StarDust\Write\BulkIngestSubmitter}; Config
- * itself stays side-effect-free per ADR 0026.
+ * itself stays side-effect-free.
  */
 final class ArtifactStreamFactory
 {

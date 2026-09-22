@@ -11,8 +11,8 @@ use StarDust\Config\Config;
 /**
  * Backwards-compatibility guard for the `Config` constructor.
  *
- * `Config` is the single construction-time DTO (ADR 0026), and each
- * phase appends new tuning fields to it. Appending is safe. Reordering,
+ * `Config` is the single construction-time DTO, and each phase appends
+ * new tuning fields to it. Appending is safe. Reordering,
  * renaming, inserting, or removing a parameter is not: every caller
  * passing positional arguments silently binds the wrong value, with no
  * type error to catch it whenever the neighbouring types happen to

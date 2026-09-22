@@ -18,7 +18,7 @@ Phase 5 shared scaffolding. Every daemon in the engine composes these.
 
 `YieldSignal` (single `yieldCause(): ?string`) is `ShutdownSignal`'s sibling for a unit of work that can only hand control back at its own chunk boundaries — `null` means "keep going," any other string is a request to yield, carrying its own closed-taxonomy reason (`'budget'` | `'shutdown'`) into the caller's terminal event without a second probe. The only production consumer today is `ExportJobProcessor::process()` (`src/Chronicler/CLAUDE.md`), checked once per committed non-final chunk.
 
-- `DeadlineYield` reports `'budget'` once a clock reaches a fixed deadline timestamp — built fresh per `CombinedTick::run()` from that run's own resolved `TickBudget`, never held on `Config`, since the deadline is scoped to one call, not to construction-time settings (ADR 0026).
+- `DeadlineYield` reports `'budget'` once a clock reaches a fixed deadline timestamp — built fresh per `CombinedTick::run()` from that run's own resolved `TickBudget`, never held on `Config`, since the deadline is scoped to one call, not to construction-time settings.
 - `ShutdownYield` adapts an existing `ShutdownSignal`, reporting `'shutdown'`. Composed into the persistent `bin/stardust chronicler` daemon's own `Chronicler` (via `StarDust::chronicler(?ShutdownSignal $shutdown)`) so a `SIGTERM` mid-export yields at the next chunk boundary instead of blocking until the job finishes or being killed outright.
 - `CompositeYield` OR-composes any number of probes, mirroring `CompositeShutdownSignal` exactly, first non-null cause wins.
 
