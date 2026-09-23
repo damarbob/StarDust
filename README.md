@@ -6,6 +6,7 @@
 
 **Schemaless dynamic fields, filterable through native SQL indexes — no separate search cluster, no EAV join swamp.**
 
+[![Packagist](https://img.shields.io/packagist/v/damarbob/stardust?include_prereleases&label=packagist)](https://packagist.org/packages/damarbob/stardust)
 [![Smoke Suite](https://github.com/damarbob/StarDust/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/damarbob/StarDust/actions/workflows/ci.yml)
 [![Coverage](https://coveralls.io/repos/github/damarbob/StarDust/badge.svg?branch=main)](https://coveralls.io/github/damarbob/StarDust?branch=main)
 [![PHP](https://img.shields.io/packagist/dependency-v/damarbob/stardust/php?version=dev-main)](composer.json)
@@ -56,7 +57,7 @@ Want to tinker? [`docker/seed.php`](docker/seed.php) is the whole flow — defin
 
 Some StarDust behaviour only makes sense as a sequence in time, and [`examples/`](examples/) covers that: small scripts that seed their own data, narrate themselves in the terminal, and clean up after. Start with [`examples/01-field-lifecycle.php`](examples/01-field-lifecycle.php), which answers the question that trips up nearly everyone — why a field you just marked filterable still cannot be filtered, and what has to happen before it can.
 
-> **Heads up — this is a v0.3.0 pre-release.** `main` and the `0.3.x` tags are a breaking architectural migration (**Vertical Schema Partitioning**) away from the legacy 0.2.x line, motivated by scalability limits and OOM vulnerabilities in the old Virtual Column design. If you need something production-ready today, stay on `^0.2.0-alpha.x` — critical 0.2.x fixes land on the `support/v0.2` branch. Otherwise, read on; the honest caveats live in [Is StarDust a fit?](#is-stardust-a-fit) and [Status](#status), not buried in the fine print.
+> **Heads up — this is an alpha.** `0.3.0-alpha.1` is a ground-up rewrite (**Vertical Schema Partitioning**) of the legacy 0.2.x line, motivated by scalability limits and OOM vulnerabilities in the old Virtual Column design, and it shares no API with it. The public API may still change before 0.3.0. The honest caveats live in [Is StarDust a fit?](#is-stardust-a-fit) and [Status](#status), not buried in the fine print.
 
 StarDust ships as a **framework-neutral Composer library** with zero runtime framework dependencies — only the `psr/log` and `psr/clock` interfaces. Framework adapters (CodeIgniter 4 first) are opt-in companion packages, never core requirements.
 
@@ -175,7 +176,7 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 
 ## Status
 
-**This is a v0.3.0 pre-release.** Everything listed below is implemented and covered by the test suite, but the public API may still change before the stable release.
+**The current release is `0.3.0-alpha.1`.** Everything listed below is implemented and covered by the test suite, but the public API may still change before 0.3.0. [CHANGELOG.md](CHANGELOG.md) lists what each release contains.
 
 **What works today:**
 
@@ -199,8 +200,6 @@ Some vocabulary here is specific to StarDust — *slot*, *page*, *spread*, *back
 - **Sorting accepts one key.** You can order by entry id, creation time, or a single indexed field. Ordering by two fields at once — "by status, then by name" — is not supported; a second key would need a different pagination protocol.
 - **Exports cannot be filtered.** An export always covers every non-deleted entry in the model. A `submitExport()` call carrying a non-empty `filter` is **rejected** with `ExportFilterNotSupportedException` rather than accepted and quietly ignored, so you find out at submission instead of discovering a full extract in the artifact. The argument is kept on the request DTO so filtering can be added later without a breaking signature change.
 - **Keeping an external search index in sync is up to you.** A custom driver can serve reads from a search service such as Meilisearch or Elasticsearch, but drivers are read-only and StarDust does not yet notify you when entries change. Mirroring your own write calls is not enough either: some changes are applied in the background rather than by a write you made — a field rename rewrites every entry, a type change converts stored values, and a deletion removes them. Until a change feed exists, rebuild the external index from a full export rather than by mirroring writes.
-
-If you need a working library today, stay on `^0.2.0-alpha.x`.
 
 ---
 
@@ -232,8 +231,10 @@ Two deployment modes: the reference mode (persistent processes, the MySQL floor,
 ## Installation
 
 ```bash
-composer require damarbob/stardust
+composer require damarbob/stardust:^0.3@alpha
 ```
+
+The `@alpha` flag is required while StarDust has no stable release: Composer installs only stable versions by default, so a bare `composer require damarbob/stardust` fails with "Could not find a version … matching your minimum-stability". The flag applies to this one package; the rest of your dependencies stay on stable versions.
 
 The package's only runtime dependencies are `psr/log` and `psr/clock` (both interface-only packages). It does not pull in a framework, an ORM, a query builder, or a logging implementation.
 
@@ -477,7 +478,7 @@ Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers the requirements
 
 ## Legacy
 
-The legacy 0.2.x source code has been removed from the repository; it remains available via the `^0.2.0-alpha.x` release tags on Packagist.
+The legacy 0.2.x line — a CodeIgniter 4 library built on Virtual Columns — has been removed from the repository and shares no API with 0.3. Its releases remain installable from the `0.2.0-alpha.x` tags on Packagist; there is no upgrade path between the two.
 
 ---
 

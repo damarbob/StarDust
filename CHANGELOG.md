@@ -5,34 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0-alpha.1] - 2026-05-11
+## [0.3.0-alpha.1] - 2026-09-23
+
+The first release of the 0.3 line: a ground-up rewrite, not an upgrade of 0.2. StarDust is now a framework-neutral Composer library built on **Vertical Schema Partitioning** — each entry's full payload is stored as JSON, and the fields you mark filterable are mirrored into typed, indexed columns so filters run on real indexes. There is no upgrade path from 0.2.x; see **Removed** below.
+
+This is an alpha: the public API may still change before 0.3.0. Install it with `composer require damarbob/stardust:^0.3@alpha`.
 
 ### Added
 
-- **Phase 0 — Operating Environment & Repo Bootstrap.**
-- Framework-neutral Composer package skeleton with `StarDust\` PSR-4 namespace; runtime `require` limited to `php`, `ext-pdo`, `ext-pdo_mysql`, `psr/log`, and `psr/clock`.
-- `StarDust\StarDust` engine entry-point class and `StarDust\Config\Config` construction-time configuration object.
-- `StarDust\Logging\StdoutNdjsonLogger` — default PSR-3 logger emitting NDJSON to stdout.
-- `StarDust\Clock\SystemClock` — default `psr/clock` implementation, injected into the logger for deterministic timestamps in tests.
-- `bin/stardust` CLI entry-point stub (`--version`, `--help`); daemon commands arrive in later phases.
-- Phase 0 PHPUnit smoke suite under `tests/Smoke/` covering MySQL 8.0.13+ version floor, CTE support, functional partial-unique-index enforcement, MariaDB rejection, and engine boot with defaults.
-- GitHub Actions CI (`.github/workflows/ci.yml`) running the smoke suite against real MySQL 8.0 and asserting the suite fails against MariaDB.
-- **Phase 1 — Schema Registry & Core Data Plane.**
-- `StarDust\Bootstrap\Bootstrapper` — idempotent migration runner that creates the data plane (`entry_data`, `stardust_sync_queue`), the schema registry (`stardust_models`, `stardust_fields`, `stardust_pages`, `stardust_slot_assignments` with the closed 5-state status ENUM `free | assigned | tombstoned | backfilling | ready`), and the operational/coordination tables (`stardust_schema_version`, `stardust_export_jobs`, `stardust_reconciler_dlq`, `backfill_checkpoints`). Safe to re-run on a populated database; no DDL is destructive.
-- `StarDust\StarDust::bootstrap()` — engine-level convenience that delegates to the Bootstrapper.
-- `bin/stardust bootstrap` — CLI command that reads `STARDUST_DSN` / `STARDUST_USER` / `STARDUST_PASS` from the process environment and provisions the schema in one call.
-- Functional partial unique index `ux_slot_assignments_field_live` implementing ADR 0017's "at most one live slot per field" invariant via the MySQL 8.0.13+ functional-index pattern.
-- Seed of the `stardust_schema_version` singleton row (`id = 1`, `version = 0`) via `INSERT … ON DUPLICATE KEY UPDATE id = id`, so re-runs neither duplicate the row nor reset an already-bumped version counter.
-- Phase 1 PHPUnit smoke suite (`tests/Smoke/BootstrapTest.php`) covering all six Phase 1 exit criteria: bootstrap on a blank database creates every table; idempotent re-runs preserve a sentinel row; the singleton seeds correctly; the slot-status ENUM rejects out-of-band values at the database level; the partial unique index on `field_id` is present via `SHOW INDEX` and behaviourally enforces the live-slot invariant; and the tenant-scoped composite indexes on `entry_data` exist as specified.
+#### Platform and setup
+
+- Framework-neutral Composer package. The only runtime dependencies are the `psr/log` and `psr/clock` interfaces: no framework, ORM or query builder.
+- Requires PHP 8.1+ and MySQL 8.0.13+, Percona Server 8.0.13+, or MariaDB 10.11+. The server type and version are detected from the connection; older servers are refused at startup with `UnsupportedServerException`.
+- `StarDust` engine class, configured through a single `Config` object. Only a `PDO` connection is required; every other setting has a default.
+- `bootstrap()` and `bin/stardust bootstrap` create every table the engine needs. Safe to run on every deploy: re-running never drops or rewrites anything.
+- `schemaBuilder()` registers models and fields without hand-written SQL. It is get-or-create, so setup scripts can be re-run safely.
+- `listModels()` and `describeModel()` report a tenant's models and fields, including whether each field is declared filterable and whether it can be filtered right now.
+- A `docker compose up` quickstart for local development, and runnable, self-cleaning scripts under `examples/`.
+
+#### Writing entries
+
+- `write()` for single entries, `bulkWrite()` for up to 1,000 entries per call, and `submitBulkWrite()` for larger batches processed in the background, with an optional idempotency key. `getImportJob()` reports a background import's progress and outcome.
+- Payloads can be built from a typed constructor or from arrays and JSON (`EntryPayload::fromArray()`, `fromJson()`, `listFromJson()`); all paths validate and convert values the same way.
+- Writes stay available when indexed capacity runs out. The value is always stored in the JSON payload and is copied into an indexed column in the background once one is free.
+- `updateEntry()` replaces an entry's fields wholesale; `deleteEntry()` soft-deletes an entry.
+- Datetime values must be either `Y-m-d H:i:s` (treated as UTC) or RFC 3339 with an explicit offset. Ambiguous formats such as `05/01/2026` are rejected rather than guessed.
+
+#### Reading and searching
+
+- `read()` returns cursor-paginated pages of entries; `get()` reads one entry by id. Every read runs in two bounded queries, however large the tenant.
+- `search()` accepts filters as a JSON wire format with twelve operators and full AND/OR/NOT nesting. Invalid filters are rejected before any SQL runs, with one of thirteen error codes and a pointer to the offending part of the request. The JSON Schema ships in `schemas/queryfilter.schema.json`.
+- Filters are also available as typed PHP objects (`LeafNode`, `AndNode`, `OrNode`, `NotNode`).
+- Sorting by entry id, creation time, or one indexed field, in either direction.
+- Custom search drivers: implement `EntrySearchInterface` to serve reads from another backend. The built-in MySQL driver is used by default.
+
+#### Changing the schema of live data
+
+- Change a field's type, or make a field filterable or not, while the application keeps running. The field is served from the JSON payload until its values have been copied into the new column.
+- `renameField()` renames a field online; stored entries are rewritten in the background, and reads, writes and CSV exports show the new name in the meantime. (A JSON export taken during the rewrite contains each entry as stored, so some entries still carry the old name.) `renameModel()` renames a model immediately.
+- `deleteField()` and `deleteModel()` remove a field's values or a whole model's entries. Both take effect for every reader at once; the data is erased in the background. Model deletion is permanent.
+
+#### Background processes
+
+- Four long-running processes, all started through `bin/stardust`:
+  - `watcher` adds indexed capacity before it runs out.
+  - `reconciler` catches up background work: queued index copies, background imports, type changes, renames and deletions. Work that keeps failing goes to a dead-letter queue, which `reconciler:dlq:replay` retries on demand.
+  - `liberator` frees indexed columns that are no longer in use.
+  - `chronicler` produces exports.
+- `bin/stardust tick` runs the same maintenance as a single time-limited pass, for hosts that can run a cron job but not a persistent process. `--exports` adds export processing to the pass.
+- The reconciler, liberator and chronicler can each run as several processes at once; the watcher runs as a single instance.
+
+#### Exports
+
+- `submitExport()` and `getExportJob()` produce CSV or JSON exports of a model in the background, with a per-tenant limit on concurrent jobs.
+- An export interrupted by a crash resumes where it stopped rather than starting over. New export jobs are not started while the export disk is nearly full, and finished files are cleaned up after a configurable time.
+
+#### Operations
+
+- `spread:report` shows how many storage pages each model's filterable fields span compared with the fewest possible. `compact:model` moves a model's fields onto fewer pages, with a `--dry-run` preview.
+- `cardinality:report` flags indexes whose values are too repetitive to be useful.
+- Structured NDJSON logging by default, or any PSR-3 logger. A correlation id you supply follows an operation from the request into the background processes that finish it.
+- A typed exception for each failure the engine reports, documented in `docs/errors.md`.
 
 ### Changed
 
-- README rewritten for v0.3.0; the Vertical Schema Partitioning positioning, the MySQL 8.0.13+ requirement, and the framework-neutral installation flow replace the legacy 0.2.x CodeIgniter 4 / Virtual Column documentation.
+- The package is a new engine rather than a CodeIgniter 4 library. Models, fields and entries are stored in a different schema, and the public API shares nothing with 0.2.x.
 
-### Notes
+### Removed
 
-- v0.3.0 is a breaking architectural migration. Consumers must remain on `^0.2.0-alpha.x` until the v0.3.0 API contract is finalized.
-- The legacy 0.2.x source code was removed from the repository in commit `02eccd4` prior to this release; it remains available via the `^0.2.0-alpha.x` Packagist tags.
+- The entire 0.2.x codebase: the CodeIgniter 4 integration, Virtual Column indexing, and the manager and builder classes. The 0.2.x releases remain installable from their tags.
+
+### Known limitations
+
+- The `PDO` connection must use `PDO::ERRMODE_EXCEPTION` and `PDO::ATTR_EMULATE_PREPARES => false`. With PHP's default emulated prepares, reads fail with a MySQL syntax error.
+- A newly filterable or retyped field can be filtered only once the background copy into its indexed column finishes.
+- Sorting accepts one key at a time.
+- Exports always cover every entry in the model; a request with a filter is refused with `ExportFilterNotSupportedException`.
+- Pagination is cursor-only: there are no page numbers, offsets or total counts.
+- Drivers are read-only and StarDust does not yet report entry changes, so an external search index has to be rebuilt from exports.
+- On MariaDB, range filters and field sorts place supplementary-plane characters (mostly emoji) at the opposite end from MySQL.
 
 ## [0.2.0-alpha.3] - 2026-02-22
 
@@ -134,3 +185,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial release (881b73a)
+
+[0.3.0-alpha.1]: https://github.com/damarbob/StarDust/compare/v0.2.0-alpha.3...v0.3.0-alpha.1
+[0.2.0-alpha.3]: https://github.com/damarbob/StarDust/compare/v0.2.0-alpha.2...v0.2.0-alpha.3
+[0.2.0-alpha.2]: https://github.com/damarbob/StarDust/compare/v0.2.0-alpha.1...v0.2.0-alpha.2
+[0.2.0-alpha.1]: https://github.com/damarbob/StarDust/compare/v0.1.0-alpha.1...v0.2.0-alpha.1
+[0.1.0-alpha.1]: https://github.com/damarbob/StarDust/releases/tag/v0.1.0-alpha.1
