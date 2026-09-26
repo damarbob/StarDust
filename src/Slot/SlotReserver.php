@@ -402,7 +402,13 @@ final class SlotReserver
         $select = $this->pdo->prepare($sql);
         $select->execute($params);
 
-        return $select->fetch(PDO::FETCH_ASSOC);
+        // fetch() is typed array<string, mixed>|false — precise enough
+        // that PHPStan checks it against this method's narrow shape and
+        // fails. fetchAll() is typed loosely as `array`, which does not
+        // trigger the same check (see DlqReplayer::fetchForUpdate()); the
+        // SQL's own `LIMIT 1` keeps this a single-row fetch either way.
+        $rows = $select->fetchAll(PDO::FETCH_ASSOC);
+        return $rows === [] ? false : $rows[0];
     }
 
     /**

@@ -159,11 +159,16 @@ final class CardinalitySampler
             . " WHERE a.id = ? AND a.status IN ('assigned','ready')"
         );
         $stmt->execute([$slotAssignmentId]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($row === false) {
+        // fetch() is typed array<string, mixed>|false — precise enough
+        // that PHPStan checks it against sampleSlotRow()'s narrow @param
+        // shape and fails. fetchAll() is typed loosely as `array`, which
+        // does not trigger the same check (see
+        // DlqReplayer::fetchForUpdate()).
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if ($rows === []) {
             return;
         }
-        $this->sampleSlotRow($row, $correlationId ?? UuidV4::generate(), 'post_backfill');
+        $this->sampleSlotRow($rows[0], $correlationId ?? UuidV4::generate(), 'post_backfill');
     }
 
     /**
@@ -230,6 +235,9 @@ final class CardinalitySampler
             );
             $stmt->execute([$tenantId]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row === false) {
+                continue;
+            }
 
             $rowCount       = (int) $row['row_count'];
             $distinctValues = (int) $row['distinct_values'];

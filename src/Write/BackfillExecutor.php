@@ -115,8 +115,12 @@ final class BackfillExecutor
             'SELECT tenant_id, model_id, fields FROM entry_data WHERE id = ?'
         );
         $stmt->execute([$entryId]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row === false ? null : $row;
+        // fetch() is typed array<string, mixed>|false — precise enough
+        // that PHPStan checks it against this method's narrow shape and
+        // fails. fetchAll() is typed loosely as `array`, which does not
+        // trigger the same check (see DlqReplayer::fetchForUpdate()).
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $rows === [] ? null : $rows[0];
     }
 
     /**
