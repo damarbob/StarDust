@@ -14,9 +14,9 @@ use SplFileInfo;
  * Guard for the no-inheritance stance: every class under `src/` is
  * `final`.
  *
- * CLAUDE.md states this for daemon collaborators ("every daemon
- * collaborator is `final`; no abstract base classes"), and the whole
- * engine already honours it — 146 final classes, no abstract ones.
+ * CLAUDE.md states this under "Conventions for new code", and the
+ * whole engine already honours it, with 146 final classes and no
+ * abstract ones.
  * Composition plus single-method interfaces is the established shape,
  * and the seams are constructor-injected collaborators rather than
  * subclass hooks.
@@ -57,7 +57,7 @@ final class FinalClassGuardTest extends TestCase
                 $reflection->isFinal(),
                 "{$class} is not final. StarDust composes rather than inherits —"
                 . ' inject a collaborator or add a single-method interface instead of'
-                . ' opening a class for extension. See CLAUDE.md, "Phased build discipline".',
+                . ' opening a class for extension. See CLAUDE.md, "Conventions for new code".',
             );
         }
 

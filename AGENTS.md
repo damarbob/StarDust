@@ -9,10 +9,11 @@ here.
 
 ## Read these first
 
-- **[CLAUDE.md](CLAUDE.md)** — architecture, schema invariants, test conventions,
-  and build discipline. Most subsystems also carry their own `CLAUDE.md` beside
-  the code (`src/Chronicler/CLAUDE.md`, `src/Watcher/CLAUDE.md`, and so on);
-  read the relevant one before changing anything non-trivial in that package.
+- **[CLAUDE.md](CLAUDE.md)** — the architecture map and conventions for new
+  code. Schema invariants live in `src/Bootstrap/CLAUDE.md` and test conventions
+  in `tests/Smoke/CLAUDE.md`. Most other packages also carry their own
+  `CLAUDE.md` beside the code; read the relevant one before changing anything
+  non-trivial in that package.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — requirements, setup, and the three
   commands to run before pushing.
 - **[.agent/rules/](.agent/rules/)** — commit message and changelog style, and

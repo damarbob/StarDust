@@ -14,7 +14,7 @@ Phase 2 entry point for adding extension capacity. `provision(array $filterableS
 
 Per-family layout bounds are 25 `i_str_NN` (`TEXT`, 766-char prefix index per ADR 0030), 15 `i_int_NN` (`BIGINT`), 10 `i_num_NN` (`DOUBLE`), 10 `i_dt_NN` (`DATETIME`). Emits one `page_provisioned` NDJSON event on success.
 
-See the root CLAUDE.md "Schema invariants" section for why string slots are `TEXT` with a 766-char prefix index and why `ROW_FORMAT=DYNAMIC` is load-bearing — that one is easy to break and expensive to diagnose.
+See `src/Bootstrap/CLAUDE.md` ("Extension pages") for why string slots are `TEXT` with a 766-char prefix index and why `ROW_FORMAT=DYNAMIC` is load-bearing — that one is easy to break and expensive to diagnose.
 
 ## `EmptyTableGuard` (ADR 0012)
 

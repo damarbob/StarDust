@@ -51,7 +51,7 @@ final class BootstrapperTableAllowlistTest extends TestCase
             $declared,
             'SchemaFixture::CORE_TABLES has drifted from the tables Bootstrapper actually creates.'
             . ' A missing name leaks state between tests; an extra name is a stale entry.'
-            . ' See CLAUDE.md, "Test conventions".',
+            . ' See tests/Smoke/CLAUDE.md.',
         );
     }
 

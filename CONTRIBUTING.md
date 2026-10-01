@@ -95,9 +95,9 @@ Two things are still on you, both documented under [.agent/rules/](.agent/rules/
 ## Where to look next
 
 - **[TESTING.md](TESTING.md)** — what the smoke suite proves, phase by phase.
-- **[CLAUDE.md](CLAUDE.md)** — architecture, schema invariants, and test
-  conventions in depth. Most subsystems also carry their own `CLAUDE.md` next to
-  the code.
+- **[CLAUDE.md](CLAUDE.md)** is the architecture map. The schema invariants live
+  in `src/Bootstrap/CLAUDE.md`, the test conventions in `tests/Smoke/CLAUDE.md`,
+  and most other packages carry their own `CLAUDE.md` next to the code.
 - **[CHANGELOG.md](CHANGELOG.md)** — release history.
 - **[SDDPG](https://github.com/damarbob/SDDPG)** — the design repo: ADRs,
   blueprints, and schema references. It is the authority on every design

@@ -96,7 +96,7 @@ final class ConfigAppendOnlyTest extends TestCase
             array_slice($actual, 0, count(self::FROZEN_PREFIX)),
             'The Config constructor prefix changed. New tuning fields must be APPENDED'
             . ' after the last existing parameter — reordering or inserting silently'
-            . ' rebinds every positional caller. See CLAUDE.md, "Phased build discipline".',
+            . ' rebinds every positional caller. See CLAUDE.md, "Conventions for new code".',
         );
     }
 

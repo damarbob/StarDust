@@ -57,7 +57,7 @@ final class DocsConsistencyTest extends TestCase
 
     /**
      * Build phases ("Phase 5", "Phase 6a") are internal sequencing
-     * vocabulary, defined only in CLAUDE.md's status table. A consumer
+     * vocabulary, defined only in CLAUDE.md's phase table. A consumer
      * has never seen that table, so "Phase 6a's Liberator" tells them
      * nothing "the Liberator" does not — name the feature or daemon.
      * CHANGELOG.md is included: it is read by the same Packagist
