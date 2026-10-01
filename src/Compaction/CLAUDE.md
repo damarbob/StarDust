@@ -47,7 +47,7 @@ The one deliberate divergence from ADR 0016 commitment 4. `RetypeInitiator::init
 
 **That is a statement about initiation only, and it used to be over-claimed here as "which is what makes 're-run to replan' safe advice" (corrected 2026-08-27).** It does not extend to a relocation that got *past* initiation: that one holds a `tombstoned` old slot, a `backfilling` new one and a `running` checkpoint, none of which the planner's population counts — so re-running mid-drain used to replan around a field it could not see. ADR 0039 closes that by refusing rather than by widening the population; see below.
 
-Deferring instead would let the work source later reserve on whatever page it picks, silently producing a compaction that does not compact. Stage C measured why that bites hardest here: relocating a model's **last field off a page** empties its affine set, so an unpinned reservation falls back to global-oldest exactly when placement matters most.
+Deferring instead would let the work source later reserve on whatever page it picks, silently producing a compaction that does not compact. Measurement showed why that bites hardest here: relocating a model's **last field off a page** empties its affine set, so an unpinned reservation falls back to global-oldest exactly when placement matters most.
 
 ## Sequential, and why
 

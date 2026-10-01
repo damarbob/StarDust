@@ -239,7 +239,7 @@ current_branch="$(git symbolic-ref --short -q HEAD || true)"
     || die "Releases are cut from '$BRANCH', but HEAD is on '${current_branch:-a detached HEAD}'."
 ok "on branch $BRANCH"
 
-# Untracked files outside the package (ROADMAP.md, sibling repos) are fine;
+# Untracked files outside the package (local notes, sibling repos) are fine;
 # modified tracked files, or untracked files inside it, would make the gates
 # below test something other than the commit being tagged.
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] \

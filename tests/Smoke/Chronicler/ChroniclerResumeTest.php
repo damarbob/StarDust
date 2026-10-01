@@ -20,10 +20,10 @@ use StarDust\Tests\Smoke\Phase7TestCase;
 
 /**
  * ADR 0047: the export resume anchor is the artifact file's verified
- * byte count, not `last_cursor` alone. This is the regression coverage
- * ROADMAP's Chronicler item asks for — a completed artifact after a
- * re-claim must contain every row of the filtered set, not merely
- * pass because the job reached `completed`.
+ * byte count, not `last_cursor` alone. This is its regression
+ * coverage. A completed artifact after a re-claim must contain every
+ * row of the filtered set, not merely pass because the job reached
+ * `completed`.
  *
  * Complements {@see ChroniclerAbandonedClaimTest} (claim mechanics,
  * no-anchor case) and {@see ChroniclerLeaseLostTest} (the losing

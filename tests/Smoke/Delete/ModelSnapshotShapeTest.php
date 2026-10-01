@@ -8,7 +8,7 @@ use StarDust\Read\EntryQuery;
 use StarDust\Tests\Smoke\Phase6bTestCase;
 
 /**
- * ADR 0038 stage 1: the shape of the rewritten read and write snapshots.
+ * ADR 0038. The shape of the rewritten read and write snapshots.
  *
  * Both `SlotResolver::load()` and `LiveSlotMap::loadFor()` used to drive
  * off `stardust_fields WHERE model_id = ?`. They now drive off

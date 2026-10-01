@@ -51,7 +51,7 @@ use Throwable;
  * `claimPending()` therefore selects and forwards the anchor exactly
  * as `claimAbandoned()` does, and reports {@see ClaimKind::Resumed}
  * rather than `Pending` when the anchor is usable. Omitting this was
- * the roadmap sketch's original mistake: a yielded job re-claimed with
+ * the original design's mistake. A yielded job re-claimed with
  * no anchor gets a fresh artifact path from
  * {@see ArtifactStreamFactory} and restarts from byte zero on every
  * tick, orphaning one partial per tick and never converging on a job

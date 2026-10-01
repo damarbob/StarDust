@@ -27,11 +27,11 @@ use StarDust\Write\EntryWriter;
 use StarDust\Write\SlotRowUpserter;
 
 /**
- * ROADMAP item 14: a transient InnoDB lock failure must cost a retry and
+ * A transient InnoDB lock failure must cost a retry and
  * a back-off — never a dead daemon, never a quarantined entry, never a
  * failed import.
  *
- * Item 11 established the shape for the Liberator: `PollLoop`
+ * The Liberator hit this first, and set the shape: `PollLoop`
  * deliberately does not catch tick exceptions, so an unretried errno
  * 1205 exits the process, which then crash-loops for as long as the
  * contending sweep runs. Five of the Reconciler's six work sources had
@@ -109,7 +109,7 @@ final class WorkSourceLockRetryTest extends Phase6bTestCase
     }
 
     /**
-     * The failure item 11 was really about, at the daemon boundary.
+     * The underlying failure, at the daemon boundary.
      *
      * Drives the real `Reconciler` under the real `PollLoop`: `run()`
      * must return rather than let the exception through to the CLI's

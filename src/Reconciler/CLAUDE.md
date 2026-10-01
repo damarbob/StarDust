@@ -60,7 +60,7 @@ The field is filterable-but-incompletely-materialised until the queue drains. AD
 
 ## `ImportJobWorkSource`
 
-Dual-path since the Gap 5 resolution (2026-06-18), mirroring the Chronicler's `ExportJobClaimer`.
+Dual-path since 2026-06-18, mirroring the Chronicler's `ExportJobClaimer`.
 
 **Pending path:** `UPDATE … SET status='processing', worker_identity=?, claimed_at=NOW(), heartbeat_at=NOW() WHERE status='pending' ORDER BY id LIMIT 1`.
 

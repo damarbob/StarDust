@@ -335,8 +335,8 @@ final class Bootstrapper
      * INSERT of id=2 succeeds) — PRIMARY KEY (id) plus the seed step in
      * seedAdvisoryScheduleSingleton() are the real guarantee.
      *
-     * Deliberately NOT a column on stardust_schema_version, which the
-     * ROADMAP named as the alternative. That row is a global
+     * Deliberately NOT a column on stardust_schema_version, the obvious
+     * alternative. That row is a global
      * serialization point every registry mutation bumps (see
      * src/Reconciler/CLAUDE.md and SlotReserver's docblock), and its
      * `updated_at` means "when the schema last changed" — an advisory

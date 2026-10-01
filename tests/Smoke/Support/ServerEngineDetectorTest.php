@@ -25,7 +25,7 @@ use StarDust\Support\ServerEngineDetector;
  * directly via reflection, DB-free, in the same spirit as
  * {@see \StarDust\Tests\Smoke\DialectTest} — these are the exact
  * boundary cases verified ad hoc against real MySQL 8.0.13 and real
- * MariaDB 10.6/10.11/11 containers during the Stage 2 implementation
+ * MariaDB 10.6/10.11/11 containers during the MariaDB implementation
  * (2026-09-20); this file is what makes that verification permanent
  * rather than a discarded scratch script.
  */
@@ -97,7 +97,7 @@ final class ServerEngineDetectorTest extends TestCase
      * reads as `5.5.5` — fails closed, but as "MySQL below floor",
      * sending an operator hunting a problem they do not have (ADR 0055
      * §5). Not observed under this project's own mysqlnd-based CI
-     * driver (Stage 1 probe, 2026-09-20), so this is defensive rather
+     * driver (probed 2026-09-20), so this is defensive rather
      * than reproducing a measured failure.
      */
     public function testLegacyPrefixIsStrippedBeforeParsing(): void

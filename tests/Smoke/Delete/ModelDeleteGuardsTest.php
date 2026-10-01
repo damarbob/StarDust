@@ -14,7 +14,7 @@ use StarDust\Tests\Smoke\Phase6bTestCase;
 use StarDust\Write\EntryPayload;
 
 /**
- * ADR 0038 stage 2: every surface severed by the model marker.
+ * ADR 0038. Every surface is severed by the model marker.
  *
  * These tests set `stardust_models.deleted_at` directly with
  * `markModelDeleted()` rather than going through the (not yet built)

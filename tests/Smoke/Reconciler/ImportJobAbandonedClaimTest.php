@@ -12,7 +12,7 @@ use StarDust\Reconciler\TickOutcome;
 use StarDust\Tests\Smoke\Phase6bTestCase;
 
 /**
- * Gap 5 — import-job abandoned-claim / lease recovery.
+ * Import-job abandoned-claim and lease recovery.
  *
  * The Reconciler's import path mirrors the Chronicler's
  * {@see \StarDust\Chronicler\ExportJobClaimer}:

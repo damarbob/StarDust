@@ -14,7 +14,7 @@ use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Tests\Smoke\Phase6bTestCase;
 
 /**
- * ADR 0038 stage 3: the synchronous severance half.
+ * ADR 0038's synchronous severance half.
  *
  * Mirrors `DeleteFieldInitiatorTest`, widened to every field of a model
  * and with one new marker on `stardust_models`.

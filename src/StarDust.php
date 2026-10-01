@@ -200,7 +200,7 @@ final class StarDust
      * hand-writing `stardust_models` / `stardust_fields` SQL.
      *
      * This is a stopgap for ergonomic setup, not the first-class
-     * definition API (still on the roadmap). It registers registry
+     * definition API (still unbuilt). It registers registry
      * rows only — making a filterable field genuinely queryable still
      * requires a provisioned page and a reserved slot (the Watcher
      * daemon, or {@see \StarDust\Page\PageProvisioner} +

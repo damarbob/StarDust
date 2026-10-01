@@ -243,7 +243,7 @@ final class Config
         // the same env vars as $pdo.
         $this->pdoConnector       = $pdoConnector;
 
-        // Import-job abandoned-claim recovery (Gap 5). The Reconciler
+        // Import-job abandoned-claim recovery. The Reconciler
         // re-claims a `processing` import job whose `heartbeat_at` lapsed
         // past this timeout and resumes from the manifest checkpoint.
         // Default 30 s mirrors $chroniclerLeaseTimeoutSeconds; injectable

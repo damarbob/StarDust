@@ -11,7 +11,7 @@ use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Tests\Smoke\Phase5TestCase;
 
 /**
- * Gap 7 — the cardinality sample must fire on a genuinely *jittered*
+ * The cardinality sample must fire on a genuinely *jittered*
  * schedule, not a fixed offset. Two behaviours are locked:
  *
  *   1. The FIRST sample is phase-randomized across the whole interval

@@ -9,7 +9,7 @@ use StarDust\Reconciler\TickOutcome;
 use StarDust\Tests\Smoke\Phase6bTestCase;
 
 /**
- * ADR 0038 stage 3: the asynchronous purge half.
+ * ADR 0038's asynchronous purge half.
  *
  * The most destructive operation in the engine — it deletes `entry_data`
  * rows outright, cascades into every extension page the model touches,

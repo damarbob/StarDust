@@ -215,7 +215,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
     }
 
     /**
-     * ROADMAP item 23 - the gap must skip the CHUNK, not a span of ids.
+     * The gap must skip the CHUNK, not a span of ids.
      *
      * `$cursor + $chunkSize` is arithmetic on ids where ADR 0009 says
      * skip ahead by `LIMIT` rows. The two agree only where the page's
@@ -335,7 +335,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
     }
 
     /**
-     * ROADMAP item 25, defect A: a lock failure in the gap commit must
+     * ADR 0046, first follow-up fix. A lock failure in the gap commit must
      * not kill the daemon.
      *
      * `commitGap()` used to rethrow, and it is called from inside
@@ -399,7 +399,7 @@ final class LiberatorDeadlockRetryTest extends Phase6aTestCase
     }
 
     /**
-     * ROADMAP item 25, defect B: after a gap, no chunk may commit a
+     * ADR 0046, second follow-up fix. After a gap, no chunk may commit a
      * cursor past the skipped rows.
      *
      * ADR 0046 keeps its no-reclaim decision in `$firstGapCursor`,
