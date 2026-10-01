@@ -37,6 +37,16 @@ This project follows a specific style for commit messages to ensure history is r
    - **Do not "restore" a 72-column limit.** The classic 50/72 rule exists for `git send-email` workflows, where mailing lists re-wrap anything longer, and for 80-column terminals, where `git log`'s 4-space body indent leaves 76. Neither applies here: this project's history is read on GitHub and in IDE git panes.
    - Those viewers **preserve hard newlines instead of reflowing them**. A pre-wrapped paragraph therefore renders as a stack of short lines frozen at 72 characters, each with full line height, regardless of how wide the window is — looser and more ragged than the paragraph it was meant to be. An unwrapped line flows to fit.
 
+## Length and Tone
+
+People write commit messages quickly and read them quickly. A message that reads like a design document is neither likely to be human-written nor likely to be read.
+
+1. **Keep it brief.** A small change may need only the subject line. Most bodies are a few bullets, and each bullet is one short line.
+2. **Use simple sentences.** One clause per bullet is the norm, and two is the most. If a bullet needs a "because", a "which" and a parenthetical, it's too long, so split it or cut it.
+3. **Give the reason only when it's not obvious.** One short sentence is enough. Measurements, alternatives considered and long rationale belong in an ADR, a code comment or the PR description, not in the commit.
+4. **Don't narrate the diff.** Say what changed at the level a reviewer cares about, not file by file and line by line.
+5. **Follow [writing-style-guide.md](writing-style-guide.md).** No em or en dashes, no semicolons, and no "Label: explanation" bullets.
+
 ## Issue References
 
 1. **Never write `#` immediately followed by digits**, in the subject or the body. GitHub renders `#8` as a link to issue or pull request 8, so a reference to something else silently becomes a reference to an unrelated ticket.

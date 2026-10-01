@@ -15,7 +15,9 @@ here.
   read the relevant one before changing anything non-trivial in that package.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — requirements, setup, and the three
   commands to run before pushing.
-- **[.agent/rules/](.agent/rules/)** — commit message and changelog style.
+- **[.agent/rules/](.agent/rules/)** — commit message and changelog style, and
+  the writing style every human-read text must follow
+  ([writing-style-guide.md](.agent/rules/writing-style-guide.md)).
 
 ## The short version
 
@@ -31,5 +33,9 @@ here.
 - **PHP 8.1 is the floor**, even though CI also tests up to 8.4.
 - **Run the three checks** in CONTRIBUTING.md before claiming a change is done.
   Several conventions are enforced by tests and will tell you when you break them.
+- **Human-read text has a writing style.** Docs, ADRs, code comments, commit
+  messages, CLI output and exception messages never use an em or en dash, and
+  never put a colon in a heading. Read the guide before writing any of them.
+  Only agent-facing files like this one are exempt.
 - **Don't commit unless asked.** Propose the commit message and let the maintainer
   commit.
