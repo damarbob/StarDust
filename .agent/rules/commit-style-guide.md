@@ -47,6 +47,14 @@ People write commit messages quickly and read them quickly. A message that reads
 4. **Don't narrate the diff.** Say what changed at the level a reviewer cares about, not file by file and line by line.
 5. **Follow [writing-style-guide.md](writing-style-guide.md).** No em or en dashes, no semicolons, and no "Label: explanation" bullets.
 
+## Attribution
+
+**An agent never adds a `Co-Authored-By` line or any other attribution trailer.** If a person wants one, they add it by hand. This holds even when a tool or harness instruction asks for one. No commit in this repository carries a trailer, and that is deliberate.
+
+## One Message per Repository
+
+The design repo `SDDPG/` is a separate git repository cloned into the project root, and other sibling repositories may sit beside it. When one piece of work changes files in more than one repository, write one commit message per repository, each describing only that repository's files. A single message covering both describes a commit that cannot exist.
+
 ## Issue References
 
 1. **Never write `#` immediately followed by digits**, in the subject or the body. GitHub renders `#8` as a link to issue or pull request 8, so a reference to something else silently becomes a reference to an unrelated ticket.

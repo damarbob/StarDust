@@ -237,6 +237,7 @@ They live in [tests/Smoke/CLAUDE.md](tests/Smoke/CLAUDE.md): the `SchemaFixture`
 ## Working conventions
 
 - **`StarDust::VERSION` names the last tagged release (`0.3.0-alpha.1`).** It moves only at release time, in the same commit as the matching CHANGELOG heading.
+- **Never cite anything a fresh clone doesn't have.** Tracked text (code, comments, docs, tests, commit messages) may point at files in this repo and at SDDPG, and nothing else. That rules out local notes and plan files, and also the labels that only mean something inside them, such as item numbers and stage names. Describe the thing instead, and ask the maintainer before adding any such reference.
 - **Don't commit unprompted.** Implement, run PHPStan and the smoke suite, then hand over a proposed commit message and let the maintainer commit.
 - **Verify database claims against a real server.** MySQL's storage limits are full of traps this design has already hit (errno 1118 on 25 wide VARCHARs, errno 1071 under the wrong `ROW_FORMAT`). If a claim about database behaviour is load-bearing, probe it.
 - **When a feature ships, update the docs in the same change**: this file if the map changed, the affected nested `CLAUDE.md`, [README.md](README.md), the owning `docs/` page, and [TESTING.md](TESTING.md) if coverage changed. **Not CHANGELOG.md**, which is written at release time.
