@@ -77,6 +77,7 @@ immediately rather than in review. You do not need to memorise them.
 | `Conventions/FinalClassGuardTest` | Every class under `src/` is `final` — this engine composes rather than inherits |
 | `Conventions/DocsConsistencyTest` | The README and `docs/` stay free of internal design-record citations and numbered build phases, the version constant matches the changelog, and `docs/` stays flat |
 | `Conventions/DocLinkIntegrityTest` | Every anchor and relative link in README and `docs/` resolves, and every reference page is listed in the README's Contents |
+| `Conventions/WritingStyleTest` | No file gains an em or en dash (each file's count may only go down), and no heading in a doc has a colon or semicolon |
 | `EventVocabularyTest` | Structured-log event names stay inside the documented closed vocabulary |
 | `Slot/IndexedSlotPredicateTest` | The "is this slot indexed?" predicate has exactly one definition |
 
@@ -85,12 +86,15 @@ one explains the failure mode it is protecting against.
 
 ## Conventions that don't
 
-Two things are still on you, both documented under [.agent/rules/](.agent/rules/):
+Three things are still on you, all documented under [.agent/rules/](.agent/rules/):
 
 - **Commit messages** — imperative subject, no conventional-commit prefix, body
   explaining what and why. See `commit-style-guide.md`.
 - **Changelog entries** — Keep a Changelog structure and category headers. See
   `changelog-guide.md`.
+- **Writing style.** Beyond the two checked rules, keep colons and semicolons
+  rare and avoid the patterns that make text read as generated. See
+  `writing-style-guide.md`.
 
 ## Where to look next
 

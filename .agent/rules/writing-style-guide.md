@@ -28,6 +28,8 @@ Code is always exempt, wherever it appears. That includes identifiers, signature
 
 ## Banned
 
+`tests/Smoke/Conventions/WritingStyleTest` enforces the dash rule as a per-file ratchet (existing counts may only go down) and the heading rule outright. The other rules are checked by review.
+
 These are strong signals of machine-written text. Don't use them in covered text.
 
 ### The em dash and the en dash

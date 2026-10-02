@@ -68,7 +68,7 @@ The engine's initial build ran in numbered phases, now frozen ([SDDPG/implementa
 - **Voice is about 80% formal, 20% conversational**, nearer fully formal on lookup pages, ADRs, CONTRIBUTING.md and TESTING.md. Vary sentence length and structure, and never introduce errors on purpose.
 - **Commit messages are brief**, with simple one-clause bullets and a reason only when it isn't obvious ([.agent/rules/commit-style-guide.md](.agent/rules/commit-style-guide.md), "Length and Tone").
 
-A new code comment follows the rule even when the comments around it still use dashes. **The one deliberate exception is text written for AI agents** (every `CLAUDE.md`, AGENTS.md, `.agent/rules/`), which stays optimised for agents. That is why this file is still full of em dashes.
+**`Conventions/WritingStyleTest` checks two of these rules**: it ratchets dashes per file against `tests/Smoke/Conventions/dash-baseline.json` (counts may only go down, and a drop must be lowered in the same change) and rejects a colon or semicolon in a Markdown heading. A new code comment follows the rule even when the comments around it still use dashes. **The one deliberate exception is text written for AI agents** (every `CLAUDE.md`, AGENTS.md, `.agent/rules/`), which stays optimised for agents. That is why this file is still full of em dashes.
 
 ## Commands
 
