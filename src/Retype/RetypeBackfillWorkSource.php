@@ -368,12 +368,13 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
     }
 
     /**
-     * A deferred promotion's field can be given an `assigned` slot by the
-     * sync-queue exhaustion path before this source claims it, when an
-     * entry is written in between. That slot is the field's one live
-     * slot, so reserving another would trip
-     * `ux_slot_assignments_field_live` on every tick. It is taken over
-     * as `backfilling` instead, which also takes it out of the read
+     * The sync-queue exhaustion path reserves a deferred field's slot as
+     * `backfilling` while this checkpoint runs, but it can still leave
+     * an `assigned` one: a retype committing between its checkpoint
+     * check and its reservation, or an install that predates the check.
+     * That slot is the field's one live slot, so reserving another would
+     * trip `ux_slot_assignments_field_live` on every tick. It is taken
+     * over as `backfilling` instead, which also takes it out of the read
      * path until this backfill has filled it.
      */
     private function adoptAssignedSlot(int $fieldId, string $now): void

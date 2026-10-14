@@ -65,10 +65,13 @@ use StarDust\Slot\SlotReserver;
  * the queue never fills them. An `assigned` slot would be filterable
  * while it holds only the drained entries, so filters would silently
  * miss every older entry until the retype source got its turn, which
- * waits behind any older running checkpoint. The
- * check runs before the reservation's own transaction, so a retype that
- * commits in between can still leave an `assigned` slot. The retype
- * source adopts that one on its next tick.
+ * waits behind any older running checkpoint. ADR 0007 itself defers to
+ * ADR 0016 for a promotion or type change, and ADR 0016 holds
+ * filterability until the backfill completes.
+ *
+ * The check runs before the reservation's own transaction, so a retype
+ * that commits in between can still leave an `assigned` slot. The
+ * retype source adopts that one on its next tick.
  */
 final class UnmappedFieldReserver
 {
