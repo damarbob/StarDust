@@ -6,6 +6,7 @@ namespace StarDust\Reconciler;
 
 use PDO;
 use PDOException;
+use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Slot\SlotReserver;
 
 /**
@@ -55,12 +56,26 @@ use StarDust\Slot\SlotReserver;
  * Under `ERRMODE_SILENT` neither errno raises at all; `SlotReserver`
  * detects the failed write via `rowCount()` and returns `null`, which
  * lands on the same "reserved nothing" branch.
+ *
+ * **A field with a running retype checkpoint gets a `backfilling` slot.**
+ * A promotion or retype that found no free slot leaves the field
+ * filterable and unmapped, so a write enqueues and this class can reach
+ * the field before the retype source does. Entries written before the
+ * promotion were never queued, so unlike the window ADR 0007 accepts,
+ * the queue never fills them. An `assigned` slot would be filterable
+ * while it holds only the drained entries, so filters would silently
+ * miss every older entry until the retype source got its turn, which
+ * waits behind any older running checkpoint. The
+ * check runs before the reservation's own transaction, so a retype that
+ * commits in between can still leave an `assigned` slot. The retype
+ * source adopts that one on its next tick.
  */
 final class UnmappedFieldReserver
 {
     public function __construct(
         private readonly PDO $pdo,
         private readonly SlotReserver $slotReserver,
+        private readonly RetypeCheckpointRepository $retypeCheckpoints,
     ) {
     }
 
@@ -86,7 +101,12 @@ final class UnmappedFieldReserver
 
         foreach ($this->resolveFieldIds($entryId, $fieldNames) as $fieldId) {
             try {
-                if ($this->slotReserver->reserveForExhaustionBackfill($fieldId, $correlationId) !== null) {
+                $assignment = $this->slotReserver->reserveForExhaustionBackfill(
+                    $fieldId,
+                    $correlationId,
+                    asBackfilling: $this->retypeCheckpoints->existsRunningForField($fieldId),
+                );
+                if ($assignment !== null) {
                     $reserved++;
                 }
             } catch (PDOException) {

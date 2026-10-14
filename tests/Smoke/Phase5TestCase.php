@@ -15,6 +15,7 @@ use StarDust\Reconciler\ImportJobWorkSource;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\SyncQueueWorkSource;
 use StarDust\Reconciler\UnmappedFieldReserver;
+use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Slot\SlotReserver;
 use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
@@ -296,6 +297,7 @@ abstract class Phase5TestCase extends ReadPathTestCase
                 clock: new SystemClock(),
                 logger: $logger ?? new NullLogger(),
             ),
+            retypeCheckpoints: new RetypeCheckpointRepository($this->pdo),
         );
     }
 

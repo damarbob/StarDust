@@ -58,6 +58,8 @@ So after the rollback, the still-unmapped field names go to `UnmappedFieldReserv
 
 The field is filterable-but-incompletely-materialised until the queue drains. ADR 0007 names and accepts exactly that; the window is bounded by sync-queue depth, which that ADR already designates as the leading indicator to monitor. Do **not** "fix" this into a `backfilling → ready` promotion — that is ADR 0016's lifecycle for retypes, it has no promotion trigger on this path, and it would scan the whole `(tenant_id, model_id)` partition to write a handful of values.
 
+**The one exception is a field with a running retype checkpoint**, which gets its slot as `backfilling` (`UnmappedFieldReserver` asks `RetypeCheckpointRepository::existsRunningForField()` and passes `asBackfilling`). A promotion or retype that found no free slot leaves the field filterable and unmapped, so a write enqueues and this path can reach the field first. ADR 0007's bound does not hold there: entries written before the promotion were never queued, so only the retype backfill fills them, and an `assigned` slot would answer filters while missing all of them until the retype source got its turn (which waits behind any older running checkpoint). Here the promotion trigger exists, since the retype source finds the `backfilling` slot as its own. The check runs outside the reservation's transaction, so a retype committing in between can still leave an `assigned` slot; `RetypeBackfillWorkSource` adopts it (see `src/Retype/CLAUDE.md`).
+
 ## `ImportJobWorkSource`
 
 Dual-path since 2026-06-18, mirroring the Chronicler's `ExportJobClaimer`.
