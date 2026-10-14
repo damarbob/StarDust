@@ -182,6 +182,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
                 return TickOutcome::IDLE;
             }
 
+            $this->adoptAssignedSlot($checkpoint->fieldId, $now);
             $newSlot = $this->loadLiveSlot($checkpoint->fieldId);
             if ($newSlot === null) {
                 // Deferred-assignment path: the initiator could not
@@ -364,6 +365,29 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
             throw new \RuntimeException("Page {$pageId} not found while ticking retype work source.");
         }
         return (string) $name;
+    }
+
+    /**
+     * A deferred promotion's field can be given an `assigned` slot by the
+     * sync-queue exhaustion path before this source claims it, when an
+     * entry is written in between. That slot is the field's one live
+     * slot, so reserving another would trip
+     * `ux_slot_assignments_field_live` on every tick. It is taken over
+     * as `backfilling` instead, which also takes it out of the read
+     * path until this backfill has filled it.
+     */
+    private function adoptAssignedSlot(int $fieldId, string $now): void
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE stardust_slot_assignments'
+            . " SET status = 'backfilling', updated_at = ?"
+            . " WHERE field_id = ? AND status = 'assigned'"
+        );
+        $stmt->execute([$now, $fieldId]);
+
+        if ($stmt->rowCount() > 0) {
+            $this->bumpSchemaVersion($now);
+        }
     }
 
     private function promoteSlotToReady(int $slotAssignmentId, string $now): void
