@@ -84,7 +84,7 @@ final class SlotReserver
      * Two differences from {@see self::reserve()}, both load-bearing:
      *
      *   - `$requireIndexed` is hardcoded `true`, not defaulted. The
-     *     slot goes live as `assigned`, which makes
+     *     slot normally goes live as `assigned`, which makes
      *     `MysqlNativeDriver::supportsFilterOn()` return true at once;
      *     landing on an unindexed column would then have the compiler
      *     emit a predicate against a column with no index, violating
@@ -102,12 +102,26 @@ final class SlotReserver
      * `$correlationId` is the claiming chunk's id: this reservation is a
      * sub-event of the chunk that discovered the unmapped field, and ADR
      * 0020 requires the two join.
+     *
+     * `$asBackfilling` reserves the slot as `backfilling` instead, for a
+     * field whose retype backfill is still waiting for a slot. Such a
+     * slot would otherwise be `assigned` and filterable while it holds
+     * only the entries the sync queue drained, so a filter would miss
+     * every older entry until the backfill took it over. As `backfilling`
+     * it still receives writes but stays off the read path, and the
+     * retype source finds it as its own.
      */
     public function reserveForExhaustionBackfill(
         int $fieldId,
         ?string $correlationId = null,
+        bool $asBackfilling = false,
     ): ?SlotAssignment {
-        return $this->reserveInOwnTransaction($fieldId, 'assigned', true, $correlationId);
+        return $this->reserveInOwnTransaction(
+            $fieldId,
+            $asBackfilling ? 'backfilling' : 'assigned',
+            true,
+            $correlationId,
+        );
     }
 
     /**

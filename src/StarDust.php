@@ -734,6 +734,7 @@ final class StarDust
             unmappedFieldReserver: new UnmappedFieldReserver(
                 pdo: $this->config->pdo,
                 slotReserver: $this->slotReserver(),
+                retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
             ),
             chunkSize: $this->config->reconcilerChunkSize,
             lockRetryBudget: $this->config->reconcilerLockRetryBudget,
