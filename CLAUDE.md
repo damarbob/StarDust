@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It is the map. Most packages carry their own `CLAUDE.md` with the rationale, invariants and traps for that package; those load automatically when you work in the directory, so read the relevant one before changing anything non-trivial there.
 
+## Shared agent rules
+
+@.agent/rules/core.md
+@.agent/rules/stardust-rules.md
+
+The first import is the short list of rules that hold in every repository of ours (attribution, commit messages, writing, generated-text patterns, changelogs), and the second holds only what is specific to StarDust. The full guides sit beside them, and `core.md` says when to read each one.
+
 ## Release state
 
 **`0.3.0-alpha.1` was tagged on 2026-09-23 and is the published release.** Work after it ships as the next `0.3.0-alpha.N` (or a later pre-release), decided at release time. The public surface is now really public: a change to an entry point, `Config`'s constructor or `EntrySearchInterface` breaks someone.
@@ -44,7 +51,7 @@ The engine's initial build ran in numbered phases, now frozen ([SDDPG/implementa
 
 - [CONTRIBUTING.md](CONTRIBUTING.md): the human entry point (requirements, setup, the three pre-push commands, which conventions tests enforce). Deliberately thin; put depth here or in TESTING.md.
 - [AGENTS.md](AGENTS.md): the tool-neutral agent entry point. **A pointer, not a copy**; never duplicate guidance into it.
-- [.agent/rules/](.agent/rules/): commit-message, changelog and writing style, in the format Windsurf reads. Only conventions that hold for a framework-neutral library.
+- [.agent/rules/](.agent/rules/): the shared rules from `github.com/damarbob/agent-rules`, in the format Windsurf reads, copied in by its `sync` command at the version recorded in `.agent/rules/.agent-rules.json`. **Never edit a shared copy.** Change it in that repository and sync again, or run `npx --yes github:damarbob/agent-rules#vX.Y.Z check` to find a copy edited by hand. [stardust-rules.md](.agent/rules/stardust-rules.md) holds what is specific to StarDust, is never touched by the sync, and wins over a shared rule on a conflict.
 - [TESTING.md](TESTING.md): what the smoke suite *proves*. Test *conventions* live in [tests/Smoke/CLAUDE.md](tests/Smoke/CLAUDE.md); keep the two from contradicting each other.
 - [examples/](examples/): runnable, self-cleaning demonstration scripts with their own [README](examples/README.md), covering behaviour that unfolds over time and across processes. **Outside PHPStan's analysed paths**, and the first StarDust code many people read, so keep the entry-point signatures they use in sync when a facade method changes.
 - [README.md](README.md): consumer-facing and a first-class deliverable. When a feature ships, update its Status section ("What works today" / "Not yet available"), Contents list and smoke-suite bullets. Most usage examples live under [docs/](docs/); update the page that owns the example.
@@ -57,16 +64,7 @@ The engine's initial build ran in numbered phases, now frozen ([SDDPG/implementa
 
 ## Writing style
 
-**Binding on every text a person reads**: README.md, GLOSSARY.md, CHANGELOG.md, `docs/*.md`, CONTRIBUTING.md, TESTING.md, ADRs and the other SDDPG documents, code comments and docblocks (`examples/` included), commit messages, what `examples/` scripts print, `bin/stardust` help and output, exception messages, release notes, the website, the docs site, social posts and video. The goal is text that reads as human-written. The full rule, with before/after examples, is [.agent/rules/writing-style-guide.md](.agent/rules/writing-style-guide.md); read it before writing any of the above. The core of it, so it sticks without the click:
-
-- **Never use an em dash (`—`) or en dash (`–`)**, nor a hyphen standing in for one. Split the sentence, use a comma or parentheses, or say "so" / "because" / "with". Ranges are "8.0.13 to 8.0.15". Hyphenated words ("end-to-end", "read-only") are fine.
-- **Never put `:` or `;` in a heading or title.** "Schemaless indexed fields in StarDust", not "StarDust: Schemaless Indexed Fields".
-- **No colons at all in social posts or video** (narration and on-screen text).
-- **Use colons and semicolons sparingly in prose.** Prefer two sentences.
-- **Don't stack overclaims.** One "unparalleled" or "effortless", with a concrete fact beside it, is fine marketing. Two in one line ("Blazing-fast filtering with unparalleled scalability") or one per sentence is the generated-text formula.
-- **Avoid the generated-text patterns** the guide lists (bold-label bullets on every item, "not just X, it's Y", forced lists of three, "seamless" / "robust" / "delve"). Not banned, just not habitual.
-- **Voice is about 80% formal, 20% conversational**, nearer fully formal on lookup pages, ADRs, CONTRIBUTING.md and TESTING.md. Vary sentence length and structure, and never introduce errors on purpose.
-- **Commit messages are brief**, with simple one-clause bullets and a reason only when it isn't obvious ([.agent/rules/commit-style-guide.md](.agent/rules/commit-style-guide.md), "Length and Tone").
+The writing rules are the shared ones imported above ([writing-style-guide.md](.agent/rules/writing-style-guide.md) and [ai-patterns-guide.md](.agent/rules/ai-patterns-guide.md)), and [stardust-rules.md](.agent/rules/stardust-rules.md) lists which of this repository's texts they cover. Read the guide before writing any of them.
 
 **`Conventions/WritingStyleTest` checks two of these rules**: it ratchets dashes per file against `tests/Smoke/Conventions/dash-baseline.json` (counts may only go down, and a drop must be lowered in the same change) and rejects a colon or semicolon in a Markdown heading. A new code comment follows the rule even when the comments around it still use dashes. **The one deliberate exception is text written for AI agents** (every `CLAUDE.md`, AGENTS.md, `.agent/rules/`), which stays optimised for agents. That is why this file is still full of em dashes.
 
