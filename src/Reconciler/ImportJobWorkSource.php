@@ -43,8 +43,8 @@ use StarDust\Support\RetryableLockFailure;
  *     restarts at `offset = manifest.entries_written` and never
  *     re-processes a committed chunk (no duplicate `entry_data` rows).
  *   - Iterates entries in `chunkSize` windows; each window opens its
- *     own transaction, calls
- *     {@see EntryWriter::writeWithinTransaction()} for every entry, and
+ *     own transaction, writes the window's entries in one call to
+ *     {@see \StarDust\Write\EntryChunkWriter::writeChunk()}, and
  *     writes the running `manifest` + `heartbeat_at` inside the same
  *     transaction. That UPDATE carries `WHERE … AND worker_identity = self`:
  *     a `rowCount() === 0` means a re-claimer overwrote our identity, so
@@ -497,7 +497,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             // artifact.
             //
             // `$windowStart` is what makes a retry safe — the counter is
-            // incremented per entry inside the transaction, so a rolled
+            // advanced inside the transaction, so a rolled
             // back attempt must rewind it before the next one.
             //
             // `$records` needs no such rewind: writeWindow() appends to a
@@ -585,8 +585,8 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
      * distinguish "committed" from "retry me", and from the two terminal
      * decisions already made in here.
      *
-     * `$entriesWritten` is by reference and is incremented per entry
-     * *inside* the transaction, so a caller retrying this method must
+     * `$entriesWritten` is by reference and is advanced by the window's
+     * size *inside* the transaction, so a caller retrying this method must
      * rewind it to the window's starting value first.
      *
      * `$records` is also by reference but needs no such rewind: the
@@ -611,22 +611,27 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     ): string {
         $this->pdo->beginTransaction();
         try {
-            $entryIdFirst = null;
-            $entryIdLast  = null;
-
+            $payloads = [];
             foreach ($chunk as $entry) {
-                $result = $this->entryWriter->writeWithinTransaction(new EntryPayload(
+                $payloads[] = new EntryPayload(
                     tenantId: (int) $entry['tenant_id'],
                     modelId: (int) $entry['model_id'],
                     fields: (array) ($entry['fields'] ?? []),
-                ));
-                // ADR 0011 §26's "entity ID range". The write already
-                // returns the id; this only stops discarding it, so the
-                // record costs no extra query.
-                $entryIdFirst ??= $result->entryId;
-                $entryIdLast    = $result->entryId;
-                $entriesWritten++;
+                );
             }
+
+            // The whole window in a constant number of statements. No
+            // correlation id is passed, exactly as the per-entry loop
+            // passed none: a queue row enqueued here carries the
+            // payload's own, which the artifact never supplies.
+            $results = $this->entryWriter->chunkWriter()->writeChunk($payloads);
+
+            // ADR 0011 §26's "entity ID range". The write already
+            // returns the ids; this only stops discarding them, so the
+            // record costs no extra query.
+            $entryIdFirst = $results === [] ? null : $results[0]->entryId;
+            $entryIdLast  = $results === [] ? null : $results[count($results) - 1]->entryId;
+            $entriesWritten += count($results);
 
             // Append to a LOCAL copy — see the docblock. `$records` is
             // only advanced past the commit below.

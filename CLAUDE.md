@@ -174,7 +174,7 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 | [src/Schema/](src/Schema/) | `SchemaBuilder` and `SchemaReader` (below). |
 | [src/Page/](src/Page/) | `PageProvisioner` and the ADR 0012 `EmptyTableGuard`. |
 | [src/Slot/](src/Slot/) | `SlotReserver` (the ADR 0034 filterability chokepoint, with ADR 0032 model affinity), `LiveSlotTombstoner`, `IndexedSlotPredicate`. |
-| [src/Write/](src/Write/) | `EntryWriter`, `PayloadSplitter`, `LiveSlotMap`, `BulkIngestor`, `BulkIngestSubmitter`, `BackfillExecutor`, `EntryDeleter`. |
+| [src/Write/](src/Write/) | `EntryWriter`, `EntryChunkWriter` (the one write implementation: a chunk in a constant number of multi-row statements, NULL-padded per page, ids from `LAST_INSERT_ID()`), `PayloadSplitter`, `LiveSlotMap`, `BulkIngestor`, `BulkIngestSubmitter`, `BackfillExecutor`, `EntryDeleter`. |
 | [src/Read/](src/Read/) | Two-query bounded read (ADR 0005), sort DTOs, cursor codec. Mostly delegates to `src/Search/`. |
 | [src/Daemon/](src/Daemon/) | `PollLoop`, `Tickable`, `ShutdownSignal`, `PidFileGuard`, `AdvisoryLock`, `CombinedTick`, `TickBudget`. |
 | [src/Watcher/](src/Watcher/) | Singleton page provisioner (capacity- and demand-driven), cardinality and spread advisories. |

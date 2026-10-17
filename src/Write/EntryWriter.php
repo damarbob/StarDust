@@ -39,6 +39,10 @@ use Throwable;
  * and the Liberator's sweep nullifies by `entry_id` without requiring
  * the row to exist.
  *
+ * The three steps themselves live in {@see EntryChunkWriter}, which the
+ * bulk paths call with a whole chunk; this class runs it for a chunk of
+ * one and owns the transaction and the events around it.
+ *
  * All three writes commit together; any failure rolls everything back.
  * The caller receives an {@see EntryWriteResult}; no exception is
  * thrown for the capacity-exhaustion case (per ADR 0007).
@@ -62,12 +66,16 @@ use Throwable;
  */
 final class EntryWriter
 {
+    private readonly EntryChunkWriter $chunkWriter;
+
     public function __construct(
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
         private readonly SlotRowUpserter $slotRowUpserter,
+        ?EntryChunkWriter $chunkWriter = null,
     ) {
+        $this->chunkWriter = $chunkWriter ?? new EntryChunkWriter($pdo, $clock, $slotRowUpserter);
     }
 
     /**
@@ -99,103 +107,35 @@ final class EntryWriter
     }
 
     /**
-     * Bulk-path entry point. Performs the same write as
+     * Single-entry form of the bulk write: performs the same write as
      * {@see self::write()} but assumes the caller already opened a
-     * transaction and will commit (or roll back) the surrounding
-     * chunk. Does NOT emit structured-log events — the bulk caller
-     * batches them at chunk-commit time per ADR 0020.
+     * transaction and will commit (or roll back). Does NOT emit
+     * structured-log events.
      *
-     * Returns the result so the bulk caller can stitch the per-chunk
-     * manifest from each entity's outcome.
+     * A one-element {@see EntryChunkWriter::writeChunk()}. There is one
+     * write implementation, and the bulk callers hand it whole chunks
+     * through {@see self::chunkWriter()} instead of looping here.
+     *
+     * `$correlationId` is the id stamped on any ADR 0007 queue row this
+     * write enqueues; null falls back to the payload's own.
      */
     public function writeWithinTransaction(
         EntryPayload $payload,
         ?string $correlationId = null,
     ): EntryWriteResult {
-        TenantId::assertValid($payload->tenantId);
+        return $this->chunkWriter->writeChunk([$payload], $correlationId)[0];
+    }
 
-        // The id stamped on any ADR 0007 queue row this write enqueues.
-        // The bulk caller passes its *ingest* id here rather than the
-        // payload's, because a bulk load is the operation its consumer
-        // knows about.
-        $correlationId ??= $payload->correlationId;
-
-        $now = $this->clock->now()
-            ->setTimezone(new DateTimeZone('UTC'))
-            ->format('Y-m-d H:i:s');
-
-        // The map load precedes the json_encode because ADR 0036
-        // canonicalisation must apply to the payload we persist, not
-        // just to the slot plan: a client still sending a pre-rename
-        // field name would otherwise store the stale key verbatim.
-        $map = LiveSlotMap::loadFor($this->pdo, $payload->modelId);
-
-        // ADR 0038, and note this deliberately INVERTS the ADR 0037 rule
-        // one line below. A deleted *field's* key is stripped rather than
-        // rejected, because a rejected write loses data while a strip
-        // converges. For a model there is no residual valid entry to
-        // preserve: this row would land either behind the purge cursor,
-        // making the acceptance a lie, or ahead of it, becoming a
-        // permanent orphan with a dangling `model_id`.
-        if ($map->isModelDeleting()) {
-            throw new ModelDeletionInProgressException(
-                "Model {$payload->modelId} is being deleted; no entry can be written to it."
-                . ' Run a reconciler to finish the purge.'
-            );
-        }
-
-        $fields = $map->canonicalise($payload->fields);
-
-        $jsonFields = json_encode(
-            $fields,
-            JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-        );
-
-        // PayloadSplitter is pure; resolving the live-slot map and
-        // building the plan first means an UncoercibleSlotValueException
-        // surfaces before we INSERT the entry row.
-        $plan = PayloadSplitter::split($map, $fields);
-
-        // Page-id → physical table name. Resolved once before INSERTs;
-        // the registry never renames a provisioned page (ADR 0012).
-        $pageTableNames = $this->resolvePageTableNames(array_keys($plan->slotWrites));
-
-        $insertEntry = $this->pdo->prepare(
-            'INSERT INTO entry_data (tenant_id, model_id, created_at, updated_at, fields)'
-            . ' VALUES (?, ?, ?, ?, ?)'
-        );
-        $insertEntry->execute([
-            $payload->tenantId,
-            $payload->modelId,
-            $now,
-            $now,
-            $jsonFields,
-        ]);
-        $entryId = (int) $this->pdo->lastInsertId();
-
-        $slotsWritten = [];
-        foreach ($plan->slotWrites as $pageId => $columnsToValues) {
-            $tableName = $pageTableNames[$pageId];
-            $this->slotRowUpserter->upsert($tableName, $entryId, $payload->tenantId, $columnsToValues);
-            foreach ($columnsToValues as $slotColumn => $_value) {
-                $slotsWritten[] = ['pageId' => $pageId, 'slotColumn' => $slotColumn];
-            }
-        }
-
-        $enqueued = $plan->hasMissingSlotFields();
-        if ($enqueued) {
-            $enqueue = $this->pdo->prepare(
-                'INSERT INTO stardust_sync_queue (entry_id, created_at, origin_correlation_id)'
-                . ' VALUES (?, ?, ?)'
-            );
-            $enqueue->execute([$entryId, $now, $correlationId]);
-        }
-
-        return new EntryWriteResult(
-            entryId: $entryId,
-            enqueuedForBackfill: $enqueued,
-            slotsWritten: $slotsWritten,
-        );
+    /**
+     * The chunk writer this writer delegates to, for the bulk callers
+     * ({@see BulkIngestor}, the Reconciler's import drain) that write a
+     * whole chunk inside their own transaction. Sharing this instance
+     * rather than constructing a second keeps both on the same PDO and
+     * the same cached session limits.
+     */
+    public function chunkWriter(): EntryChunkWriter
+    {
+        return $this->chunkWriter;
     }
 
     /**

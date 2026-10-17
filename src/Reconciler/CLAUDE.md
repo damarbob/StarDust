@@ -72,13 +72,13 @@ Dual-path since 2026-06-18, mirroring the Chronicler's `ExportJobClaimer`.
 
 **The lock retry here is per-window, not per-tick.** The claim is an autocommitted UPDATE that runs *before* any transaction, so a whole-tick retry would re-claim the job and re-read the artifact. `writeWindow()` exists for exactly that seam. On exhaustion the job stays `processing` under this worker's identity and nothing resumes it until `Config::$reconcilerImportLeaseTimeoutSeconds` (30 s) lapses and the abandoned-claim path picks it up from `manifest.entries_written` — lossless, and slower than the other four sources' next tick. That latency is the accepted cost of not failing the job.
 
-`$entriesWritten` is passed by reference and incremented per entry *inside* the transaction, so a retry rewinds it to the window's starting value first.
+`$entriesWritten` is passed by reference and advanced by the window's size *inside* the transaction, so a retry rewinds it to the window's starting value first.
 
 ### Resume semantics
 
 It decodes the ADR 0028 single-document JSON artifact and **resumes from the `manifest` checkpoint**. `entries_written` is the count of already-committed entries, so a re-claimed job restarts at `offset = manifest.entries_written` and never re-processes a committed chunk — no duplicate `entry_data` rows. Resume stays exact even across a `chunkSize` change, because entries are position-indexed.
 
-It iterates `entries` in `Config::$reconcilerChunkSize` windows calling `EntryWriter::writeWithinTransaction()` per entry.
+It iterates `entries` in `Config::$reconcilerChunkSize` windows, writing each window with one `EntryChunkWriter::writeChunk()` call (reached through `EntryWriter::chunkWriter()`), so a window costs a constant number of statements rather than several per entry. A per-entry failure — a deleting model, an uncoercible value — now surfaces during the chunk writer's planning pass, before any row is written, but reaches the same `catch` and the same `failJob('entry_write_failed')` as before; the window is rolled back either way. See `src/Write/CLAUDE.md`.
 
 ### Lease-loss self-abort
 
@@ -92,7 +92,7 @@ This is reliable because `manifest.entries_written` strictly increases, so a mat
 
 ### The manifest (ADR 0011 §26, shaped by ADR 0040)
 
-`{chunks, entries_written}` is the resume checkpoint above. `chunk_manifest` is the per-chunk enumeration §26 requires: one record per chunk carrying `index`, `size`, `outcome`, and the chunk's `entry_id_first` / `entry_id_last`. The write path already had the ids — `writeWithinTransaction()` returns an `EntryWriteResult` — so the records cost no extra query.
+`{chunks, entries_written}` is the resume checkpoint above. `chunk_manifest` is the per-chunk enumeration §26 requires: one record per chunk carrying `index`, `size`, `outcome`, and the chunk's `entry_id_first` / `entry_id_last`. The write path already had the ids — `writeChunk()` returns one `EntryWriteResult` per entry, in order — so the records cost no extra query.
 
 Four rules, each of which a plausible refactor would get wrong:
 
