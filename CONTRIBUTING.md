@@ -86,15 +86,21 @@ one explains the failure mode it is protecting against.
 
 ## Conventions that don't
 
-Three things are still on you, all documented under [.agent/rules/](.agent/rules/):
+Four things are still on you, all documented under [.agent/rules/](.agent/rules/):
 
 - **Commit messages** — imperative subject, no conventional-commit prefix, body
   explaining what and why. See `commit-style-guide.md`.
+- **Attribution.** No line that credits a tool or AI in a commit message or a
+  pull request description. See `attribution-guide.md`.
 - **Changelog entries** — Keep a Changelog structure and category headers. See
   `changelog-guide.md`.
 - **Writing style.** Beyond the two checked rules, keep colons and semicolons
-  rare and avoid the patterns that make text read as generated. See
-  `writing-style-guide.md`.
+  rare. See `writing-style-guide.md`, and `ai-patterns-guide.md` for the habits
+  that make text read as generated.
+
+Most of those guides are copies of shared rules from
+[agent-rules](https://github.com/damarbob/agent-rules), so a fix to one belongs
+in that repository. What holds only for StarDust is in `stardust-rules.md`.
 
 ## Where to look next
 

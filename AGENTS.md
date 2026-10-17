@@ -16,9 +16,11 @@ here.
   non-trivial in that package.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — requirements, setup, and the three
   commands to run before pushing.
-- **[.agent/rules/](.agent/rules/)** — commit message and changelog style, and
-  the writing style every human-read text must follow
-  ([writing-style-guide.md](.agent/rules/writing-style-guide.md)).
+- **[.agent/rules/](.agent/rules/)** — attribution, commit message, changelog
+  and writing rules, shared with other repositories. Start with
+  [core.md](.agent/rules/core.md), which lists them, and read
+  [stardust-rules.md](.agent/rules/stardust-rules.md) for what holds only here.
+  Never edit a shared copy, because the next sync replaces it.
 
 ## The short version
 
