@@ -18,6 +18,7 @@ use StarDust\Tests\Smoke\Support\SchemaFixture;
 use StarDust\Write\BulkIngestor;
 use StarDust\Write\EntryWriter;
 use StarDust\Write\SlotRowUpserter;
+use StarDust\Tests\Smoke\Support\TestPdo;
 
 /**
  * Shared scaffolding for Phase 3 write-path smoke tests.
@@ -47,11 +48,7 @@ abstract class WritePathTestCase extends TestCase
         }
 
         try {
-            $this->pdo = new PDO($dsn, $user, $pass, [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_EMULATE_PREPARES   => false,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            ]);
+            $this->pdo = new PDO($dsn, $user, $pass, TestPdo::options());
         } catch (PDOException $e) {
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
@@ -79,11 +76,7 @@ abstract class WritePathTestCase extends TestCase
             self::markTestSkipped('STARDUST_TEST_DSN/STARDUST_TEST_USER must be set.');
         }
 
-        return new PDO($dsn, $user, $pass, [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_EMULATE_PREPARES   => false,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
+        return new PDO($dsn, $user, $pass, TestPdo::options());
     }
 
     /**

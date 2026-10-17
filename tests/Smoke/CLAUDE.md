@@ -7,6 +7,7 @@ Test conventions: fixtures, base classes and the traps they guard against. [TEST
 - **Every smoke test hits a real database.** There are no mocked databases anywhere in this repo. The suite skips (does not fail) when `STARDUST_TEST_DSN` / `STARDUST_TEST_USER` are unset.
 - **Keep tests strict-clean.** `phpunit.xml.dist` sets `failOnWarning`, `failOnRisky`, `beStrictAboutOutputDuringTests` and `beStrictAboutTestsThatDoNotTestAnything`.
 - **Guard every `tearDown()` with `isset($this->pdo)`.** PHPUnit still calls `tearDown` after a `markTestSkipped()` or `fail()` in `setUp`, leaving the typed property uninitialised.
+- **A test that opens its own PDO takes its options from `Support\TestPdo::options()`**, so it follows whatever prepare mode the CI cell runs.
 - **`str_getcsv()` in helpers passes `''` as `$escape`** explicitly (PHP 8.4 deprecation, and the RFC 4180-correct choice).
 
 ## The per-test clean slate

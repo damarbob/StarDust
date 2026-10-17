@@ -250,8 +250,9 @@ A minimal end-to-end walkthrough: bootstrap the schema, define a model, make its
 use StarDust\Config\Config;
 use StarDust\StarDust;
 
-// Both attributes are required: with emulated prepares (PHP's default)
-// the first read fails with a MySQL syntax error. See docs/configuration.md.
+// ERRMODE_EXCEPTION is required. Emulated prepares work too (PHP's
+// default); native ones are what this walkthrough and the test suite use
+// by default. See docs/configuration.md.
 $pdo = new PDO('mysql:host=127.0.0.1;dbname=app', $user, $pass, [
     PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_EMULATE_PREPARES => false,
@@ -462,7 +463,7 @@ vendor/bin/phpunit --testsuite Smoke
 
 A handful of the suite's tests need no database at all (e.g. the wire-format decoder, the event-vocabulary guard, and the schema-conformance cross-check), so they run even on a bare clone.
 
-GitHub Actions runs the same suite on every push against MySQL and against MariaDB 10.11+ (both **must pass**), plus a job that asserts the suite **fails** against MariaDB 10.6, which is below the supported floor.
+GitHub Actions runs the same suite on every push against MySQL and against MariaDB 10.11+ (both **must pass**), once more against MySQL with PDO's prepared-statement emulation switched on (**must pass**), plus a job that asserts the suite **fails** against MariaDB 10.6, which is below the supported floor.
 
 For the full setup guide and a breakdown of exactly which behaviours the suite proves, see **[TESTING.md](TESTING.md)**.
 

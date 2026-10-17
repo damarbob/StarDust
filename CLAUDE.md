@@ -117,9 +117,10 @@ bin/stardust compact:model --tenant=1 --model=7 --dry-run
 bin/stardust tick --budget=50 [--advisories] [--exports]
 ```
 
-**CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs six jobs: `static-analysis`, `markdown-lint`, `mysql-smoke` (full PHP matrix), `mariadb-smoke` (full PHP matrix × MariaDB 10.11 and 11, must pass), `mariadb-rejection` (MariaDB 10.6, must fail, proving the floor holds) and `coverage-finish`.
+**CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs seven jobs: `static-analysis`, `markdown-lint`, `mysql-smoke` (full PHP matrix), `mysql-smoke-emulated` (below), `mariadb-smoke` (full PHP matrix × MariaDB 10.11 and 11, must pass), `mariadb-rejection` (MariaDB 10.6, must fail, proving the floor holds) and `coverage-finish`.
 
 - **Coverage is collected in exactly two cells**, PHP 8.4 on MySQL and PHP 8.4 on MariaDB 10.11, because a MySQL-only number misses every MariaDB branch in `Support\Dialect` and `ServerEngineDetector`. Both upload to Coveralls as one parallel build that `coverage-finish` closes under `always()`. Don't enable PCOV across the whole matrix.
+- **`mysql-smoke-emulated` reruns the whole suite with emulated prepares** (PHP 8.4, MySQL 8.0, no coverage, must pass). `STARDUST_TEST_EMULATE_PREPARES=1` makes `tests/Smoke/Support/TestPdo.php` set `PDO::ATTR_EMULATE_PREPARES` on every connection the suite opens. The engine supports both modes, and pdo_mysql defaults to emulated. Two consequences for new code: a query binding `LIMIT ?` must bind it typed (`Support\TypedBinding` or `PDO::PARAM_INT`), because untyped emulation inlines it quoted and the server raises errno 1064; and a test that opens its own PDO must take `TestPdo::options()`. `Search\EmulatedPreparesTest` forces emulation on regardless, so the native cells still cover the read path under it.
 - **Coverage is reported, never a gate.** Every Coveralls step uses `fail-on-error: false`, and the decrease threshold is deliberately unset.
 - About 12 lines of `Filter\Json\JsonFilterDecoder` are uncovered by design (the post-`json_decode` narrowing guard and an unreachable `match` default). Don't contort tests to reach them.
 
@@ -202,7 +203,7 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 - **`ArtifactDirectory`**: the race-tolerant `is_dir() || @mkdir(recursive) || is_dir()`. The trailing `|| is_dir()` is the race tolerance. Returns `bool` and never throws; what a caller does with `false` is its own policy.
 - **`Dialect`**: the engine-specific DDL, `tableOptionsClause()` (collation) and `liveSlotUniqueIndexDdl()` (ADR 0017), each branching on `ServerEngine`. It is the one file that names both engines' literals. If a JSON-fallback SQL comparison ever ships, its collation gets a method here too.
 - **`UuidV4`**: the source of every `correlation_id` / `chunk_correlation_id` and of `WorkerIdentity`'s uniqueness suffix.
-- **`LikePattern`**, **`PdoQuery`** and **`WorkerIdentity`** follow the same one-definition rule.
+- **`LikePattern`**, **`PdoQuery`**, **`TypedBinding`** and **`WorkerIdentity`** follow the same one-definition rule.
 
 ### Cross-cutting rules
 

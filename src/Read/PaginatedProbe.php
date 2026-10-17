@@ -6,6 +6,7 @@ namespace StarDust\Read;
 
 use PDO;
 use StarDust\Search\Mysql\SqlFilterCompiler;
+use StarDust\Support\TypedBinding;
 
 /**
  * Phase 4 Query 1 of the two-query bounded read of ADR 0005.
@@ -47,7 +48,10 @@ final class PaginatedProbe
     {
         $fragment = $this->compiler->compile($query->filter, $query, $snapshot);
         $stmt = $this->pdo->prepare($fragment->sql);
-        $stmt->execute($fragment->bindings);
+        // Typed, not execute($bindings): under emulated prepares an
+        // untyped LIMIT ? inlines quoted and the server raises errno 1064.
+        TypedBinding::bind($stmt, $fragment->bindings);
+        $stmt->execute();
         return array_values(
             array_map(static fn ($v): int => (int) $v, $stmt->fetchAll(PDO::FETCH_COLUMN)),
         );

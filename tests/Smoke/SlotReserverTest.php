@@ -17,6 +17,7 @@ use StarDust\Support\ServerEngine;
 use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
+use StarDust\Tests\Smoke\Support\TestPdo;
 
 /**
  * Phase 2 slot reserver smoke suite.
@@ -44,11 +45,7 @@ final class SlotReserverTest extends TestCase
         }
 
         try {
-            $this->pdo = new PDO($dsn, $user, $pass, [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_EMULATE_PREPARES   => false,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            ]);
+            $this->pdo = new PDO($dsn, $user, $pass, TestPdo::options());
         } catch (PDOException $e) {
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }
@@ -407,11 +404,7 @@ final class SlotReserverTest extends TestCase
             (string) getenv('STARDUST_TEST_DSN'),
             (string) getenv('STARDUST_TEST_USER'),
             (string) getenv('STARDUST_TEST_PASS'),
-            [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_SILENT,
-                PDO::ATTR_EMULATE_PREPARES   => false,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            ],
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_SILENT] + TestPdo::options(),
         );
 
         $phantom = (new SlotReserver($silent, new SystemClock(), new NullLogger()))

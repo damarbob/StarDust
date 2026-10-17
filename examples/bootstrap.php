@@ -99,9 +99,11 @@ stardust_example_load_dotenv();
 /**
  * Connect with the attributes StarDust expects.
  *
- * `ERRMODE_EXCEPTION` and `EMULATE_PREPARES => false` are not optional
- * decoration: the engine reads native types back from the driver, and
- * several of its guards distinguish a failed write from a raised error.
+ * `ERRMODE_EXCEPTION` is not optional decoration: several of the
+ * engine's guards distinguish a failed write from a raised error.
+ * `EMULATE_PREPARES => false` is a choice rather than a requirement.
+ * The engine runs with PHP's emulated default too, but native prepares
+ * are the tested default, so these examples use them.
  */
 function stardust_example_pdo(): PDO
 {
