@@ -77,6 +77,19 @@ Adaptive. `chooseStrategy(?FilterNode)` returns `'joins'` for `null` or pure-AND
 
 The Architecture Blueprint §1.2 tenant-isolation invariant holds on **both** strategies, and on the two clauses ADR 0041 added — the sort join replays `tenant_id`, and so does the anchor subquery. Verify it on any new strategy.
 
+### Driving leaf (ADR 0056)
+
+A filtered read in the default order used to lead with `entry_data` and order by `entry_data.id`. On MySQL an equality matching a few percent of a tenant then read the whole match set and sorted it to find one page (10 161 rows touched for a 5% integer equality on 200 000 rows, against 102 with the rule). When the strategy is `joins`, the order is the default or `Id`, and some leaf is an `eq` on a full-width slot column (`i_int_`, `i_num_`, `i_dt_`) whose index the snapshot knows, `compile()` emits `SELECT STRAIGHT_JOIN entry_data.id FROM {driving page} {alias} FORCE INDEX (…) INNER JOIN entry_data … {other pages}`, adds `{alias}.tenant_id = ?`, and moves the keyset and `ORDER BY` onto `{alias}.entry_id`. Every other query keeps its SQL byte for byte.
+
+- **Aliases are untouched.** `compileAsJoins()` still hands out `p0`, `p1`, … in leaf order. The driving page keeps its alias, so the leaf that drives need not be `p0`, and it simply gets no `INNER JOIN` because it moved to `FROM`. The other pages' `ON` clauses name `entry_data`, which now comes before them, so they needed no change.
+- **The binding order is the clause order.** `[tenant, model, driving tenant, keyset anchor?, filter…, limit]`. The `ON` clauses carry no placeholders, so moving the joins moves no binding. The driving tenant predicate is inserted ahead of `deleted_at IS NULL`, which has none.
+- **`STRAIGHT_JOIN` and `FORCE INDEX` are each load-bearing, and neither works alone.** The hint without the pin leaves `FROM entry_data` first, and the optimiser starts there and sorts the join (one `eq` matching 50%: 222 rows to 200 001 on 8.0.46). The pin without the hint lets a string leaf in the same AND pull the plan onto the tenant index (13 618 rows against 768).
+- **The index name comes from `SnapshotEntry::orderedIndexFor()`, never from `ix_{table}_{column}`.** A page from before ADR 0043 or an operator's index may be named anything, and a hint naming a missing index fails the read with errno 1176. It is quoted as an identifier because it comes from the data dictionary.
+- **Only equality on a full-width slot drives, and a string leaf never does**, even when it comes first in the filter. A string slot is indexed on a 766 character prefix, which cannot answer an equality alone. `in` must not take the shape (238 rows became 200 001), and a range or `prefix` gains nothing. The family is read from the physical column prefix, not from `declaredType`, because the column is what the index covers.
+- **"First qualifying leaf" is the deterministic choice, not the cheapest.** The compiler does not know selectivity. In an AND the bound is the driving leaf's match count, not the page size, so a broad leaf written first costs more than a narrow one written second.
+- **MariaDB already plans the old shape well, so a green MariaDB run proves nothing about this rule.** `DrivingLeafCompilerTest` pins the SQL shape and `BoundedFilteredReadTest` the rows touched, and it is the MySQL cells that can fail.
+- **`compile_strategy` still reports `joins`**, and `PaginatedProbe`, `TypedBinding`, the cursor codec and `SearchService` are unchanged.
+
 ### Sorting (ADR 0041)
 
 Three additions, and each has a trap:
