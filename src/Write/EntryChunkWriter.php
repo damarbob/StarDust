@@ -10,6 +10,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use RuntimeException;
 use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Support\MultiRowBatches;
 
 /**
  * Writes a list of entries inside the caller's transaction in a
@@ -73,11 +74,7 @@ use StarDust\Exception\ModelDeletionInProgressException;
  */
 final class EntryChunkWriter
 {
-    /** Headroom below MySQL's 65 535 placeholders per prepared statement. */
-    public const DEFAULT_MAX_PLACEHOLDERS = 60000;
-
-    /** Fixed allowance for the SQL text around the VALUES list. */
-    private const STATEMENT_OVERHEAD_BYTES = 1024;
+    public const DEFAULT_MAX_PLACEHOLDERS = MultiRowBatches::DEFAULT_MAX_PLACEHOLDERS;
 
     private const ENTRY_COLUMNS = 5;
     private const QUEUE_COLUMNS = 3;
@@ -237,7 +234,7 @@ final class EntryChunkWriter
         $costs = [];
         foreach ($planned as $item) {
             // Two ints, two 19-char timestamps, the JSON document.
-            $costs[] = self::costOf([0, 0, $now, $now, $item['json']]);
+            $costs[] = MultiRowBatches::costOf([0, 0, $now, $now, $item['json']]);
         }
 
         $entryIds = [];
@@ -294,7 +291,7 @@ final class EntryChunkWriter
                 $values[] = $columnsToValues[$c] ?? null;
             }
             $aligned[] = [$entryId, $values];
-            $costs[] = self::costOf([0, 0, ...$values]);
+            $costs[] = MultiRowBatches::costOf([0, 0, ...$values]);
         }
 
         foreach ($this->batches($costs, count($columns) + 2) as [$offset, $length]) {
@@ -315,7 +312,7 @@ final class EntryChunkWriter
             return;
         }
 
-        $costs = array_map(static fn (array $row): int => self::costOf($row), $rows);
+        $costs = array_map(static fn (array $row): int => MultiRowBatches::costOf($row), $rows);
 
         foreach ($this->batches($costs, self::QUEUE_COLUMNS) as [$offset, $length]) {
             $params = [];
@@ -331,55 +328,20 @@ final class EntryChunkWriter
     }
 
     /**
-     * Cuts a row list into consecutive `[offset, length]` ranges that
-     * each fit both budgets. Order is preserved, which the id derivation
-     * in {@see self::insertEntries()} depends on, and a row that alone
-     * exceeds the byte budget still gets a range of its own.
+     * Order is preserved, which the id derivation in
+     * {@see self::insertEntries()} depends on.
      *
      * @param list<int> $costs estimated bytes per row
      * @return list<array{int, int}>
      */
     private function batches(array $costs, int $placeholdersPerRow): array
     {
-        $count = count($costs);
-        if ($count <= 1) {
-            return $count === 0 ? [] : [[0, 1]];
-        }
-
-        $maxRows = max(1, intdiv($this->maxPlaceholders, $placeholdersPerRow));
-        $maxBytes = max(1, $this->maxStatementBytes() - self::STATEMENT_OVERHEAD_BYTES);
-
-        $ranges = [];
-        $start = 0;
-        $bytes = 0;
-        for ($i = 0; $i < $count; $i++) {
-            $rows = $i - $start;
-            if ($rows > 0 && ($rows >= $maxRows || $bytes + $costs[$i] > $maxBytes)) {
-                $ranges[] = [$start, $rows];
-                $start = $i;
-                $bytes = 0;
-            }
-            $bytes += $costs[$i];
-        }
-        $ranges[] = [$start, $count - $start];
-
-        return $ranges;
-    }
-
-    /**
-     * Upper-bound wire size of one VALUES tuple. Strings count twice
-     * their length (an emulated prepare escapes them inline, and escaping
-     * at most doubles a byte) plus quotes and separator.
-     *
-     * @param list<mixed> $values
-     */
-    private static function costOf(array $values): int
-    {
-        $bytes = 4;
-        foreach ($values as $v) {
-            $bytes += is_string($v) ? 2 * strlen($v) + 3 : 24;
-        }
-        return $bytes;
+        return MultiRowBatches::ranges(
+            $costs,
+            $placeholdersPerRow,
+            $this->maxPlaceholders,
+            fn (): int => $this->maxStatementBytes(),
+        );
     }
 
     private function autoIncrementIncrement(): int
