@@ -203,7 +203,7 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 - **`ArtifactDirectory`**: the race-tolerant `is_dir() || @mkdir(recursive) || is_dir()`. The trailing `|| is_dir()` is the race tolerance. Returns `bool` and never throws; what a caller does with `false` is its own policy.
 - **`Dialect`**: the engine-specific DDL, `tableOptionsClause()` (collation) and `liveSlotUniqueIndexDdl()` (ADR 0017), each branching on `ServerEngine`. It is the one file that names both engines' literals. If a JSON-fallback SQL comparison ever ships, its collation gets a method here too.
 - **`UuidV4`**: the source of every `correlation_id` / `chunk_correlation_id` and of `WorkerIdentity`'s uniqueness suffix.
-- **`MultiRowBatches`**: how a chunk is cut into multi-row statements, under a placeholder cap and half of `@@max_allowed_packet` (`ranges()`, plus `costOf()` for a row's wire size). Used by `EntryChunkWriter`. A new multi-row INSERT or UPSERT over a variable number of rows goes through it rather than assuming a chunk fits in one statement.
+- **`MultiRowBatches`**: how a chunk is cut into multi-row statements, under a placeholder cap and half of `@@max_allowed_packet` (`ranges()`, plus `costOf()` for a row's wire size). Shared by `EntryChunkWriter` and `RetypeBackfillExecutor`. A new multi-row INSERT or UPSERT over a variable number of rows goes through it rather than assuming a chunk fits in one statement.
 - **`LikePattern`**, **`PdoQuery`**, **`TypedBinding`** and **`WorkerIdentity`** follow the same one-definition rule.
 
 ### Cross-cutting rules
