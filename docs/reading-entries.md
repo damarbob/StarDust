@@ -81,6 +81,8 @@ $entry = $engine->get(tenantId: 42, entryId: $someEntryId);
 
 Fields are sourced from the joined slot column when the slot's status is `assigned` or `ready`; otherwise — `backfilling`, `tombstoned`, or unmapped — they fall back to the JSON payload stored in `entry_data.fields`. This preserves write-availability on the read side: a field that lacks an indexed slot still surfaces, just without filter or sort capability. The read path emits NDJSON events `search_request`, `pre_flight_rejected`, and `capability_unsupported`; `cache_miss` is emitted by the in-process schema-version cache on registry-version bumps.
 
+How much work the database does to find a page depends on the filter, even though the page you get back is always at most `pageSize` entries. An equality on an integer, numeric or datetime field finds its page by walking that field's index in entry order, so it examines about one page of rows however many entries match. Joining such an equality to other conditions with `and` keeps the work in proportion to what that one equality matches. A filter on a string field, a range such as `gt` or `between`, an `in` list, or anything containing `or` or `not` may have to examine every matching entry to produce one page, so its cost grows with the size of the match set.
+
 ## Sorting
 
 Reads are ordered by insertion order unless you say otherwise. Pass a `SortSpec` to order by an entry's creation, or by any field that currently has an indexed slot:
