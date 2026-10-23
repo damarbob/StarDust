@@ -38,6 +38,14 @@ final class SnapshotEntry
      *                                       a model registered with no fields is legal, and a
      *                                       `modelId` with no registry row at all must read
      *                                       `false` here, not `true`.
+     * @param array<int, array<string, string>> $orderedIndexes pageId → slotColumn →
+     *                                       the name of a full-width `(tenant_id, slotColumn)`
+     *                                       index on that page, as found in the data
+     *                                       dictionary. Such an index returns equal values
+     *                                       in `entry_id` order, which is what lets a
+     *                                       filtered default-order read stop after one page.
+     *                                       Empty when none was found, and the compiler then
+     *                                       keeps its ordinary shape.
      */
     public function __construct(
         public readonly int $modelId,
@@ -47,6 +55,7 @@ final class SnapshotEntry
         public readonly array $pageTableNames,
         public readonly array $pendingDeletionNames = [],
         public readonly bool $modelDeleted = false,
+        public readonly array $orderedIndexes = [],
     ) {
         // Computed once here rather than memoised lazily: the snapshot
         // is immutable and cached per schema version, so the answer
@@ -65,6 +74,20 @@ final class SnapshotEntry
     public function field(string $fieldName): ?FieldDescriptor
     {
         return $this->fieldsByName[$fieldName] ?? null;
+    }
+
+    /**
+     * The index a read may name in a `FORCE INDEX` hint to walk `$slotColumn`
+     * of `$pageId` in `entry_id` order, or null when the dictionary showed none.
+     *
+     * The name always comes from the dictionary and is never built from the
+     * `ix_{table}_{column}` convention: pages from before ADR 0043 and
+     * indexes an operator added may not carry that name, and a hint naming
+     * a missing index fails the read (errno 1176) instead of slowing it.
+     */
+    public function orderedIndexFor(int $pageId, string $slotColumn): ?string
+    {
+        return $this->orderedIndexes[$pageId][$slotColumn] ?? null;
     }
 
     /**

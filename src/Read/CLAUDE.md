@@ -20,6 +20,15 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 
 **ADR 0037 adds the mirror-image case: a field the snapshot must stop reporting.** `SlotResolver` excludes any row with a non-null `deleted_at` from `fieldsByName`, which is what makes `read()` drop the field and the pre-flight reject a filter on it the instant the deletion commits — while the values are still physically in `entry_data` for the length of the purge. The names are still carried, on `SnapshotEntry::$pendingDeletionNames`, for the point read alone.
 
+## The snapshot also records which indexes keep `entry_id` order
+
+`SnapshotEntry::$orderedIndexes` (pageId → slotColumn → index name, read through `orderedIndexFor()`) is what lets `SqlFilterCompiler` drive a filtered default-order read from a slot index (see "Driving leaf" in `src/Search/CLAUDE.md`). `SlotResolver::resolveOrderedIndexes()` fills it from `information_schema.STATISTICS`, and the rules for what qualifies are in its docblock and pinned by `OrderedIndexResolutionTest`.
+
+- **The name always comes from the dictionary, never from the `ix_{table}_{column}` convention.** A page from before ADR 0043, or an index an operator added, may be named anything, and a hint naming an index that does not exist fails the read with errno 1176 where a missing hint only slows it.
+- **It costs one query on a snapshot refresh and nothing on a warm read**, because the snapshot is cached per schema version. Anything that counts metadata round trips per read should count it as part of the refresh, not per call.
+- **Dropping or hiding a page index without bumping `stardust_schema_version` leaves a stale name in the cache** until the next refresh, and a read that names it fails with errno 1176 in the meantime. Nothing in the engine drops a page index, so only a hand-run `ALTER TABLE` can cause it.
+- **`SELECT *` is deliberate.** The visibility column is `IS_VISIBLE` on MySQL and `IGNORED` on MariaDB, and the keys come back upper case on MySQL 8, so the rows are lower-cased and both flags are read if present.
+
 ## Point read
 
 `EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013.

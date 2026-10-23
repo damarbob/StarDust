@@ -14,7 +14,9 @@ use PDO;
  * carries one {@see FieldDescriptor} per registered field, regardless of
  * whether that field has a live slot. Also resolves page-id → table-name
  * mappings for any pages referenced by the snapshot's slot assignments so
- * the SQL builder does not need a second registry read at query time.
+ * the SQL builder does not need a second registry read at query time, and
+ * the index on each of those pages that returns a slot column in
+ * `entry_id` order (see {@see self::resolveOrderedIndexes()}).
  *
  * **There is deliberately no tenant predicate.** Tenant scoping is the
  * caller's job and is enforced in every probe/fetch WHERE clause.
@@ -140,7 +142,101 @@ final class SlotResolver
             pageTableNames: $pageTableNames,
             pendingDeletionNames: $pendingDeletionNames,
             modelDeleted: $modelDeleted,
+            orderedIndexes: self::resolveOrderedIndexes($pdo, $pageTableNames),
         );
+    }
+
+    /**
+     * For each slot column on the given pages, the name of an index that
+     * returns equal values in `entry_id` order.
+     *
+     * An index qualifies when it has exactly two key parts, `tenant_id` and
+     * then one column, both at full width and in a B-tree. InnoDB appends
+     * the primary key (`entry_id`) to every secondary index, so with
+     * `tenant_id` and the column both pinned by equality the rows come back
+     * in `entry_id` order. A third key part would sit between the column
+     * and `entry_id` and break that order. Requiring full width also leaves
+     * out a string slot's 766 character prefix index, which cannot answer
+     * an equality on its own.
+     *
+     * An index the optimiser has been told to skip (`INVISIBLE` on MySQL,
+     * `IGNORED` on MariaDB) is left out as well, since a hint naming it
+     * fails the read. When several indexes qualify the smallest name wins,
+     * so the choice is the same on every refresh.
+     *
+     * This is one query per snapshot refresh and nothing on a warm read,
+     * because the snapshot is cached per schema version. `SELECT *` is
+     * deliberate: the visibility column has a different name on each engine,
+     * and the keys come back in upper case on MySQL 8.
+     *
+     * @param array<int, string> $pageTableNames pageId → table name
+     * @return array<int, array<string, string>> pageId → slotColumn → index name
+     */
+    private static function resolveOrderedIndexes(PDO $pdo, array $pageTableNames): array
+    {
+        if ($pageTableNames === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($pageTableNames), '?'));
+        $stmt = $pdo->prepare(
+            'SELECT * FROM information_schema.STATISTICS'
+            . ' WHERE TABLE_SCHEMA = DATABASE()'
+            . " AND TABLE_NAME IN ({$placeholders})"
+            . ' ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX'
+        );
+        $stmt->execute(array_values($pageTableNames));
+
+        /** @var array<string, int> $pageIdOfTable */
+        $pageIdOfTable = array_flip($pageTableNames);
+
+        /** @var array<string, array<string, list<array{column: ?string, subPart: mixed, type: string}>>> $keyParts */
+        $keyParts = [];
+        /** @var array<string, array<string, true>> $skipped */
+        $skipped = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $r = array_change_key_case($row, CASE_LOWER);
+            $table = (string) $r['table_name'];
+            $index = (string) $r['index_name'];
+
+            if (($r['is_visible'] ?? 'YES') === 'NO' || ($r['ignored'] ?? 'NO') === 'YES') {
+                $skipped[$table][$index] = true;
+            }
+            $keyParts[$table][$index][] = [
+                'column'  => $r['column_name'] === null ? null : strtolower((string) $r['column_name']),
+                'subPart' => $r['sub_part'],
+                'type'    => strtoupper((string) $r['index_type']),
+            ];
+        }
+
+        $out = [];
+        foreach ($keyParts as $table => $indexes) {
+            foreach ($indexes as $index => $parts) {
+                $index = (string) $index;
+                if (isset($skipped[$table][$index]) || count($parts) !== 2) {
+                    continue;
+                }
+                [$tenant, $slot] = $parts;
+                if (
+                    $tenant['column'] !== 'tenant_id' || $tenant['subPart'] !== null
+                    || $slot['column'] === null || $slot['subPart'] !== null
+                    || $slot['type'] !== 'BTREE'
+                ) {
+                    continue;
+                }
+
+                if (! isset($pageIdOfTable[$table])) {
+                    continue;
+                }
+                $pageId = $pageIdOfTable[$table];
+                $current = $out[$pageId][$slot['column']] ?? null;
+                if ($current === null || strcmp($index, $current) < 0) {
+                    $out[$pageId][$slot['column']] = $index;
+                }
+            }
+        }
+
+        return $out;
     }
 
     /**
