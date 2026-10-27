@@ -66,8 +66,12 @@ use StarDust\Read\SortTarget;
  *     leaf never drives, even when it comes first.
  *
  * The bound is the driving leaf's match count, not the page size, once
- * other leaves filter its rows further. MariaDB already plans the old
- * shape well, so a green MariaDB run proves nothing about this rule.
+ * other leaves filter its rows further. The driving leaf is the first
+ * qualifying one in filter order, not the most selective, so a common leaf
+ * written before a rare one reads far more (150 025 rows against 31 in the
+ * widest case measured). MariaDB already plans the old shape well and can
+ * plan it better than this rule, so a green MariaDB run proves nothing
+ * about the rule.
  *
  * The compiler assumes every {@see LeafNode}'s {@see \StarDust\Filter\Ast\FieldRef}
  * has been resolved (descriptor populated with `pageId` + `slotColumn`)
