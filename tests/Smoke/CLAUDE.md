@@ -24,7 +24,7 @@ Each base class extends the one above it and adds helpers. Use the lowest one th
 
 | Base class | Adds | Used by |
 | :-- | :-- | :-- |
-| `WritePathTestCase` | Connection scaffolding and registry seeding: `provisionPage()`, `provisionLegacyPage()`, `createModel()`, `createField()`, `reserveSlotFor()`, `setupModelWithReservedField()`, `forceGrandfatheredSlotFor()`, `makeSiblingPdo()`. | Write path |
+| `WritePathTestCase` | Connection scaffolding and registry seeding: `provisionPage()`, `provisionLegacyPage()`, `provisionPrefixPage()` (the frozen `Support/PrefixIndexPage`, a string slot indexed on its first 766 characters), `createModel()`, `createField()`, `reserveSlotFor()`, `setupModelWithReservedField()`, `forceGrandfatheredSlotFor()`, `makeSiblingPdo()`. | Write path |
 | `ReadPathTestCase` | `seedEntry()` (through the real `EntryWriter`, so slot UPSERTs match production), `setupFilterableStringField()`, `reader()`. | Read path |
 | `Phase5TestCase` | Daemon helpers: `fillAllFreeStringSlots()`, `enqueueSyncRow()`, `writePendingImportJob()`, `writeProcessingImportJob()` (controllable heartbeat age and manifest checkpoint), `seedImportJob()`, `seedDlqRow()`, the `make*()` factories for the Watcher, Reconciler, work sources and DLQ, plus the ADR 0035 demand fixtures `provisionPageWithIndexedFamily()` and `unmappedFilterableField()`. | `Watcher/`, `Reconciler/` |
 | `Phase6aTestCase` | Liberator helpers: `tombstoneSlotAssignment()`, `setTombstonedAt()`, `seedSlotValues()` (cheap direct seeding of entries and slot rows), `fetchSlotAssignment()`, `countNonNullValues()`, `makeSlotSweeper()`, `makeLiberator()`, `readNdjsonStream()`. | `Liberator/` |

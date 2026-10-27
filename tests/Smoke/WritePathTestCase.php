@@ -14,6 +14,7 @@ use StarDust\Slot\SlotReserver;
 use StarDust\Support\ServerEngine;
 use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\LegacyPage;
+use StarDust\Tests\Smoke\Support\PrefixIndexPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 use StarDust\Write\BulkIngestor;
 use StarDust\Write\EntryWriter;
@@ -105,6 +106,22 @@ abstract class WritePathTestCase extends TestCase
     protected function provisionLegacyPage(): int
     {
         return LegacyPage::provision($this->pdo, $this->engine, 'phpunit/0');
+    }
+
+    /**
+     * Provision a prefix-index page: exactly the named columns, with a
+     * string slot indexed on its first 766 characters.
+     *
+     * `provisionPage()` builds whatever shape the provisioner builds today.
+     * Use this one when the subject is the prefix shape itself, or a page
+     * from before string slots moved to a generated key.
+     * {@see PrefixIndexPage} explains why the shape has to stay reachable.
+     *
+     * @param list<string> $filterableSlots
+     */
+    protected function provisionPrefixPage(array $filterableSlots): int
+    {
+        return PrefixIndexPage::provision($this->pdo, $this->engine, $filterableSlots, 'phpunit/0');
     }
 
     /**
