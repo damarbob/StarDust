@@ -9,9 +9,11 @@ use InvalidArgumentException;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Exception\UnsupportedServerException;
 use StarDust\Support\Dialect;
 use StarDust\Support\PdoQuery;
 use StarDust\Support\ServerEngine;
+use StarDust\Support\StringKeyLayout;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -43,6 +45,14 @@ use Throwable;
  * forward-only), which is why `IndexedSlotPredicate` is permanent
  * rather than transitional.
  *
+ * **A string slot is indexed through a generated key** (ADR 0057). Each
+ * `i_str_NN` gets a companion `i_str_NN_k` that the server computes on
+ * every write, and the page indexes `(tenant_id, i_str_NN_k)` in place of
+ * a 766 character prefix of the slot. {@see StringKeyLayout} owns the
+ * layout. Pages built before that decision keep their prefix index for
+ * good, so a deployment can hold three page shapes: sixty unindexed
+ * columns, prefix pages and key pages.
+ *
  * The class is not a daemon — it has no polling loop, no singleton guard,
  * and no advisory-lock acquisition. Phase 5 will wrap an instance inside
  * the Watcher (ADR 0008) and add `GET_LOCK('stardust_page_provision', …)`.
@@ -70,13 +80,12 @@ final class PageProvisioner
      * blows MySQL's 65,535-byte row-definition limit (errno 1118), which
      * counts every VARCHAR in full — TEXT counts only its ~12-byte pointer.
      *
-     * The filterable composite `(tenant_id, slot_column)` index covers a
-     * 766-char prefix: 766 utf8mb4 chars × 4 bytes + an 8-byte BIGINT
-     * tenant_id = 3072 bytes, exactly the InnoDB key-size limit under
-     * ROW_FORMAT=DYNAMIC (COMPACT/REDUNDANT cap keys at 767 bytes, errno
-     * 1071 — hence the page DDL pins DYNAMIC explicitly). MySQL rechecks
-     * the full column value behind every prefix-index access, so all 12
-     * filter operators stay exact (ADR 0030).
+     * This is the prefix a string slot's composite `(tenant_id, slot_column)`
+     * index covered on pages built before string keys (ADR 0030): 766
+     * utf8mb4 chars × 4 bytes + an 8-byte BIGINT tenant_id = 3072 bytes,
+     * exactly the InnoDB key-size limit under ROW_FORMAT=DYNAMIC. Nothing
+     * here emits it any more. It stays because those pages stay in the
+     * field for good (ADR 0012) and the constant is public.
      */
     public const STRING_INDEX_PREFIX = 766; // 766*4 + 8-byte tenant_id = 3072 = InnoDB DYNAMIC key limit
 
@@ -146,6 +155,19 @@ final class PageProvisioner
                 'PageProvisioner: a page must carry at least one slot column.'
                 . ' Since ADR 0043 a page is created with exactly the columns it indexes,'
                 . ' so an empty list would produce a page with no claimable capacity.'
+            );
+        }
+
+        // A server that cannot compute the digest would give every key a NULL
+        // value, and every string equality would then return no rows without
+        // raising anything. Refuse before any DDL instead.
+        if (
+            array_filter($filterableSlots, self::isStringSlot(...)) !== []
+            && ! StringKeyLayout::digestAvailable($this->pdo)
+        ) {
+            throw new UnsupportedServerException(
+                'PageProvisioner: this server returned no value for its SHA-256 function,'
+                . ' so a string slot cannot be indexed through its key (ADR 0057).'
             );
         }
 
@@ -310,21 +332,30 @@ final class PageProvisioner
             $lines[] = sprintf('    %s %s NULL DEFAULT NULL,', $col, self::columnSqlType($col));
         }
 
+        // Declared after every slot column, so each generated key reads a
+        // column that is already defined.
+        foreach ($columns as $col) {
+            if (self::isStringSlot($col)) {
+                $lines[] = '    ' . StringKeyLayout::columnDdl($col) . ',';
+            }
+        }
+
         $lines[] = '    PRIMARY KEY (entry_id),';
         $lines[] = sprintf('    KEY ix_%s_tenant (tenant_id),', $tableName);
 
         foreach ($columns as $slot) {
-            $lines[] = sprintf('    KEY ix_%s_%s (tenant_id, %s),', $tableName, $slot, self::indexedColumnExpr($slot));
+            $lines[] = sprintf('    KEY ix_%s_%s (tenant_id, %s),', $tableName, $slot, self::indexedColumn($slot));
         }
 
         $lines[] = sprintf(
             '    CONSTRAINT fk_%s_entry FOREIGN KEY (entry_id) REFERENCES entry_data (id) ON DELETE CASCADE',
             $tableName
         );
-        // ROW_FORMAT=DYNAMIC is load-bearing: the 766-char string-slot index
-        // prefix needs the 3072-byte key limit; COMPACT/REDUNDANT cap at 767
-        // bytes and would fail CREATE TABLE with errno 1071 on servers whose
-        // innodb_default_row_format is not dynamic.
+        // ROW_FORMAT=DYNAMIC stays pinned. It keeps long TEXT values off the
+        // row's page, and the prefix pages built before string keys need it
+        // for their 766 character index (COMPACT and REDUNDANT cap a key at
+        // 767 bytes, errno 1071) on a server whose innodb_default_row_format
+        // is not dynamic.
         $lines[] = ') ' . Dialect::tableOptionsClause($this->engine) . ' ROW_FORMAT=DYNAMIC';
 
         return implode("\n", $lines);
@@ -384,17 +415,18 @@ final class PageProvisioner
     }
 
     /**
-     * Index-column expression for a filterable slot's composite key.
-     *
-     * String slots are `TEXT`, which MySQL refuses to index without an
-     * explicit prefix length; the composite `(tenant_id, slot)` key caps
-     * that prefix at `STRING_INDEX_PREFIX` utf8mb4 chars (ADR 0030).
-     * Fixed-width families (int/num/dt) are indexed in full.
+     * The column a filterable slot's composite `(tenant_id, column)` index
+     * covers. A string slot is `TEXT`, which cannot be indexed in full, so its
+     * index covers the generated key beside it (ADR 0057). The fixed-width
+     * families (int/num/dt) are indexed in full.
      */
-    private static function indexedColumnExpr(string $col): string
+    private static function indexedColumn(string $col): string
     {
-        return explode('_', $col)[1] === 'str'
-            ? sprintf('%s(%d)', $col, self::STRING_INDEX_PREFIX)
-            : $col;
+        return self::isStringSlot($col) ? StringKeyLayout::keyColumn($col) : $col;
+    }
+
+    private static function isStringSlot(string $col): bool
+    {
+        return explode('_', $col)[1] === 'str';
     }
 }

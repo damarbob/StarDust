@@ -8,7 +8,6 @@ use Psr\Log\NullLogger;
 use StarDust\Clock\SystemClock;
 use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Slot\SlotReserver;
-use StarDust\Support\StringKeyLayout;
 use StarDust\Tests\Smoke\WritePathTestCase;
 use StarDust\Watcher\CapacityReporter;
 
@@ -16,41 +15,16 @@ use StarDust\Watcher\CapacityReporter;
  * Capacity and reservation on a key page, where a string slot is in no index
  * and its generated key is.
  *
- * The page here is built by hand from a prefix page, by swapping each string
- * slot's prefix index for an index on its key column. That keeps the
- * registry rows identical to what the provisioner writes while the
- * provisioner itself still builds prefix pages. If the reserver and the two
- * capacity readers did not accept a key column as the slot's index, the
- * reserver would refuse every string slot on a key page, the Watcher would
- * count none of them as usable, and it would provision another page on every
- * tick.
+ * If the reserver and the two capacity readers did not accept a key column as
+ * the slot's index, the reserver would refuse every string slot on a key page,
+ * the Watcher would count none of them as usable, and it would provision
+ * another page on every tick. The Watcher half of that is also pinned by
+ * `WatcherDemandDrivenProvisionTest::testWatcherDoesNotProvisionTwiceForOneSatisfiableWaiter`,
+ * which provisions a string page through a real tick. This class covers the
+ * three readers directly, and the mix of page shapes a deployment holds.
  */
 final class KeyPageCapacityTest extends WritePathTestCase
 {
-    /**
-     * @param list<string> $stringSlots
-     */
-    private function handBuiltKeyPage(array $stringSlots): int
-    {
-        $pageId = $this->provisionPrefixPage($stringSlots);
-        $table = "entry_slots_page_{$pageId}";
-
-        foreach ($stringSlots as $slot) {
-            $this->pdo->exec(sprintf(
-                'ALTER TABLE %s DROP INDEX ix_%s_%s, ADD COLUMN %s, ADD KEY ix_%s_%s (tenant_id, %s)',
-                $table,
-                $table,
-                $slot,
-                StringKeyLayout::columnDdl($slot),
-                $table,
-                $slot,
-                StringKeyLayout::keyColumn($slot),
-            ));
-        }
-
-        return $pageId;
-    }
-
     private function reserver(): SlotReserver
     {
         return new SlotReserver(pdo: $this->pdo, clock: new SystemClock(), logger: new NullLogger());
@@ -58,7 +32,7 @@ final class KeyPageCapacityTest extends WritePathTestCase
 
     public function testTheReserverClaimsAStringSlotThatIsIndexedOnlyThroughItsKey(): void
     {
-        $pageId = $this->handBuiltKeyPage(['i_str_01']);
+        $pageId = $this->provisionPage(['i_str_01']);
         $fieldId = $this->createField($this->createModel(), 'string', true);
 
         $assignment = $this->reserver()->reserveForExhaustionBackfill($fieldId);
@@ -80,7 +54,7 @@ final class KeyPageCapacityTest extends WritePathTestCase
     {
         $this->provisionLegacyPage();
         $prefix = $this->provisionPrefixPage(['i_str_01', 'i_int_01']);
-        $key = $this->handBuiltKeyPage(['i_str_01', 'i_str_02']);
+        $key = $this->provisionPage(['i_str_01', 'i_str_02']);
 
         self::assertEquals(
             [$prefix => ['str' => 1, 'int' => 1], $key => ['str' => 2]],
@@ -90,7 +64,7 @@ final class KeyPageCapacityTest extends WritePathTestCase
 
     public function testTheCapacityReporterCountsEveryKeyPageStringSlotAsUsable(): void
     {
-        $this->handBuiltKeyPage(['i_str_01', 'i_str_02']);
+        $this->provisionPage(['i_str_01', 'i_str_02']);
 
         $snapshot = (new CapacityReporter($this->pdo))->report();
 
@@ -103,7 +77,7 @@ final class KeyPageCapacityTest extends WritePathTestCase
     {
         $this->provisionLegacyPage();
         $this->provisionPrefixPage(['i_str_01']);
-        $this->handBuiltKeyPage(['i_str_01', 'i_str_02']);
+        $this->provisionPage(['i_str_01', 'i_str_02']);
 
         $snapshot = (new CapacityReporter($this->pdo))->report();
 

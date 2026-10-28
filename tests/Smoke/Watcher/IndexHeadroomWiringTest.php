@@ -9,6 +9,7 @@ use Psr\Log\NullLogger;
 use StarDust\Config\Config;
 use StarDust\Schema\FieldDefinition;
 use StarDust\StarDust;
+use StarDust\Support\StringKeyLayout;
 use StarDust\Tests\Smoke\Phase5TestCase;
 
 /**
@@ -38,7 +39,10 @@ final class IndexHeadroomWiringTest extends Phase5TestCase
 {
     /**
      * @return list<string> second-position columns of every composite
-     *         index on the page — i.e. the slot columns actually indexed
+     *         index on the page, i.e. the slot columns actually indexed.
+     *         A string slot is indexed through its key column, which is
+     *         reported here as the slot it keys, so the assertions say
+     *         which slots are indexed whatever shape the page has.
      */
     private function indexedColumnsOf(string $table): array
     {
@@ -51,8 +55,10 @@ final class IndexHeadroomWiringTest extends Phase5TestCase
 
         /** @var list<string> $cols */
         $cols = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        $slots = array_map(static fn (string $c): string => StringKeyLayout::slotColumn($c) ?? $c, $cols);
+        sort($slots);
 
-        return $cols;
+        return $slots;
     }
 
     /**

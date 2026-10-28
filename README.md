@@ -121,7 +121,8 @@ Every entry's full payload is stored as JSON in `entry_data`. That's the system 
    │     7     │  "Acme"  │   340    │                           │
    │           │ (name)   │(employees)                           │
    └─────────────────────────────────────────────────────────────┘
-        ▲ composite index (tenant_id, i_str_01), (tenant_id, i_int_01), …
+        ▲ composite index (tenant_id, i_str_01_k), (tenant_id, i_int_01), …
+          (i_str_01_k is a key the database computes from i_str_01)
 
    "city" was never made filterable → it never occupies a slot
    column at all. It lives in JSON only: still readable, just not
@@ -283,7 +284,7 @@ Registering a field records *intent*. The field becomes filterable once its valu
 
 **In a running deployment this is automatic.** The Watcher notices fields waiting on a slot and provisions pages indexed for them, and the Reconciler then claims a slot for any registered filterable field it finds still unmapped while draining the sync queue. Write an entry touching the field and it becomes queryable a moment later, without you reserving anything.
 
-The manual route below is for one-off setup (a seed script, a test fixture, or a deployment where you want the slot in place before the first write). A page is created with exactly the slot columns you name, and every one of them is indexed, so name the slots your filterable fields will use, then reserve one per field:
+The manual route below is for one-off setup (a seed script, a test fixture, or a deployment where you want the slot in place before the first write). A page is created with exactly the slot columns you name, and every one of them is indexed, so name the slots your filterable fields will use, then reserve one per field. A text slot is indexed through a second column, a key the database fills in from it on every write, so nothing about writing or reserving changes:
 
 ```php
 use StarDust\Page\PageProvisioner;
@@ -291,7 +292,8 @@ use StarDust\Slot\SlotReserver;
 
 // Provision a page carrying the two slots the filterable fields will use.
 // The page is created with exactly these columns, each with its own
-// composite (tenant_id, slot) index, and the list may not be empty.
+// composite (tenant_id, slot) index (for i_str_01 the index is on its
+// key column), and the list may not be empty.
 (new PageProvisioner($pdo, $engine->config()->clock, $engine->logger(), $engine->serverEngine()))
     ->provision(filterableSlots: ['i_str_01', 'i_int_01']);
 

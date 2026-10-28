@@ -230,7 +230,7 @@ The swappable component that actually executes a filtered read. The default runs
 
 One typed, indexed column on an [extension page](#extension-page) that mirrors one filterable field's value. Slots come in four families matching the [declared types](#declared-type) — string, integer, numeric, datetime — and a field can only occupy a slot of its own family, which is why a [retype](#retype) needs a fresh slot rather than converting in place. A page holds a bounded number of each family, so slots are the engine's finite resource and the thing capacity planning is about.
 
-String slots hold long values (filter bounds accept up to 4 096 characters) and are matched exactly despite the index covering only a prefix of each value.
+String slots hold long values (filter bounds accept up to 4 096 characters). On a newly created page a string slot is indexed through a key the database computes from the whole value, so a text filter matches exactly at any length. On an older page the index covers only the first 766 characters, and each row it finds is checked in full. That is exact except for one rare case. A value longer than 766 characters can be missed when the collation calls it equal to another value that differs inside those 766 characters, for example `ß` against `ss`. Pages are never altered once they hold data, so a long-running deployment can have both kinds.
 
 **See also:** [Extension page](#extension-page), [Filterable](#filterable), [Tombstoned slot](#tombstoned-slot).
 

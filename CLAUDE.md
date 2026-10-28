@@ -218,7 +218,7 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 They live in [src/Bootstrap/CLAUDE.md](src/Bootstrap/CLAUDE.md). That file loads only when you work in `src/Bootstrap/`, so **read it before writing SQL anywhere** that relies on a table's shape. The topics it covers:
 
 - The slot-status ENUM, the live-slot unique index on both engines, the sweep annotations, and the `RESTRICT` FK with the two-step tombstone.
-- The extension-page shape: `TEXT` string slots with a 766-char prefix and `ROW_FORMAT=DYNAMIC`, exactly-indexed pages, and two permanent page shapes.
+- The extension-page shape: `TEXT` string slots indexed through a stored generated key (a 766-char prefix before ADR 0057), `ROW_FORMAT=DYNAMIC`, exactly-indexed pages, and three permanent page shapes.
 - The drain-window markers: `previous_name` and both `deleted_at` columns.
 - `backfill_checkpoints`' four namespaces, `LIKE` escaping, upserts and correlation ids.
 - The sync-queue `entry_id` index, the two singletons, and the DLQ's deliberately missing FK.

@@ -10,10 +10,12 @@ use PDOException;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use StarDust\Clock\SystemClock;
+use StarDust\Exception\UnsupportedServerException;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Page\PageProvisioner;
 use StarDust\Support\ServerEngine;
 use StarDust\Support\ServerEngineDetector;
+use StarDust\Tests\Smoke\Support\DigestlessPdo;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 use StarDust\Tests\Smoke\Support\TestPdo;
 
@@ -80,9 +82,16 @@ final class PageProvisionerTest extends TestCase
 
         ksort($indexes['ix_entry_slots_page_1_i_str_01']);
         self::assertSame(
-            ['tenant_id', 'i_str_01'],
+            ['tenant_id', 'i_str_01_k'],
             array_values($indexes['ix_entry_slots_page_1_i_str_01']),
-            'Filterable index must be composite (tenant_id, slot_column).'
+            'A string slot is indexed through its key, composite with tenant_id.'
+        );
+
+        ksort($indexes['ix_entry_slots_page_1_i_int_01']);
+        self::assertSame(
+            ['tenant_id', 'i_int_01'],
+            array_values($indexes['ix_entry_slots_page_1_i_int_01']),
+            'Other families keep a composite (tenant_id, slot_column) index.'
         );
 
         foreach ($indexes as $name => $_) {
@@ -139,10 +148,15 @@ final class PageProvisionerTest extends TestCase
      * columns, so there is no unindexed column for a stray inventory row
      * to describe. Read from `information_schema` rather than the DDL
      * string, since the DDL is what is under test.
+     *
+     * Each string slot also gets its generated key (ADR 0057), declared
+     * after all the slot columns. A key is not a slot, so it has no
+     * inventory row of its own, which `testProvisionInsertsInventory...`
+     * above pins.
      */
-    public function testProvisionCreatesOnlyTheNamedSlotColumns(): void
+    public function testProvisionCreatesOnlyTheNamedSlotColumnsAndAKeyForEachStringSlot(): void
     {
-        $this->newProvisioner()->provision(['i_str_01', 'i_int_01']);
+        $this->newProvisioner()->provision(['i_str_01', 'i_int_01', 'i_str_02']);
 
         $columns = $this->pdo
             ->query(
@@ -152,7 +166,65 @@ final class PageProvisionerTest extends TestCase
             )
             ->fetchAll(PDO::FETCH_COLUMN);
 
-        self::assertSame(['entry_id', 'tenant_id', 'i_str_01', 'i_int_01'], $columns);
+        self::assertSame(
+            ['entry_id', 'tenant_id', 'i_str_01', 'i_str_02', 'i_int_01', 'i_str_01_k', 'i_str_02_k'],
+            $columns,
+        );
+    }
+
+    /** A page with no string slot has no key column to compute. */
+    public function testAPageWithoutAStringSlotCarriesNoKeyColumn(): void
+    {
+        $this->newProvisioner()->provision(['i_int_01', 'i_dt_01']);
+
+        $columns = $this->pdo
+            ->query(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS'
+                . " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'entry_slots_page_1'"
+                . ' ORDER BY ORDINAL_POSITION'
+            )
+            ->fetchAll(PDO::FETCH_COLUMN);
+
+        self::assertSame(['entry_id', 'tenant_id', 'i_int_01', 'i_dt_01'], $columns);
+    }
+
+    /**
+     * A server that cannot compute the digest would give every key a NULL
+     * value, and every string equality would then return no rows and raise
+     * nothing. Provisioning refuses before any DDL, so no orphan table is left.
+     */
+    public function testProvisionRefusesAStringSlotWhenTheServerCannotComputeTheDigest(): void
+    {
+        $pdo = new DigestlessPdo(
+            getenv('STARDUST_TEST_DSN') ?: '',
+            getenv('STARDUST_TEST_USER') ?: '',
+            getenv('STARDUST_TEST_PASS') ?: '',
+            TestPdo::options(),
+        );
+        $provisioner = new PageProvisioner(
+            pdo: $pdo,
+            clock: new SystemClock(),
+            logger: new NullLogger(),
+            engine: $this->engine,
+            provisionerIdentity: 'phpunit/0',
+        );
+
+        try {
+            $provisioner->provision(['i_str_01']);
+            self::fail('A string slot must be refused on a server with no SHA-256 function.');
+        } catch (UnsupportedServerException $e) {
+            self::assertStringContainsString('string slot', $e->getMessage());
+        }
+
+        self::assertSame(
+            0,
+            (int) $this->pdo->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'entry_slots_page_%'")->fetchColumn(),
+            'The refusal comes before any DDL.',
+        );
+        self::assertSame(0, (int) $this->pdo->query('SELECT COUNT(*) FROM stardust_pages')->fetchColumn());
+
+        // A page with no string slot needs no digest, so it still builds.
+        self::assertSame(1, $provisioner->provision(['i_int_01']));
     }
 
     /**

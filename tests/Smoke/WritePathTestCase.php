@@ -13,6 +13,7 @@ use StarDust\Page\PageProvisioner;
 use StarDust\Slot\SlotReserver;
 use StarDust\Support\ServerEngine;
 use StarDust\Support\ServerEngineDetector;
+use StarDust\Support\StringKeyLayout;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\PrefixIndexPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
@@ -122,6 +123,48 @@ abstract class WritePathTestCase extends TestCase
     protected function provisionPrefixPage(array $filterableSlots): int
     {
         return PrefixIndexPage::provision($this->pdo, $this->engine, $filterableSlots, 'phpunit/0');
+    }
+
+    /**
+     * The entries a key page finds for `$value` in a string slot through the
+     * slot's generated key alone, with no recheck on the slot itself.
+     *
+     * The collation and the head width are read from the page the way the
+     * compiler reads them, so this is the lookup the key exists to serve. It
+     * is how a test proves the key, which the server fills on its own, holds
+     * what the slot says it should.
+     *
+     * @return list<int>
+     */
+    protected function entryIdsFoundByKey(int $pageId, string $slotColumn, string $value): array
+    {
+        $table = "entry_slots_page_{$pageId}";
+        $keyColumn = StringKeyLayout::keyColumn($slotColumn);
+
+        $info = $this->pdo->prepare(
+            'SELECT COLUMN_NAME, COLLATION_NAME, CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS'
+            . ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME IN (?, ?)'
+        );
+        $info->execute([$table, $slotColumn, $keyColumn]);
+
+        $collation = null;
+        $head = null;
+        foreach ($info->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $row = array_change_key_case($row, CASE_LOWER);
+            if ($row['column_name'] === $slotColumn) {
+                $collation = (string) $row['collation_name'];
+            } else {
+                $head = StringKeyLayout::headBytes((int) $row['character_maximum_length']);
+            }
+        }
+        self::assertNotNull($collation, "{$table}.{$slotColumn} must exist.");
+        self::assertNotNull($head, "{$table}.{$keyColumn} must exist.");
+
+        $lookup = StringKeyLayout::equals($keyColumn, $value, $head, $collation);
+        $stmt = $this->pdo->prepare("SELECT entry_id FROM {$table} WHERE {$lookup['sql']} ORDER BY entry_id");
+        $stmt->execute($lookup['bindings']);
+
+        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
     }
 
     /**
