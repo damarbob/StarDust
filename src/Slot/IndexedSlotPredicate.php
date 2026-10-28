@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace StarDust\Slot;
 
+use StarDust\Support\StringKeyLayout;
+
 /**
  * The single definition of "this slot column is indexed".
  *
@@ -22,6 +24,15 @@ namespace StarDust\Slot;
  * so a slot column appears in an index only when it was named at
  * provisioning time. An operator-added single-column index on a slot
  * would also be accepted — by both consumers alike, which is the point.
+ *
+ * **A string slot on a key page is indexed through its key column** (ADR
+ * 0057). `i_str_01` is in no index there, and `i_str_01_k` is, so the
+ * predicate accepts the slot column or its key column. This had to land
+ * before any key page could be built: without it the reserver refuses
+ * every string slot on a key page, the capacity reporter counts none of
+ * them as usable, and the Watcher provisions another page on every tick.
+ * It is also what an older release still gets wrong, so a rolling upgrade
+ * finishes before the first key page is built.
  *
  * Reading `information_schema` per row is the cost of the registry not
  * persisting the emitted index set: `PageProvisioner` logs
@@ -49,11 +60,14 @@ final class IndexedSlotPredicate
      */
     public static function existsSql(string $assignmentAlias = 'a', string $pageAlias = 'p'): string
     {
+        $slot = "{$assignmentAlias}.slot_column";
+        $key  = "CONCAT({$slot}, '" . StringKeyLayout::KEY_SUFFIX . "')";
+
         return 'EXISTS ('
             . '   SELECT 1 FROM information_schema.STATISTICS s'
             . '   WHERE s.TABLE_SCHEMA = DATABASE()'
             . "     AND s.TABLE_NAME = {$pageAlias}.table_name"
-            . "     AND s.COLUMN_NAME = {$assignmentAlias}.slot_column"
+            . "     AND s.COLUMN_NAME IN ({$slot}, {$key})"
             . ' )';
     }
 }

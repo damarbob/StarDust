@@ -6,6 +6,7 @@ namespace StarDust\Tests\Smoke\Slot;
 
 use PHPUnit\Framework\TestCase;
 use StarDust\Slot\IndexedSlotPredicate;
+use StarDust\Support\StringKeyLayout;
 
 /**
  * Anti-drift guard for the shared "is this slot column indexed?"
@@ -60,6 +61,20 @@ final class IndexedSlotPredicateTest extends TestCase
         self::assertStringContainsString('pg.table_name', $sql);
         self::assertStringContainsString('sa.slot_column', $sql);
         self::assertStringStartsWith('EXISTS (', $sql);
+    }
+
+    /**
+     * A string slot on a key page is in no index and its key column is, so the
+     * predicate has to accept either. The suffix is the layout's, never a
+     * second literal.
+     */
+    public function testExistsSqlAcceptsTheSlotColumnOrItsKeyColumn(): void
+    {
+        self::assertStringContainsString(
+            "s.COLUMN_NAME IN (sa.slot_column, CONCAT(sa.slot_column, '_k'))",
+            IndexedSlotPredicate::existsSql('sa', 'pg'),
+        );
+        self::assertSame('_k', StringKeyLayout::KEY_SUFFIX);
     }
 
     /** The defaults must match SlotReserver's aliases, or its substitution changes behaviour. */
