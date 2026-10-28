@@ -29,6 +29,16 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 - **Dropping or hiding a page index without bumping `stardust_schema_version` leaves a stale name in the cache** until the next refresh, and a read that names it fails with errno 1176 in the meantime. Nothing in the engine drops a page index, so only a hand-run `ALTER TABLE` can cause it.
 - **`SELECT *` is deliberate.** The visibility column is `IS_VISIBLE` on MySQL and `IGNORED` on MariaDB, and the keys come back upper case on MySQL 8, so the rows are lower-cased and both flags are read if present.
 
+## The snapshot also records which string slots have a key
+
+`SnapshotEntry::$stringKeys` (pageId → slotColumn → `StringKey`, read through `stringKeyFor()`) says how a string slot is looked up through its generated key (ADR 0057): the key column, the index over it, the head width and the slot's collation. `SlotResolver::resolveStringKeys()` fills it. The compiler builds a key lookup from these four facts and never from a constant, because a page keeps the head it was built with.
+
+- **A page's shape comes from its table definition, never from a registry column.** The table is the only fact. A crash between a page's `CREATE TABLE` and the registry transaction can leave an orphan table that a later provisioning reuses by name, so a flag could name a shape the table does not have and the compiler would name a column that is not there. ADR 0043 rejected a persisted `is_indexed` for the same reason.
+- **A key column qualifies for `orderedIndexes` as it stands, under its own name.** The slot `i_str_01` is in no index on a key page, so `orderedIndexFor($pageId, 'i_str_01')` is null there and `orderedIndexFor($pageId, 'i_str_01_k')` is the index.
+- **The extra query runs only when that map holds a key column.** That is one `information_schema.COLUMNS` read per cold refresh for a model on key pages, and none for a model on prefix pages. `StringKeyResolutionTest` counts it.
+- **A slot is left out, and compiles to the SQL it had before keys, when** the index map has no usable index on its key (a hidden one included), the key column is not a `VARBINARY`, or the dictionary's collation or width cannot be trusted. `StringKey::fromDictionary()` refuses a collation name that is not a plain identifier, because it ends up inside SQL.
+- **`stringKeys` is the last `SnapshotEntry` constructor parameter and defaults to empty.** Snapshots built by hand in the unit tests carry no key information and must keep compiling to the old SQL, so never make it required.
+
 ## Point read
 
 `EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013.

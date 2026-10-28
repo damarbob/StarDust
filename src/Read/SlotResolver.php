@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Read;
 
 use PDO;
+use StarDust\Support\StringKeyLayout;
 
 /**
  * Pure loader for {@see SnapshotEntry} per `(modelId)`.
@@ -133,6 +134,7 @@ final class SlotResolver
         }
 
         $pageTableNames = self::resolvePageTableNames($pdo, array_keys($pageIdsSeen));
+        $orderedIndexes = self::resolveOrderedIndexes($pdo, $pageTableNames);
 
         return new SnapshotEntry(
             modelId: $modelId,
@@ -142,7 +144,8 @@ final class SlotResolver
             pageTableNames: $pageTableNames,
             pendingDeletionNames: $pendingDeletionNames,
             modelDeleted: $modelDeleted,
-            orderedIndexes: self::resolveOrderedIndexes($pdo, $pageTableNames),
+            orderedIndexes: $orderedIndexes,
+            stringKeys: self::resolveStringKeys($pdo, $pageTableNames, $orderedIndexes),
         );
     }
 
@@ -157,7 +160,9 @@ final class SlotResolver
      * in `entry_id` order. A third key part would sit between the column
      * and `entry_id` and break that order. Requiring full width also leaves
      * out a string slot's 766 character prefix index, which cannot answer
-     * an equality on its own.
+     * an equality on its own. A string slot's generated key (ADR 0057)
+     * qualifies as it stands, but under the key column's name and not the
+     * slot's, because the slot itself is in no index on a key page.
      *
      * An index the optimiser has been told to skip (`INVISIBLE` on MySQL,
      * `IGNORED` on MariaDB) is left out as well, since a hint naming it
@@ -232,6 +237,89 @@ final class SlotResolver
                 $current = $out[$pageId][$slot['column']] ?? null;
                 if ($current === null || strcmp($index, $current) < 0) {
                     $out[$pageId][$slot['column']] = $index;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * For each string slot whose page indexes it through a generated key
+     * (ADR 0057), how to look it up through that key.
+     *
+     * A page's shape comes from the data dictionary of the page table and never
+     * from a registry column. The table is the only fact: a crash between a
+     * page's `CREATE TABLE` and the registry transaction can leave an orphan
+     * table that a later provisioning reuses by name, so a flag in the registry
+     * could name a shape the table does not have, and the compiler would then
+     * name a column that is not there.
+     *
+     * The query runs only when the index map already holds a key column, so a
+     * model that lives on prefix pages pays nothing, and a warm read pays
+     * nothing either because the snapshot is cached per schema version. A slot
+     * is left out when the index map has no usable index on its key (a hidden
+     * one included), when the key column is not a `VARBINARY`, or when the
+     * dictionary's collation or width cannot be trusted. A slot left out
+     * compiles to the SQL it had before keys.
+     *
+     * @param array<int, string>                $pageTableNames pageId → table name
+     * @param array<int, array<string, string>> $orderedIndexes pageId → column → index name
+     * @return array<int, array<string, StringKey>> pageId → slotColumn → key
+     */
+    private static function resolveStringKeys(PDO $pdo, array $pageTableNames, array $orderedIndexes): array
+    {
+        /** @var array<int, array<string, string>> $candidates pageId → slotColumn → key column */
+        $candidates = [];
+        foreach ($orderedIndexes as $pageId => $byColumn) {
+            foreach (array_keys($byColumn) as $column) {
+                $slot = StringKeyLayout::slotColumn((string) $column);
+                if ($slot !== null && isset($pageTableNames[$pageId])) {
+                    $candidates[$pageId][$slot] = (string) $column;
+                }
+            }
+        }
+        if ($candidates === []) {
+            return [];
+        }
+
+        $tables = [];
+        foreach (array_keys($candidates) as $pageId) {
+            $tables[] = $pageTableNames[$pageId];
+        }
+        $placeholders = implode(',', array_fill(0, count($tables), '?'));
+        $stmt = $pdo->prepare(
+            'SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLLATION_NAME, CHARACTER_MAXIMUM_LENGTH'
+            . ' FROM information_schema.COLUMNS'
+            . " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({$placeholders})"
+        );
+        $stmt->execute($tables);
+
+        /** @var array<string, array<string, array<string, mixed>>> $columns table → column → row */
+        $columns = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $r = array_change_key_case($row, CASE_LOWER);
+            $columns[(string) $r['table_name']][strtolower((string) $r['column_name'])] = $r;
+        }
+
+        $out = [];
+        foreach ($candidates as $pageId => $bySlot) {
+            $table = $pageTableNames[$pageId];
+            foreach ($bySlot as $slot => $keyColumn) {
+                $keyRow = $columns[$table][$keyColumn] ?? null;
+                $slotRow = $columns[$table][$slot] ?? null;
+                if ($keyRow === null || $slotRow === null || strtolower((string) $keyRow['data_type']) !== 'varbinary') {
+                    continue;
+                }
+
+                $key = StringKey::fromDictionary(
+                    $keyColumn,
+                    $orderedIndexes[$pageId][$keyColumn],
+                    (int) $keyRow['character_maximum_length'],
+                    $slotRow['collation_name'] === null ? null : (string) $slotRow['collation_name'],
+                );
+                if ($key !== null) {
+                    $out[$pageId][$slot] = $key;
                 }
             }
         }

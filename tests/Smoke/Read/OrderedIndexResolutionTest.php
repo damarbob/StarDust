@@ -86,13 +86,30 @@ final class OrderedIndexResolutionTest extends WritePathTestCase
 
     public function testAStringPrefixIndexNeverResolves(): void
     {
-        $pageId = $this->provisionPage(['i_str_01']);
+        $pageId = $this->provisionPrefixPage(['i_str_01']);
         $modelId = $this->createModel();
         $this->reserveSlotFor($this->createField($modelId, 'string', true, 'label'));
 
         $snapshot = SlotResolver::load($this->pdo, $modelId, 1);
 
         self::assertNull($snapshot->orderedIndexFor($pageId, 'i_str_01'));
+    }
+
+    /**
+     * On a key page the slot is in no index and its key column is, so the index
+     * resolves under the key column's name and the slot itself resolves nothing.
+     */
+    public function testAKeyPageResolvesItsIndexUnderTheKeyColumnAndNotTheSlot(): void
+    {
+        $pageId = $this->provisionPage(['i_str_01']);
+        $table = "entry_slots_page_{$pageId}";
+        $modelId = $this->createModel();
+        $this->reserveSlotFor($this->createField($modelId, 'string', true, 'label'));
+
+        $snapshot = SlotResolver::load($this->pdo, $modelId, 1);
+
+        self::assertNull($snapshot->orderedIndexFor($pageId, 'i_str_01'));
+        self::assertSame("ix_{$table}_i_str_01", $snapshot->orderedIndexFor($pageId, 'i_str_01_k'));
     }
 
     public function testTheSmallestNameByBytesWinsWhenSeveralIndexesQualify(): void

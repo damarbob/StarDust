@@ -46,6 +46,14 @@ final class SnapshotEntry
      *                                       filtered default-order read stop after one page.
      *                                       Empty when none was found, and the compiler then
      *                                       keeps its ordinary shape.
+     * @param array<int, array<string, StringKey>> $stringKeys pageId → slotColumn →
+     *                                       how to look that string slot up through its
+     *                                       generated key (ADR 0057). Empty for a slot on a
+     *                                       prefix page, on a page from before ADR 0043 or
+     *                                       behind an index the optimiser skips, and the
+     *                                       compiler then keeps the SQL the slot had before
+     *                                       keys. Appended last with a default, so a snapshot
+     *                                       built by hand carries none.
      */
     public function __construct(
         public readonly int $modelId,
@@ -56,6 +64,7 @@ final class SnapshotEntry
         public readonly array $pendingDeletionNames = [],
         public readonly bool $modelDeleted = false,
         public readonly array $orderedIndexes = [],
+        public readonly array $stringKeys = [],
     ) {
         // Computed once here rather than memoised lazily: the snapshot
         // is immutable and cached per schema version, so the answer
@@ -88,6 +97,16 @@ final class SnapshotEntry
     public function orderedIndexFor(int $pageId, string $slotColumn): ?string
     {
         return $this->orderedIndexes[$pageId][$slotColumn] ?? null;
+    }
+
+    /**
+     * How `$slotColumn` of `$pageId` is looked up through its generated key,
+     * or null when the page does not index it that way. A null means the slot
+     * keeps the SQL it had before keys (ADR 0057).
+     */
+    public function stringKeyFor(int $pageId, string $slotColumn): ?StringKey
+    {
+        return $this->stringKeys[$pageId][$slotColumn] ?? null;
     }
 
     /**
