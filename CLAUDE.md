@@ -204,6 +204,7 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 - **`Dialect`**: the engine-specific DDL, `tableOptionsClause()` (collation) and `liveSlotUniqueIndexDdl()` (ADR 0017), each branching on `ServerEngine`. It is the one file that names both engines' literals. If a JSON-fallback SQL comparison ever ships, its collation gets a method here too.
 - **`UuidV4`**: the source of every `correlation_id` / `chunk_correlation_id` and of `WorkerIdentity`'s uniqueness suffix.
 - **`MultiRowBatches`**: how a chunk is cut into multi-row statements, under a placeholder cap and half of `@@max_allowed_packet` (`ranges()`, plus `costOf()` for a row's wire size). Shared by `EntryChunkWriter` and `RetypeBackfillExecutor`. A new multi-row INSERT or UPSERT over a variable number of rows goes through it rather than assuming a chunk fits in one statement.
+- **`StringKeyLayout`** (ADR 0057): the generated key that indexes a string slot (a zero-padded head of its weight string plus a digest), its column DDL and every lookup predicate. The page DDL and the compiler both build their SQL here, because a lookup that repeats the layout even slightly wrong returns wrong rows with no error. `StringKeyLayoutTest` fails when the weight-string or digest function appears in any other file under `src/`, comments included.
 - **`LikePattern`**, **`PdoQuery`**, **`TypedBinding`** and **`WorkerIdentity`** follow the same one-definition rule.
 
 ### Cross-cutting rules
