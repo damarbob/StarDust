@@ -248,17 +248,6 @@ final class StringKeyLayout
         ];
     }
 
-    /** The key is NULL exactly when the slot is. */
-    public static function isNull(string $keyColumn): string
-    {
-        return $keyColumn . ' IS NULL';
-    }
-
-    public static function isNotNull(string $keyColumn): string
-    {
-        return $keyColumn . ' IS NOT NULL';
-    }
-
     /**
      * The full key, from a weight string expression: the padded head, then the
      * digest. The generated column and the equality lookup both use it, so the

@@ -83,7 +83,9 @@ use StarDust\Support\StringKeyLayout;
  * of its original one: `{key predicate} AND {original}`. The key predicate only
  * has to find a superset of the matches, and the original always stays as the
  * recheck, so the result is whatever the collation says. `neq` and `nin` get
- * none, since they cannot use an index either way. The EXISTS strategy keeps
+ * none, since they cannot use an index either way, and neither do `is_null` and
+ * `is_not_null`, whose key rewrite changed no plan and cost one on MySQL 8.0.13.
+ * The EXISTS strategy keeps
  * the SQL a string leaf had before keys, because it reaches the page by primary
  * key per entry and a key adds nothing there. A slot the snapshot records no
  * key for, whether it sits on a prefix page, a page from before pages carried
@@ -631,12 +633,11 @@ final class SqlFilterCompiler
                 return count($range) === 2
                     ? StringKeyLayout::between($keyColumn, $range[0], $range[1], $head, $collation)
                     : null;
-            case Operator::IS_NULL:
-                return ['sql' => StringKeyLayout::isNull($keyColumn), 'bindings' => []];
-            case Operator::IS_NOT_NULL:
-                return ['sql' => StringKeyLayout::isNotNull($keyColumn), 'bindings' => []];
             default:
-                // neq and nin cannot use an index, with or without a key.
+                // neq and nin cannot use an index, with or without a key. is_null
+                // and is_not_null keep their own SQL: asking the key column too
+                // changed no plan on 8.0.46 or MariaDB and made is_not_null slower
+                // on 8.0.13.
                 return null;
         }
     }

@@ -160,12 +160,6 @@ final class StringKeyLayoutTest extends TestCase
         self::assertStringContainsString("REPEAT(UNHEX('FF'), 16)", $upper, 'The fill past the head is the digest width, whatever the head.');
     }
 
-    public function testNullPredicatesNeedNoWeightString(): void
-    {
-        self::assertSame('k IS NULL', StringKeyLayout::isNull('k'));
-        self::assertSame('k IS NOT NULL', StringKeyLayout::isNotNull('k'));
-    }
-
     public function testEveryPlaceholderTakesOneBinding(): void
     {
         $lookups = [

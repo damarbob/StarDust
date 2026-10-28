@@ -192,27 +192,17 @@ final class StringKeyCompilerTest extends TestCase
         self::assertSame(['low', 'high', 'low', 'high'], self::filterBindings($out['bindings'], 4));
     }
 
-    public function testNullTestsAskTheKeyColumnAndTheSlot(): void
-    {
-        self::assertStringContainsString(
-            ' AND p0.i_str_01_k IS NULL AND p0.i_str_01 IS NULL',
-            $this->compile(self::leaf('is_null', null))['sql'],
-        );
-        self::assertStringContainsString(
-            ' AND p0.i_str_01_k IS NOT NULL AND p0.i_str_01 IS NOT NULL',
-            $this->compile(self::leaf('is_not_null', null))['sql'],
-        );
-    }
-
     /** @return iterable<string, array{string, mixed}> */
     public static function operatorsNoKeyCanServe(): iterable
     {
         yield 'neq' => ['neq', 'x'];
         yield 'nin' => ['nin', ['x', 'y']];
+        yield 'is_null' => ['is_null', null];
+        yield 'is_not_null' => ['is_not_null', null];
     }
 
     #[DataProvider('operatorsNoKeyCanServe')]
-    public function testNotEqualAndNotInKeepTheSqlTheyHadBeforeKeys(string $op, mixed $value): void
+    public function testOperatorsNoKeyCanServeKeepTheSqlTheyHadBeforeKeys(string $op, mixed $value): void
     {
         $filter = self::leaf($op, $value);
 
