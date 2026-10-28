@@ -64,8 +64,11 @@ use StarDust\Support\StringKeyLayout;
  *     `ix_{table}_{column}` convention. Naming a missing index fails the
  *     read (errno 1176).
  *   - Equality only. `in` must not take the shape (238 rows became 200 001),
- *     and a string, range or `prefix` leaf gains nothing from it. A string
- *     leaf never drives, even when it comes first.
+ *     and a range or `prefix` leaf gains nothing from it. A string equality
+ *     drives only through its generated key (ADR 0057), and only when no
+ *     integer, numeric or datetime equality qualified, so every query that
+ *     drives today keeps its plan. A string leaf on a prefix page never
+ *     drives, even when it comes first.
  *
  * The bound is the driving leaf's match count, not the page size, once
  * other leaves filter its rows further. The driving leaf is the first
@@ -433,9 +436,11 @@ final class SqlFilterCompiler
 
     /**
      * Slot column prefixes of the families whose index holds the whole value.
-     * A string slot is indexed on a prefix, which cannot answer an equality
-     * alone, so a string leaf never drives. The family comes from the
-     * physical column, because that is what the index covers.
+     * A string slot on a prefix page is indexed on a prefix, which cannot
+     * answer an equality alone, so it does not qualify here. On a key page it
+     * qualifies in the second pass of {@see self::selectDrivingLeaf()}. The
+     * family comes from the physical column, because that is what the index
+     * covers.
      */
     private const FULL_WIDTH_SLOT_PREFIXES = ['i_int_', 'i_num_', 'i_dt_'];
 
@@ -444,6 +449,11 @@ final class SqlFilterCompiler
      * (ADR 0056). That is the first equality on a full-width slot column whose
      * index the snapshot recorded. Any qualifying leaf measured bounded, so
      * "first" is only the deterministic choice, not the cheapest one.
+     *
+     * When none qualifies, the first equality on a string slot whose page
+     * indexes it through a generated key does (ADR 0057), and the index is the
+     * key's. Numbers and dates go first so that no query that drives today
+     * changes its plan.
      *
      * @param list<LeafNode> $leaves
      * @return ?array{pageId: int, indexName: string}
@@ -463,6 +473,18 @@ final class SqlFilterCompiler
                 continue;
             }
             return ['pageId' => $pageId, 'indexName' => $indexName];
+        }
+
+        foreach ($leaves as $leaf) {
+            if ($leaf->operator !== Operator::EQ) {
+                continue;
+            }
+            [$pageId, $slotColumn] = $this->resolvedSlotFor($leaf);
+            $key = $snapshot->stringKeyFor($pageId, $slotColumn);
+            if ($key === null) {
+                continue;
+            }
+            return ['pageId' => $pageId, 'indexName' => $key->indexName];
         }
 
         return null;

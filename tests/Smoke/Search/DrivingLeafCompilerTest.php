@@ -19,6 +19,7 @@ use StarDust\Read\FieldDescriptor;
 use StarDust\Read\SnapshotEntry;
 use StarDust\Read\SortDirection;
 use StarDust\Read\SortSpec;
+use StarDust\Read\StringKey;
 use StarDust\Search\Mysql\SqlFilterCompiler;
 
 /**
@@ -31,10 +32,14 @@ use StarDust\Search\Mysql\SqlFilterCompiler;
  * is measured against real MySQL in `BoundedFilteredReadTest`.
  *
  * Each part of the rule was checked by breaking it and watching a case here
- * go red: not requiring an equality, letting a string slot drive, letting a
- * created-at or field sort drive, dropping the driving page's own tenant
- * predicate, leaving the index name unquoted, leaving the order on
+ * go red: not requiring an equality, letting a string slot with no key drive,
+ * letting a created-at or field sort drive, dropping the driving page's own
+ * tenant predicate, leaving the index name unquoted, leaving the order on
  * `entry_data.id`, and never choosing a driving leaf.
+ *
+ * A string equality drives only through its generated key (ADR 0057), in a
+ * second pass that runs when no integer, numeric or datetime equality
+ * qualified. The cases for it are at the end of the class.
  */
 final class DrivingLeafCompilerTest extends TestCase
 {
@@ -68,9 +73,15 @@ final class DrivingLeafCompilerTest extends TestCase
         );
     }
 
-    /** @param array<int, array<string, string>> $orderedIndexes */
-    private function snapshot(array $orderedIndexes = [1 => ['i_int_01' => self::INT_INDEX]], array $fields = []): SnapshotEntry
-    {
+    /**
+     * @param array<int, array<string, string>> $orderedIndexes
+     * @param array<int, array<string, StringKey>> $stringKeys
+     */
+    private function snapshot(
+        array $orderedIndexes = [1 => ['i_int_01' => self::INT_INDEX]],
+        array $fields = [],
+        array $stringKeys = [],
+    ): SnapshotEntry {
         return new SnapshotEntry(
             modelId:           1,
             capturedAtVersion: 1,
@@ -78,6 +89,7 @@ final class DrivingLeafCompilerTest extends TestCase
             fieldsByName:      $fields,
             pageTableNames:    [1 => 'entry_slots_page_1', 2 => 'entry_slots_page_2'],
             orderedIndexes:    $orderedIndexes,
+            stringKeys:        $stringKeys,
         );
     }
 
@@ -141,7 +153,7 @@ final class DrivingLeafCompilerTest extends TestCase
         $make = static fn (string $col, string $op, mixed $v, string $type = 'int'): LeafNode =>
             self::leaf(101, 1, $col, $op, $v, $type);
 
-        yield 'string equality' => [$make('i_str_01', 'eq', 'paid', 'string')];
+        yield 'string equality with no key' => [$make('i_str_01', 'eq', 'paid', 'string')];
         yield 'greater than'    => [$make('i_int_01', 'gt', 5)];
         yield 'not equal'       => [$make('i_int_01', 'neq', 5)];
         yield 'in list'         => [$make('i_int_01', 'in', [1, 2, 3])];
@@ -299,6 +311,131 @@ final class DrivingLeafCompilerTest extends TestCase
         $sql = $this->sql($filter);
 
         self::assertStringStartsWith(self::TODAYS_FROM, $sql);
+    }
+
+    private const STR_INDEX = 'ix_entry_slots_page_1_i_str_01';
+    private const STR2_INDEX = 'ix_entry_slots_page_1_i_str_02';
+    private const WEIGHT = 'WEIGHT_STRING(CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci)';
+
+    /**
+     * A snapshot whose page 1 indexes `i_str_01` (and `i_str_02`) through keys.
+     *
+     * @return array{array<int, array<string, string>>, array<int, array<string, StringKey>>}
+     */
+    private static function keyedStrings(): array
+    {
+        return [
+            [1 => ['i_str_01_k' => self::STR_INDEX, 'i_str_02_k' => self::STR2_INDEX]],
+            [1 => [
+                'i_str_01' => new StringKey('i_str_01_k', self::STR_INDEX, 32, 'utf8mb4_0900_ai_ci'),
+                'i_str_02' => new StringKey('i_str_02_k', self::STR2_INDEX, 32, 'utf8mb4_0900_ai_ci'),
+            ]],
+        ];
+    }
+
+    public function testAStringEqualityOnAKeyPageDrivesFromItsKeysIndex(): void
+    {
+        [$indexes, $keys] = self::keyedStrings();
+        $filter = self::leaf(101, 1, 'i_str_01', 'eq', 'paid', 'string');
+
+        $fragment = (new SqlFilterCompiler())->compile($filter, $this->query($filter), $this->snapshot($indexes, [], $keys));
+
+        self::assertSame(
+            'SELECT STRAIGHT_JOIN entry_data.id'
+            . ' FROM entry_slots_page_1 p0 FORCE INDEX (`' . self::STR_INDEX . '`)'
+            . ' INNER JOIN entry_data ON entry_data.id = p0.entry_id AND entry_data.tenant_id = p0.tenant_id'
+            . ' WHERE entry_data.tenant_id = ? AND entry_data.model_id = ? AND p0.tenant_id = ?'
+            . ' AND entry_data.deleted_at IS NULL'
+            . ' AND p0.i_str_01_k = CONCAT(RPAD(LEFT(' . self::WEIGHT . ", 32), 32, UNHEX('00')),"
+            . ' LEFT(UNHEX(SHA2(' . self::WEIGHT . ', 256)), 16)) AND p0.i_str_01 = ?'
+            . ' ORDER BY p0.entry_id ASC LIMIT ?',
+            $fragment->sql,
+        );
+        // tenant, model, the driving page's tenant, the key lookup (twice), the recheck, the limit.
+        self::assertSame([7, 1, 7, 'paid', 'paid', 'paid', 11], $fragment->bindings);
+    }
+
+    public function testAnIntegerEqualityStillDrivesWhenAKeyedStringEqualityComesFirst(): void
+    {
+        [$indexes, $keys] = self::keyedStrings();
+        $indexes[2] = ['i_int_01' => 'ix_entry_slots_page_2_i_int_01'];
+        $filter = new AndNode([
+            self::leaf(101, 1, 'i_str_01', 'eq', 'paid', 'string'),
+            self::leaf(102, 2, 'i_int_01', 'eq', 5),
+        ]);
+
+        $sql = $this->sql($filter, null, $this->snapshot($indexes, [], $keys));
+
+        self::assertStringContainsString('FROM entry_slots_page_2 p1 FORCE INDEX (`ix_entry_slots_page_2_i_int_01`)', $sql);
+        self::assertStringContainsString('ORDER BY p1.entry_id ASC', $sql);
+    }
+
+    public function testTheFirstKeyedStringEqualityDrivesWhenNoNumberOrDateQualifies(): void
+    {
+        [$indexes, $keys] = self::keyedStrings();
+        $filter = new AndNode([
+            self::leaf(101, 1, 'i_str_02', 'eq', 'a', 'string'),
+            self::leaf(102, 1, 'i_str_01', 'eq', 'b', 'string'),
+        ]);
+
+        $sql = $this->sql($filter, null, $this->snapshot($indexes, [], $keys));
+
+        self::assertStringContainsString('FORCE INDEX (`' . self::STR2_INDEX . '`)', $sql);
+        self::assertStringNotContainsString('FORCE INDEX (`' . self::STR_INDEX . '`)', $sql);
+    }
+
+    /** @return iterable<string, array{string, mixed}> */
+    public static function keyedStringLeavesThatNeverDrive(): iterable
+    {
+        yield 'prefix' => ['prefix', 'pa'];
+        yield 'in list' => ['in', ['a', 'b']];
+        yield 'greater than' => ['gt', 'm'];
+        yield 'between' => ['between', ['a', 'z']];
+        yield 'not equal' => ['neq', 'm'];
+        yield 'is null' => ['is_null', null];
+    }
+
+    #[DataProvider('keyedStringLeavesThatNeverDrive')]
+    public function testOnlyAStringEqualityDrivesEvenWithAKey(string $op, mixed $value): void
+    {
+        [$indexes, $keys] = self::keyedStrings();
+        $filter = self::leaf(101, 1, 'i_str_01', $op, $value, 'string');
+
+        $sql = $this->sql($filter, null, $this->snapshot($indexes, [], $keys));
+
+        self::assertStringStartsWith(self::TODAYS_FROM, $sql);
+        self::assertStringNotContainsString('FORCE INDEX', $sql);
+    }
+
+    public function testAKeyedStringEqualityInsideOrKeepsTodaysSql(): void
+    {
+        [$indexes, $keys] = self::keyedStrings();
+        $filter = new OrNode([
+            self::leaf(101, 1, 'i_str_01', 'eq', 'a', 'string'),
+            self::leaf(101, 1, 'i_str_01', 'eq', 'b', 'string'),
+        ]);
+
+        $sql = $this->sql($filter, null, $this->snapshot($indexes, [], $keys));
+
+        self::assertStringStartsWith(self::TODAYS_FROM, $sql);
+        self::assertStringNotContainsString('_k', $sql);
+    }
+
+    public function testAKeyedStringEqualityKeepsTheKeysetOnTheDrivingPage(): void
+    {
+        [$indexes, $keys] = self::keyedStrings();
+        $filter = self::leaf(101, 1, 'i_str_01', 'eq', 'paid', 'string');
+
+        $fragment = (new SqlFilterCompiler())->compile(
+            $filter,
+            $this->query($filter, null, 42),
+            $this->snapshot($indexes, [], $keys),
+        );
+
+        self::assertStringContainsString('p0.entry_id > ?', $fragment->sql);
+        self::assertStringNotContainsString('entry_data.id >', $fragment->sql);
+        // tenant, model, driving tenant, keyset anchor, key lookup twice, recheck, limit.
+        self::assertSame([7, 1, 7, 42, 'paid', 'paid', 'paid', 11], $fragment->bindings);
     }
 
     public function testTenantIsolationHoldsOnTheDrivenQuery(): void

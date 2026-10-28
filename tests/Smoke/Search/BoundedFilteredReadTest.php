@@ -50,6 +50,10 @@ use StarDust\Write\SlotRowUpserter;
  *     shape from the broken one.
  *   - Tenant 1's `rank` and `rank2` live on different pages, which is what
  *     a cross-page AND needs.
+ *   - A text field, `label`, with the same shares as `rank`, on a key page
+ *     (ADR 0057). A text equality drives through its key when no number or
+ *     date equality qualifies, and `title` is a second text field for the
+ *     case of two text equalities.
  *
  * **MariaDB is already bounded for these filters**, so these assertions pass
  * there with or without the rewrite. The shape assertions (`STRAIGHT_JOIN`,
@@ -69,6 +73,12 @@ use StarDust\Write\SlotRowUpserter;
  *     `FROM entry_data` first): the 50% equality on a cursor page touched
  *     7 399 rows. This is the check that shows the pinned join order, and
  *     not the hint, is what bounds the read.
+ *   - For the text cases (ADR 0057), again on MySQL 8.0.13 with 2 500 rows per
+ *     tenant. With the second pass removed and the shape assertion off, the 5%
+ *     text equality touched 421 rows against a bound of 33. With the pass kept
+ *     and the key predicate removed it touched 2 534 rows against 33, and two
+ *     text equalities touched 2 525 against 441, because the hint then names an
+ *     index whose range is bounded only by the tenant, so the query sorts.
  */
 final class BoundedFilteredReadTest extends Phase8TestCase
 {
@@ -136,6 +146,93 @@ final class BoundedFilteredReadTest extends Phase8TestCase
         }
     }
 
+    /**
+     * A text equality on a key page drives through its key (ADR 0057), so it is
+     * bounded the same way the numeric families are. On a prefix page it was
+     * not: a 5% value read the whole match set and sorted it to find one page.
+     */
+    public function testATextEqualityOnAKeyPageTouchesAboutAPage(): void
+    {
+        $this->seedFixture();
+        $bound = 3 * (self::PAGE_SIZE + 1);
+
+        foreach ([self::FIVE_PERCENT, self::HALF] as $value) {
+            $leaf = LeafNode::local('label', 'eq', 'v' . $value);
+            foreach ([SortDirection::Asc, SortDirection::Desc] as $direction) {
+                $first = $this->probe($leaf, $direction, null);
+                $this->assertDriven($first['fragment']);
+                $this->assertBounded($first, $bound, "text value {$value} {$direction->value} page 1");
+
+                self::assertGreaterThanOrEqual(self::PAGE_SIZE, count($first['ids']));
+                $anchor = $first['ids'][self::PAGE_SIZE - 1];
+                $later = $this->probe($leaf, $direction, $anchor);
+                $this->assertBounded($later, $bound, "text value {$value} {$direction->value} cursor page");
+            }
+        }
+    }
+
+    public function testAnIntegerEqualityDrivesBeforeATextEqualityWrittenFirst(): void
+    {
+        $this->seedFixture();
+
+        $drivingMatches = $this->countTenantOneMatches('i_int_01', self::FIVE_PERCENT);
+        $filter = new AndNode([
+            LeafNode::local('label', 'eq', 'v' . self::HALF),
+            LeafNode::local('rank', 'eq', self::FIVE_PERCENT),
+        ]);
+
+        $result = $this->probe($filter, SortDirection::Asc, null);
+
+        $this->assertDriven($result['fragment']);
+        self::assertStringContainsString('FORCE INDEX (`ix_entry_slots_page_1_i_int_01`)', $result['fragment']->sql);
+        $this->assertBounded($result, 3 * ($drivingMatches + self::PAGE_SIZE + 1), 'text 50% AND int 5%');
+    }
+
+    public function testOfTwoTextEqualitiesTheFirstDrives(): void
+    {
+        $this->seedFixture();
+
+        $labelMatches = $this->countTenantOneMatches('i_str_02', 'v' . self::FIVE_PERCENT);
+        $filter = new AndNode([
+            LeafNode::local('label', 'eq', 'v' . self::FIVE_PERCENT),
+            LeafNode::local('title', 'eq', 'cat-3'),
+        ]);
+
+        $result = $this->probe($filter, SortDirection::Asc, null);
+
+        $this->assertDriven($result['fragment']);
+        self::assertStringContainsString('FORCE INDEX (`ix_entry_slots_page_1_i_str_02`)', $result['fragment']->sql);
+        $this->assertBounded($result, 3 * ($labelMatches + self::PAGE_SIZE + 1), 'text 5% AND text 10%');
+    }
+
+    /**
+     * A text prefix and a text range are not driven, but the key narrows the
+     * index for them and the original predicate rechecks, so the ids must be
+     * the ones the slot column alone gives. How many rows they touch at scale
+     * is measured by the key page read gate and not here, because this fixture
+     * is too small to tell a plan from its neighbour.
+     */
+    public function testATextPrefixAndRangeAreNotDrivenAndStillReturnTheRightEntries(): void
+    {
+        $this->seedFixture();
+
+        $cases = [
+            'prefix v1' => [LeafNode::local('label', 'prefix', 'v1'), "p.i_str_02 LIKE 'v1%'"],
+            'gte v3'    => [LeafNode::local('label', 'gte', 'v3'), "p.i_str_02 >= 'v3'"],
+            'lt v1'     => [LeafNode::local('label', 'lt', 'v1'), "p.i_str_02 < 'v1'"],
+        ];
+
+        foreach ($cases as $label => [$filter, $reference]) {
+            $fragment = $this->fragment($filter, SortDirection::Asc, null);
+            self::assertStringStartsWith('SELECT entry_data.id FROM entry_data', $fragment->sql, $label);
+            self::assertStringContainsString('p0.i_str_02_k', $fragment->sql, "{$label}: the key narrows the index");
+
+            $expected = $this->referenceIdsWhere($reference);
+            self::assertNotEmpty($expected, "{$label}: fixture produced no match");
+            self::assertSame($expected, $this->walk($filter, SortDirection::Asc), $label);
+        }
+    }
+
     public function testAnAndIsBoundedByTheDrivingLeafsMatchCountNotThePageSize(): void
     {
         $this->seedFixture();
@@ -182,6 +279,8 @@ final class BoundedFilteredReadTest extends Phase8TestCase
             'int 50%'        => LeafNode::local('rank', 'eq', self::HALF),
             'numeric 5%'     => LeafNode::local('price', 'eq', $this->priceFor(self::FIVE_PERCENT)),
             'datetime 5%'    => LeafNode::local('due_at', 'eq', $this->dueAtFor(self::FIVE_PERCENT)),
+            'text 5%'        => LeafNode::local('label', 'eq', 'v' . self::FIVE_PERCENT),
+            'text 50%'       => LeafNode::local('label', 'eq', 'v' . self::HALF),
             'int AND str'    => new AndNode([
                 LeafNode::local('rank', 'eq', self::FIVE_PERCENT),
                 LeafNode::local('title', 'eq', 'cat-3'),
@@ -220,6 +319,8 @@ final class BoundedFilteredReadTest extends Phase8TestCase
             'int 50%'    => [LeafNode::local('rank', 'eq', self::HALF), 'i_int_01', self::HALF],
             'numeric 5%' => [LeafNode::local('price', 'eq', $this->priceFor(self::FIVE_PERCENT)), 'i_num_01', $this->priceFor(self::FIVE_PERCENT)],
             'datetime 5%' => [LeafNode::local('due_at', 'eq', $this->dueAtFor(self::FIVE_PERCENT)), 'i_dt_01', $this->dbDatetime(self::FIVE_PERCENT)],
+            'text 5%'    => [LeafNode::local('label', 'eq', 'v' . self::FIVE_PERCENT), 'i_str_02', 'v' . self::FIVE_PERCENT],
+            'text 50%'   => [LeafNode::local('label', 'eq', 'v' . self::HALF), 'i_str_02', 'v' . self::HALF],
         ];
 
         foreach ($cases as $label => [$filter, $column, $value]) {
@@ -352,7 +453,7 @@ final class BoundedFilteredReadTest extends Phase8TestCase
     }
 
     /** Tenant 1's rows whose page column equals the given value. */
-    private function countTenantOneMatches(string $column, int $value): int
+    private function countTenantOneMatches(string $column, int|string $value): int
     {
         $stmt = $this->pdo->prepare(
             'SELECT COUNT(*) FROM entry_slots_page_1 WHERE tenant_id = 1 AND ' . $column . ' = ?'
@@ -375,6 +476,23 @@ final class BoundedFilteredReadTest extends Phase8TestCase
             . " WHERE d.tenant_id = 1 AND d.model_id = ? AND d.deleted_at IS NULL AND p.{$column} = ? ORDER BY d.id"
         );
         $stmt->execute([$this->modelId, $value]);
+
+        return array_map('intval', $stmt->fetchAll(\PDO::FETCH_COLUMN));
+    }
+
+    /**
+     * Ids from a plain query on a page-1 predicate, in ascending order, for
+     * tenant 1 and this model.
+     *
+     * @return list<int>
+     */
+    private function referenceIdsWhere(string $predicate): array
+    {
+        $stmt = $this->pdo->prepare(
+            "SELECT d.id FROM entry_data d JOIN entry_slots_page_1 p ON p.entry_id = d.id AND p.tenant_id = d.tenant_id"
+            . " WHERE d.tenant_id = 1 AND d.model_id = ? AND d.deleted_at IS NULL AND {$predicate} ORDER BY d.id"
+        );
+        $stmt->execute([$this->modelId]);
 
         return array_map('intval', $stmt->fetchAll(\PDO::FETCH_COLUMN));
     }
@@ -417,20 +535,20 @@ final class BoundedFilteredReadTest extends Phase8TestCase
 
     private function seedFixture(): void
     {
-        // Tenant 1's four fields fill the first page's only slot of each
-        // family, so `rank2` can only land on the second page.
-        $this->provisionPage(['i_str_01', 'i_int_01', 'i_num_01', 'i_dt_01']);
+        // Tenant 1's five fields fill the first page's slots, so `rank2` can
+        // only land on the second page.
+        $this->provisionPage(['i_str_01', 'i_str_02', 'i_int_01', 'i_num_01', 'i_dt_01']);
         $this->modelId = $this->createModel(1, 'bounded_one');
-        $this->fieldIds = $this->registerFields($this->modelId, ['title', 'rank', 'price', 'due_at']);
+        $this->fieldIds = $this->registerFields($this->modelId, ['title', 'rank', 'price', 'due_at', 'label']);
 
         $this->provisionPage(['i_int_01']);
         $this->fieldIds += $this->registerFields($this->modelId, ['rank2']);
 
         // Tenant 2 starts once the first two pages are full, so its slots
         // are on a third page and never share a column with tenant 1.
-        $this->provisionPage(['i_str_01', 'i_int_01', 'i_num_01', 'i_dt_01', 'i_int_02']);
+        $this->provisionPage(['i_str_01', 'i_str_02', 'i_int_01', 'i_num_01', 'i_dt_01', 'i_int_02']);
         $this->otherModelId = $this->createModel(2, 'bounded_two');
-        $this->registerFields($this->otherModelId, ['title', 'rank', 'price', 'due_at', 'rank2']);
+        $this->registerFields($this->otherModelId, ['title', 'rank', 'price', 'due_at', 'rank2', 'label']);
 
         $pageOf = fn (string $field): int => (int) ($this->fetchLiveSlotForField($this->fieldIds[$field])['page_id'] ?? 0);
         self::assertSame(1, $pageOf('rank'), 'fixture: rank must be on the first page');
@@ -443,6 +561,7 @@ final class BoundedFilteredReadTest extends Phase8TestCase
             foreach ([[1, $this->modelId], [2, $this->otherModelId]] as [$tenant, $model]) {
                 $payloads[] = new EntryPayload($tenant, $model, [
                     'title'  => 'cat-' . ($this->bucket($tenant, $i, 'title') % 10),
+                    'label'  => 'v' . $this->valueOf($this->bucket($tenant, $i, 'label')),
                     'rank'   => $this->valueOf($this->bucket($tenant, $i, self::SALT_RANK)),
                     'rank2'  => $this->valueOf($this->bucket($tenant, $i, 'rank2')),
                     'price'  => $this->priceFor($this->valueOf($this->bucket($tenant, $i, 'price'))),
@@ -466,7 +585,7 @@ final class BoundedFilteredReadTest extends Phase8TestCase
      */
     private function registerFields(int $modelId, array $names): array
     {
-        $types = ['title' => 'string', 'rank' => 'int', 'rank2' => 'int', 'price' => 'numeric', 'due_at' => 'datetime'];
+        $types = ['title' => 'string', 'label' => 'string', 'rank' => 'int', 'rank2' => 'int', 'price' => 'numeric', 'due_at' => 'datetime'];
         $ids = [];
         foreach ($names as $name) {
             $ids[$name] = $this->createField($modelId, $types[$name], true, $name);

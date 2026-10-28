@@ -284,10 +284,21 @@ final class StringKeyCompilerTest extends TestCase
 
     public function testTenantIsolationHoldsOnARewrittenQuery(): void
     {
-        $out = $this->compile(self::leaf('eq', 'x'));
+        $out = $this->compile(self::leaf('gte', 'x'));
 
         self::assertStringContainsString('entry_data.tenant_id = ?', $out['sql']);
         self::assertStringContainsString('p0.tenant_id = entry_data.tenant_id', $out['sql']);
         self::assertSame(7, $out['bindings'][0]);
+    }
+
+    public function testTenantIsolationHoldsOnADrivenQueryToo(): void
+    {
+        // An equality on a key page drives from its own page, which then carries its own tenant predicate.
+        $out = $this->compile(self::leaf('eq', 'x'));
+
+        self::assertStringContainsString('entry_data.tenant_id = ?', $out['sql']);
+        self::assertStringContainsString('p0.tenant_id = ?', $out['sql']);
+        self::assertStringContainsString('entry_data.tenant_id = p0.tenant_id', $out['sql']);
+        self::assertSame([7, 1, 7], array_slice($out['bindings'], 0, 3));
     }
 }
