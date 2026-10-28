@@ -65,3 +65,9 @@ Two things the probe does not do. It proves that *its own* probe size can be wri
 **A note on `flock` and network filesystems.** Some hosts mount the account's home directory over NFS, where advisory locking has historically been unreliable. If yours does, the `flock -n` line above is not a guarantee — check with your host, or route the lock file to local (non-NFS) storage if one is available.
 
 **Default `artifactDir` and `pidFileDir` must not resolve anywhere web-servable.** The default (`sys_get_temp_dir()`) is usually fine, but confirm it is outside your account's docroot before going live — some shared-hosting layouts put the obvious writable path inside `public_html`.
+
+## Upgrading a running deployment
+
+Finish the rollout of a release that indexes text fields through a computed key (see [Slot](../GLOSSARY.md#slot)) before that release builds its first page. A process from an earlier release cannot claim a text slot on a page built with a key, because it does not know that such a page indexes the slot through a second column. Its Watcher counts none of those slots as usable and provisions another page on every poll until it is replaced. Its reads and writes on such a page stay correct, though a read is not indexed there and a write fills the key as usual.
+
+In practice, replace every process of the old release before the new release's Watcher first provisions a page, since only a page it builds carries a key. That means the four daemons in the reference mode, or the scheduled `tick` in the cron mode. Pages that already exist are never altered, so an upgraded database keeps its text fields on the older pages until their free text slots run out, and a new database builds pages with keys from the start.
