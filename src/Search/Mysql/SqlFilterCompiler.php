@@ -17,6 +17,8 @@ use StarDust\Read\SnapshotEntry;
 use StarDust\Read\SortDirection;
 use StarDust\Read\SortSpec;
 use StarDust\Read\SortTarget;
+use StarDust\Read\StringKey;
+use StarDust\Support\StringKeyLayout;
 
 /**
  * Phase 8 adaptive SQL compiler for the bounded probe (ADR 0005 Query 1).
@@ -72,6 +74,22 @@ use StarDust\Read\SortTarget;
  * widest case measured). MariaDB already plans the old shape well and can
  * plan it better than this rule, so a green MariaDB run proves nothing
  * about the rule.
+ *
+ * **String keys (ADR 0057).** On a page that indexes a string slot through a
+ * generated key, a JOIN-strategy leaf on that slot gets a key predicate ahead
+ * of its original one: `{key predicate} AND {original}`. The key predicate only
+ * has to find a superset of the matches, and the original always stays as the
+ * recheck, so the result is whatever the collation says. `neq` and `nin` get
+ * none, since they cannot use an index either way. The EXISTS strategy keeps
+ * the SQL a string leaf had before keys, because it reaches the page by primary
+ * key per entry and a key adds nothing there. A slot the snapshot records no
+ * key for, whether it sits on a prefix page, a page from before pages carried
+ * only their indexed columns or behind a key index the optimiser skips, keeps
+ * its SQL byte for byte. {@see StringKeyLayout} builds every key predicate, and
+ * its docblock lists the three ways a slightly wrong one returns wrong rows
+ * without an error. A prefix or range bound narrows the index only within the
+ * key's head, so a longer bound on a column whose values all share that head can
+ * no longer narrow it.
  *
  * The compiler assumes every {@see LeafNode}'s {@see \StarDust\Filter\Ast\FieldRef}
  * has been resolved (descriptor populated with `pageId` + `slotColumn`)
@@ -518,14 +536,100 @@ final class SqlFilterCompiler
         $predicates = [];
         foreach ($leaves as $leaf) {
             [$pageId, $slotColumn] = $this->resolvedSlotFor($leaf);
-            $alias = $aliasByPage[$pageId];
-            $column = "{$alias}.{$slotColumn}";
-            $predicates[] = $this->compileLeafPredicate($leaf, $column, $bindings);
+            $predicates[] = $this->compileJoinedLeaf(
+                $leaf,
+                $aliasByPage[$pageId],
+                $slotColumn,
+                $snapshot->stringKeyFor($pageId, $slotColumn),
+                $bindings,
+            );
         }
 
         // The alias map is returned so a field sort can reuse a page the
         // filter already joined instead of joining it twice.
         return [implode(' ', $joins), implode(' AND ', $predicates), $aliasByPage];
+    }
+
+    /**
+     * One leaf of the JOIN strategy. A string slot that its page indexes through
+     * a key gets the key predicate first and the original after it, which stays
+     * as the recheck. The key predicate's bindings are pushed first, because
+     * that is the order its placeholders come in.
+     *
+     * @param list<mixed> $bindings (in/out)
+     */
+    private function compileJoinedLeaf(
+        LeafNode $leaf,
+        string $alias,
+        string $slotColumn,
+        ?StringKey $key,
+        array &$bindings,
+    ): string {
+        $column = "{$alias}.{$slotColumn}";
+        $keyPredicate = $key === null ? null : $this->keyPredicate($leaf, "{$alias}.{$key->keyColumn}", $key);
+        if ($keyPredicate === null) {
+            return $this->compileLeafPredicate($leaf, $column, $bindings);
+        }
+
+        array_push($bindings, ...$keyPredicate['bindings']);
+
+        return $keyPredicate['sql'] . ' AND ' . $this->compileLeafPredicate($leaf, $column, $bindings);
+    }
+
+    /**
+     * The predicate on a string slot's key that finds a superset of what the
+     * leaf matches, or null for an operator no key can serve.
+     *
+     * @return ?array{sql: string, bindings: list<string>}
+     */
+    private function keyPredicate(LeafNode $leaf, string $keyColumn, StringKey $key): ?array
+    {
+        $head = $key->headBytes;
+        $collation = $key->collation;
+
+        switch ($leaf->operator) {
+            case Operator::EQ:
+                return StringKeyLayout::equals($keyColumn, $this->stringOperand($leaf), $head, $collation);
+            case Operator::IN:
+                $operands = $this->stringOperands($leaf);
+
+                return $operands === [] ? null : StringKeyLayout::inList($keyColumn, $operands, $head, $collation);
+            case Operator::PREFIX:
+                // The prefix as written. The escaping is for the LIKE recheck only.
+                return StringKeyLayout::prefix($keyColumn, $this->stringOperand($leaf), $head, $collation);
+            case Operator::GT:
+            case Operator::GTE:
+                return StringKeyLayout::atLeast($keyColumn, $this->stringOperand($leaf), $head, $collation);
+            case Operator::LT:
+            case Operator::LTE:
+                return StringKeyLayout::atMost($keyColumn, $this->stringOperand($leaf), $head, $collation);
+            case Operator::BETWEEN:
+                $range = $this->stringOperands($leaf);
+
+                return count($range) === 2
+                    ? StringKeyLayout::between($keyColumn, $range[0], $range[1], $head, $collation)
+                    : null;
+            case Operator::IS_NULL:
+                return ['sql' => StringKeyLayout::isNull($keyColumn), 'bindings' => []];
+            case Operator::IS_NOT_NULL:
+                return ['sql' => StringKeyLayout::isNotNull($keyColumn), 'bindings' => []];
+            default:
+                // neq and nin cannot use an index, with or without a key.
+                return null;
+        }
+    }
+
+    private function stringOperand(LeafNode $leaf): string
+    {
+        return (string) $this->scalar($leaf);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringOperands(LeafNode $leaf): array
+    {
+        return array_map('strval', $this->listValue($leaf));
     }
 
     /**

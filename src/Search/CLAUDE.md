@@ -90,6 +90,17 @@ A filtered read in the default order used to lead with `entry_data` and order by
 - **MariaDB already plans the old shape well, so a green MariaDB run proves nothing about this rule, and it can plan the old shape better than the rule does.** A 5% leaf written after a 50% one touched 324 rows with the old SQL and 3,231 driven on MariaDB 11.8. `DrivingLeafCompilerTest` pins the SQL shape and `BoundedFilteredReadTest` the rows touched, and it is the MySQL cells that can fail.
 - **`compile_strategy` still reports `joins`**, and `PaginatedProbe`, `TypedBinding`, the cursor codec and `SearchService` are unchanged.
 
+### String keys (ADR 0057)
+
+On a page that indexes a string slot through its generated key, a JOIN-strategy leaf on that slot compiles to `{key predicate} AND {original}` (`compileJoinedLeaf()`), and `Support\StringKeyLayout` builds every key predicate. The snapshot says which slots have a key (`SnapshotEntry::stringKeyFor()`), and a slot it records none for compiles exactly as before.
+
+- **The original predicate always stays as the recheck.** The key only has to find a superset of the matches, so a key bound that is too wide costs rows read and one that is too narrow costs rows missed. `StringKeyMatchingTest` is the test that decides: several hundred probes over hostile values, on native and emulated prepares and under three connection collations, each compared with the slot column evaluated alone.
+- **The key predicate's bindings are pushed first**, because its placeholders come first in the SQL. The placeholders are positional and repeated, since a named one used twice fails under native prepares (HY093), and the layout counts them so the bindings cannot drift from the SQL.
+- **A prefix binds the raw text to the key and the escaped pattern to the `LIKE`.** The key bound is built from the prefix as written, and the `%` and `_` escaping belongs to the recheck only.
+- **`neq`, `nin` and the EXISTS strategy are untouched.** `neq` and `nin` cannot use an index with or without a key, and EXISTS reaches the page by primary key per entry. `is_null` and `is_not_null` ask the key column as well as the slot, because the slot is in no index on a key page.
+- **Three traps each return wrong rows without an error, and each was checked by breaking it.** The search value is cast to the page's collation before its weight string is taken, because a bound value arrives in the connection's collation. The lower bounds are padded with zero bytes and the upper bounds filled with 0xFF. A prefix's upper bound is built from the unpadded head. `StringKeyLayout`'s docblock has the full list.
+- **A bound reaches the index only through the key's head.** The head is the first 32 bytes of the weight string, about 16 Latin letters or 8 CJK characters, so a longer prefix or range bound on a column whose values all share that start can no longer narrow the index. That was accepted together with the key, and ADR 0057 has the numbers.
+
 ### Sorting (ADR 0041)
 
 Three additions, and each has a trap:

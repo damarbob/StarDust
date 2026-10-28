@@ -83,6 +83,8 @@ Fields are sourced from the joined slot column when the slot's status is `assign
 
 How much work the database does to find a page depends on the filter, even though the page you get back is always at most `pageSize` entries. An equality on an integer, numeric or datetime field finds its page by walking that field's index in entry order, so it examines about one page of rows however many entries match. Joining such an equality to other conditions with `and` keeps the work in proportion to what one equality matches, and that is the first such equality in the filter, in the order you wrote it. Write the most selective one first. In a test on 200,000 entries, an equality matching 50,008 of them written before one matching 10 made the read examine 150,025 rows, and with the two swapped it examined 31. A filter on a string field, a range such as `gt` or `between`, an `in` list, or anything containing `or` or `not` may have to examine every matching entry to produce one page, so its cost grows with the size of the match set.
 
+On a page created since text fields began to be indexed through a computed key (see [Slot](../GLOSSARY.md#slot)), a text prefix or range bound narrows the index for its first 16 Latin letters, or about 8 CJK characters. On a column where every value starts with the same longer text, such as the URLs of one site, a longer bound cannot narrow the index, and the read may examine every entry of the tenant. Pages created earlier index the first 766 characters of each value instead, and are not altered.
+
 ## Sorting
 
 Reads are ordered by insertion order unless you say otherwise. Pass a `SortSpec` to order by an entry's creation, or by any field that currently has an indexed slot:
