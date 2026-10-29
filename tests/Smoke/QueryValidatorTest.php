@@ -72,8 +72,41 @@ final class QueryValidatorTest extends ReadPathTestCase
                 filter: LeafNode::local('note', 'eq', 'x'),
             ));
             self::fail('Expected FieldNotFilterableException');
-        } catch (FieldNotFilterableException) {
-            // expected
+        } catch (FieldNotFilterableException $e) {
+            self::assertStringContainsString('is not filterable', $e->getMessage());
+            self::assertStringNotContainsString('declared filterable', $e->getMessage());
+        }
+
+        $rejection = $this->findRecord($this->readLogRecords($stream), 'pre_flight_rejected');
+        self::assertNotNull($rejection);
+        self::assertSame('field_not_filterable', $rejection['reason']);
+    }
+
+    /**
+     * A filterable field that no write has reached yet has no slot, so
+     * `describeModel()` reports `isIndexed = false` and the filter is
+     * rejected. It is the same exception and the same `reason` as a field
+     * that is not filterable (ADR 0022 keeps one outcome for both), and
+     * the message must not claim the registry says "not filterable".
+     */
+    public function testFilterOnDeclaredFilterableFieldWithoutASlotSaysItIsNotIndexedYet(): void
+    {
+        $this->provisionPage(['i_str_01']);
+        $modelId = $this->createModel(1);
+        $this->createField($modelId, 'string', true, 'name');
+
+        [$logger, $stream] = $this->newRecordingLogger();
+
+        try {
+            $this->reader($logger)->read(new EntryQuery(
+                tenantId: 1,
+                modelId: $modelId,
+                filter: LeafNode::local('name', 'eq', 'x'),
+            ));
+            self::fail('Expected FieldNotFilterableException');
+        } catch (FieldNotFilterableException $e) {
+            self::assertStringContainsString("Field 'name' is declared filterable", $e->getMessage());
+            self::assertStringContainsString('isIndexed', $e->getMessage());
         }
 
         $rejection = $this->findRecord($this->readLogRecords($stream), 'pre_flight_rejected');
@@ -107,6 +140,7 @@ final class QueryValidatorTest extends ReadPathTestCase
         } catch (FieldNotFilterableException $e) {
             // expected — MySQL driver's supportsFilterOn() returns false
             // for non-`assigned`/`ready` slot statuses per ADR 0022.
+            self::assertStringContainsString('declared filterable', $e->getMessage());
             $thrown = $e;
         } catch (FieldNotIndexedException $e) {
             // Legacy Phase 4 exception type — also acceptable.

@@ -27,7 +27,10 @@ use StarDust\Search\EntrySearchInterface;
  *     and emits a `capability_unsupported` event (operators care about
  *     this signal separately from generic rejections);
  *   - rejects fields for which `driver.supportsFilterOn(fieldId)` is
- *     `false` with {@see FieldNotFilterableException} (`field_not_filterable`).
+ *     `false` with {@see FieldNotFilterableException} (`field_not_filterable`),
+ *     whether the registry says the field is not filterable or says it is
+ *     filterable and the driver has no index for it yet. The engine never
+ *     throws {@see \StarDust\Exception\FieldNotIndexedException}.
  *
  * Runs AFTER {@see FieldRefResolver} so every leaf already carries a
  * resolved descriptor and a valid `fieldId`.
@@ -106,8 +109,16 @@ final class CapabilityChecker
                 'reason'         => 'field_not_filterable',
                 'field_name'     => $leaf->field->fieldName,
             ]);
+            // One exception and one code for both causes, as ADR 0022 and
+            // the wire format define (the pre-flight stays uniform across
+            // drivers). Only the message tells them apart: a field the
+            // registry declares filterable is waiting for its index, so
+            // saying "not filterable" would contradict describeModel().
             throw new FieldNotFilterableException(
-                "Field '{$leaf->field->fieldName}' is not filterable on the active driver."
+                $leaf->field->descriptor?->isFilterable === true
+                    ? "Field '{$leaf->field->fieldName}' is declared filterable but is not indexed yet on the active driver."
+                        . ' Filter on it once describeModel() reports isIndexed.'
+                    : "Field '{$leaf->field->fieldName}' is not filterable on the active driver."
             );
         }
     }
