@@ -39,6 +39,26 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 - **A slot is left out, and compiles to the SQL it had before keys, when** the index map has no usable index on its key (a hidden one included), the key column is not a `VARBINARY`, or the dictionary's collation or width cannot be trusted. `StringKey::fromDictionary()` refuses a collation name that is not a plain identifier, because it ends up inside SQL.
 - **`stringKeys` is the last `SnapshotEntry` constructor parameter and defaults to empty.** Snapshots built by hand in the unit tests carry no key information and must keep compiling to the old SQL, so never make it required.
 
+## What a read costs in statements
+
+`ReadStatementCountTest` pins each list below by name, so a change to what a read sends shows up as a change to a list there. A warm read has the snapshot cached in this process (one `StarDust`, or one `EntryReader`). A cold read is the first in the process, or the first after the schema version moved.
+
+| Read, warm | Statements sent |
+| :-- | :-- |
+| no filter, sort or cursor | version check, probe, fetch (3) |
+| a filter of any number of leaves | the same three |
+| a field sort, no filter | the same three |
+| a cursor only | the same three |
+| the probe returns no ids | version check, probe (2), because the fetch is skipped |
+| point read, entry found or missing | the entry statement alone (1), with the version in its select list |
+
+A cold read adds the snapshot load: the model, fields and slots join, the page table names, the ordered indexes from `information_schema.STATISTICS`, and, only when a page has a string key column, the string keys from `information_schema.COLUMNS`. That is three more statements on a prefix page and four on a key page. A point read loads the snapshot only when the entry exists.
+
+Three things used to add statements to every warm read, and each is gone: a second version check inside the driver, one filterability query per filter leaf, and a separate version check in the point read. `ReadStatementCountTest`, `SnapshotCapabilityTest` and `PointReadVersionTest` are what fail if one comes back.
+
+- **Server detection and, on MariaDB, `SET SESSION max_sort_length`, are paid once per `StarDust` and are not counted.**
+- **Counting with the server counters needs care.** Under native prepares the server counts every statement that goes through PDO, `PDO::query()` included, as `Com_stmt_prepare`, `Com_stmt_execute` and `Com_stmt_close`, and a SELECT also adds `Com_select`. Under emulated prepares only `Com_select` moves. A harness that reads `SHOW STATUS` before and after adds one prepare, one execute and one close of its own under native prepares. The PHP-side recording connection in `tests/Smoke/Support/StatementRecordingPdo.php` is the instrument to trust, and the counters are a cross-check.
+
 ## Point read
 
 `EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013. It is one statement when the snapshot is warm: the schema version is selected in the same statement as the entry and handed to `SchemaVersionCache::snapshotForModelAt()`, so there is no version check of its own (see "`get()` and the ADR 0036 rename window" in `src/Search/CLAUDE.md`).
