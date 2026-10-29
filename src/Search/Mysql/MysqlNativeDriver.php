@@ -44,7 +44,9 @@ use StarDust\Support\UuidV4;
  *
  * {@see self::withVerifiedSnapshot()} returns a request-scoped copy whose
  * `list()` reads a snapshot the caller has already checked against the live
- * schema version, instead of checking it again.
+ * schema version, instead of checking it again. The copy also answers
+ * `supportsFilterOn()` and `supportsSortOn()` from that snapshot and sends no
+ * statement for them. The shared instance always asks the database.
  *
  * Strong consistency: every read sees every committed write
  * ({@see ConsistencyModel::STRONG}).
@@ -291,6 +293,19 @@ final class MysqlNativeDriver implements EntrySearchInterface
 
     public function supportsFilterOn(int $fieldId): bool
     {
+        // On the per-request copy the field is judged from the snapshot the
+        // request has just checked against the live schema version. That is
+        // the same rule as the query below, because the snapshot is loaded
+        // with the same join and `isIndexedNow()` applies the same two
+        // conditions, so a pre-flight over any number of leaves sends no
+        // statement. A field the snapshot does not carry (one being deleted,
+        // one of another model, an unknown id) falls through to the query.
+        // The shared instance has no snapshot and always asks the database.
+        $descriptor = $this->verified?->fieldById($fieldId);
+        if ($descriptor !== null) {
+            return $descriptor->isIndexedNow();
+        }
+
         $stmt = $this->pdo->prepare(
             'SELECT f.is_filterable AS is_filterable, a.status AS slot_status'
             . ' FROM stardust_fields f'

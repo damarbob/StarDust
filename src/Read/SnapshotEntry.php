@@ -23,6 +23,9 @@ final class SnapshotEntry
 {
     private readonly bool $renamesInFlight;
 
+    /** @var array<int, FieldDescriptor> fieldId → descriptor, for the fields in `$fieldsByName` */
+    private readonly array $fieldsById;
+
     /**
      * @param array<string, FieldDescriptor> $fieldsByName  fieldName → descriptor
      * @param array<int, string>             $pageTableNames pageId → `entry_slots_page_N`
@@ -68,21 +71,31 @@ final class SnapshotEntry
     ) {
         // Computed once here rather than memoised lazily: the snapshot
         // is immutable and cached per schema version, so the answer
-        // cannot change, and an eager bool keeps the DTO free of
+        // cannot change, and eager values keep the DTO free of
         // mutable state.
         $found = false;
+        $byId = [];
         foreach ($fieldsByName as $descriptor) {
-            if ($descriptor->isRenameInFlight()) {
-                $found = true;
-                break;
-            }
+            $found = $found || $descriptor->isRenameInFlight();
+            $byId[$descriptor->fieldId] = $descriptor;
         }
         $this->renamesInFlight = $found;
+        $this->fieldsById = $byId;
     }
 
     public function field(string $fieldName): ?FieldDescriptor
     {
         return $this->fieldsByName[$fieldName] ?? null;
+    }
+
+    /**
+     * The descriptor of a field by its id, or null when this snapshot does not
+     * carry it. A field being deleted is not carried (see `$fieldsByName`), and
+     * nor is a field of another model.
+     */
+    public function fieldById(int $fieldId): ?FieldDescriptor
+    {
+        return $this->fieldsById[$fieldId] ?? null;
     }
 
     /**
