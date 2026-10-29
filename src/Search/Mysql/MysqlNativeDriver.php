@@ -221,8 +221,13 @@ final class MysqlNativeDriver implements EntrySearchInterface
 
     public function get(int $tenantId, int $entryId): ?Entry
     {
+        // The live schema version rides in the same statement as the entry,
+        // as a constant lookup by primary key that is evaluated once, so the
+        // point read sends no version check of its own. A missing entry still
+        // costs this one statement and no more.
         $stmt = $this->pdo->prepare(
-            'SELECT id, tenant_id, model_id, created_at, deleted_at, fields'
+            'SELECT id, tenant_id, model_id, created_at, deleted_at, fields,'
+            . ' (SELECT version FROM stardust_schema_version WHERE id = 1) AS schema_version'
             . ' FROM entry_data'
             . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
@@ -248,16 +253,22 @@ final class MysqlNativeDriver implements EntrySearchInterface
         // physically present for the length of the purge. Without the
         // strip, get() would keep serving a field read() denies exists.
         //
-        // This costs a schema-version probe that get() did not
-        // previously pay, which is a deliberate trade: read() pays it on
-        // every call, ADR 0015 designs it to be sub-millisecond, and the
-        // rewrite itself is gated behind precomputed booleans so the
-        // steady state is a no-op.
-        $snapshot = $this->cache->snapshotForModel(
-            $modelId,
-            $tenantId,
-            UuidV4::generate(),
-        );
+        // The version that arrived with the entry is the one ADR 0015 asks
+        // every request to read, so a cached snapshot at that version is a
+        // hit and anything else is loaded and reported as a `cache_miss`,
+        // once. The rewrite itself is gated behind precomputed booleans, so
+        // the steady state is a no-op.
+        //
+        // A NULL version means the singleton row is missing, and falling
+        // back to the ordinary check raises the same error every other read
+        // raises. There is no bounded-staleness fallback on this path,
+        // because a failure of the combined statement leaves no entry to
+        // return.
+        $correlationId = UuidV4::generate();
+        $liveVersion   = $row['schema_version'];
+        $snapshot = $liveVersion === null
+            ? $this->cache->snapshotForModel($modelId, $tenantId, $correlationId)
+            : $this->cache->snapshotForModelAt($modelId, $tenantId, $correlationId, (int) $liveVersion);
         // ADR 0038, and this MUST come before the canonicalisation below
         // rather than being folded into it. A model deletion marks every
         // field, so `pendingDeletionNames` holds all of them and

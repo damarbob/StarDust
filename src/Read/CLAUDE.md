@@ -41,7 +41,7 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 
 ## Point read
 
-`EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013.
+`EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013. It is one statement when the snapshot is warm: the schema version is selected in the same statement as the entry and handed to `SchemaVersionCache::snapshotForModelAt()`, so there is no version check of its own (see "`get()` and the ADR 0036 rename window" in `src/Search/CLAUDE.md`).
 
 Because it returns the payload verbatim, it is the one read surface that would otherwise leak a key the registry has already severed. `SnapshotEntry::canonicalisePayloadKeys()` therefore does two jobs: it rewrites an in-flight rename's old key forward, and it strips an in-flight deletion's key outright. **Without the second, `get()` and `read()` would disagree about the same entry for the whole purge window** — the paginated read is driven by `fieldsByName`, which excludes the field, and the point read is not. `DeleteWindowTest::testPointReadAgreesWithPaginatedReadDuringTheWindow` pins it. Both halves are guarded by an eagerly-computed boolean so the steady-state cost stays at one check.
 

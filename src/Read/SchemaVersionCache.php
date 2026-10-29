@@ -24,6 +24,10 @@ use Psr\Log\LoggerInterface;
  * TTL during a probe failure surfaces the underlying exception rather
  * than serving silently stale data.
  *
+ * A caller that reads the version some other way can hand it to
+ * {@see self::snapshotForModelAt()} instead of paying for a probe. The point
+ * read does: it selects the version in the same statement as the entry.
+ *
  * The cache is per-instance (one cache per `EntryReader` lifetime).
  * It is not shared across PDO connections or processes — ADR 0015's
  * "database as sole coordination point" rule explicitly forbids

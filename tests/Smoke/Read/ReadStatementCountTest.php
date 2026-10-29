@@ -28,7 +28,8 @@ use StarDust\Tests\Smoke\Support\TestPdo;
  * A warm case reads once to fill the cache and counts the second read. A cold
  * case counts the first read in the process, which also loads the snapshot.
  *
- * - `version` is the schema-version check every read makes.
+ * - `version` is the schema-version check a read sends on its own. The point
+ *   read has none, because the version arrives inside its `entry` statement.
  * - `filterability` asks whether a field is filterable right now.
  * - `snapshot ...` is one statement of a snapshot load.
  * - `probe` and `fetch` are the two bounded-read queries.
@@ -205,7 +206,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
 
         $sent = $this->warm($engine, $pdo, static fn (StarDust $e) => $e->get(1, $ids[0]));
 
-        self::assertSame(['entry', 'version'], $sent);
+        self::assertSame(['entry'], $sent);
     }
 
     public function testPointReadOfAMissingEntryIsOneStatement(): void
@@ -265,10 +266,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
         $engine->get(1, $entryId);
 
         self::assertSame(
-            [
-                'entry', 'version',
-                'snapshot registry', 'snapshot pages', 'snapshot indexes', 'snapshot string keys',
-            ],
+            ['entry', 'snapshot registry', 'snapshot pages', 'snapshot indexes', 'snapshot string keys'],
             $this->sent($pdo),
         );
     }
