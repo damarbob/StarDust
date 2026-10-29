@@ -148,16 +148,16 @@ rows at the bottom tell you which stage is stuck.
 
 ## A note on the exception you will see
 
-In Act 1 the frame shows the real rejection, and it is
-`FieldNotFilterableException` — "Field 'sustainability' is not
-filterable on the active driver" — directly contradicting row 2, which
-reports the same field as filterable.
+In Act 1 the frame shows the real rejection. It is a
+`FieldNotFilterableException`, and its message says the field is
+declared filterable but not indexed yet, which agrees with row 2.
 
-Row 2 is right. The field is filterable; what it has not got yet is an
-indexed slot. `FieldNotIndexedException` exists for exactly this case
-and is what several docblocks say you will get, but nothing in the
-engine currently throws it. Catch `FieldNotFilterableException` for now,
-and do not read its message as authoritative about the registry.
+The engine raises the same exception for a field that is not
+filterable at all and for one that is still waiting for its slot, and
+only the message tells them apart. `FieldNotIndexedException` exists
+but the built-in engine never throws it, so catch
+`FieldNotFilterableException` and gate a filter control on
+`isIndexed`.
 
 ## Terminal notes
 

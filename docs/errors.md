@@ -10,8 +10,8 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `UncoercibleSlotValueException` | A first-write payload value cannot be coerced to its slot's declared type (the write path is fail-fast). |
 | `MalformedEntryPayloadException` | An array/JSON entry envelope passed to `EntryPayload::fromArray()` / `fromJson()` / `listFrom*()` is structurally invalid — missing or mistyped `tenantId`/`modelId`/`fields`, a non-map `fields`, unparseable JSON, or a wrong root. Carries the offending `$key`. |
 | `UnknownFieldException` | A filter or sort references a field absent from `stardust_fields`. |
-| `FieldNotFilterableException` | A filter targets a field the active driver reports as non-filterable (for the default MySQL driver, `is_filterable = false`). |
-| `FieldNotIndexedException` | A filter targets a field whose slot is `backfilling`, `tombstoned`, or unmapped. |
+| `FieldNotFilterableException` | A filter targets a field the active driver cannot filter on. For the default MySQL driver that is a field with `is_filterable = false`, and also a field declared filterable that has no usable index yet (no slot reserved, or the slot is `backfilling` or `tombstoned`). The message says which. In the second case `describeModel()` reports `isFilterable = true` and `isIndexed = false`, and the filter works once `isIndexed` turns true. |
+| `FieldNotIndexedException` | Not thrown by the built-in engine. A filter on a field that is declared filterable but not indexed yet raises `FieldNotFilterableException` instead, so catch that one. |
 | `FieldNotSortableException` | A `SortSpec` names a field that isn't currently indexed — the same requirement filtering has. `describeModel()`'s `indexedFields()` reports which fields qualify right now. |
 | `PageSizeOutOfRangeException` | `pageSize` is outside `[1, 1000]`. |
 | `InvalidCursorException` | An opaque cursor fails its structural decode, or is reused after its sort key or direction changed. |

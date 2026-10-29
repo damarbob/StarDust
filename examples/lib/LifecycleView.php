@@ -235,22 +235,9 @@ final class LifecycleView
             $lines[] = self::INDENT . $this->term->dim($line);
         }
 
-        // Row 2 says isFilterable YES; the exception says "not
-        // filterable". Both are the engine's own words, and a beginner
-        // reading them together will conclude they have found a bug in
-        // their own code. Name the contradiction rather than hide it.
-        if ($s->isFilterable && $s->probeError === 'FieldNotFilterableException') {
-            $lines[] = self::INDENT . $this->term->yellow(
-                'Note: that message contradicts row 2. The field IS'
-            );
-            $lines[] = self::INDENT . $this->term->yellow(
-                'filterable; what it has not got yet is an indexed slot.'
-            );
-            $lines[] = self::INDENT . $this->term->yellow(
-                'Nothing is wrong with your code.'
-            );
-        }
-
+        // The engine's message already says the field is declared
+        // filterable but not indexed yet, which agrees with row 2, so
+        // nothing needs explaining here.
         return $lines;
     }
 

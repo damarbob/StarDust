@@ -29,7 +29,7 @@ Seven methods:
 Four single-method visitors in fixed order:
 
 1. **`FieldRefResolver`** — resolves every leaf's `FieldRef` against the snapshot; raises `UnknownFieldException` with a `pre_flight_rejected` event.
-2. **`CapabilityChecker`** — checks `driver.supportedOperators()` then `driver.supportsFilterOn(fieldId)`. Raises `QueryFilterValidationException(capability_unsupported)` with a **distinct `capability_unsupported` event**, or `FieldNotFilterableException` for non-filterable fields.
+2. **`CapabilityChecker`** — checks `driver.supportedOperators()` then `driver.supportsFilterOn(fieldId)`. Raises `QueryFilterValidationException(capability_unsupported)` with a **distinct `capability_unsupported` event**, or `FieldNotFilterableException` when the driver answers "no", which covers both a field declared non-filterable and one declared filterable that has no usable slot yet (the message says which; `FieldNotIndexedException` is never thrown).
 3. **`ValueTypeValidator`** — per-leaf declared-type and bounds enforcement: string max 4096 chars, int signed-64-bit, numeric finite, datetime RFC 3339 with an explicit UTC offset. **It also normalises, which is why it returns a node rather than `void`** — see below.
 4. **`SortValidator`** (ADR 0041) — resolves the sort target, asks `driver.supportsSortOn()`, and checks the cursor was issued for this ordering. Raises `UnknownFieldException`, `FieldNotSortableException`, or `InvalidCursorException`, each with a `pre_flight_rejected` event carrying a new `reason` (`sort_field_unknown`, `sort_field_not_sortable`, `cursor_sort_mismatch`) — **`reason` values, not event names, so ADR 0020 is untouched**.
 
