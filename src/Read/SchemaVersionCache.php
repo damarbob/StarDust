@@ -53,8 +53,6 @@ final class SchemaVersionCache
      */
     public function snapshotForModel(int $modelId, int $tenantId, string $correlationId): SnapshotEntry
     {
-        $cached = $this->snapshotsByModel[$modelId] ?? null;
-
         try {
             $liveVersion = $this->readLiveVersion();
         } catch (PDOException $e) {
@@ -63,11 +61,35 @@ final class SchemaVersionCache
             // Beyond the TTL — or when nothing is cached — the read
             // path cannot proceed safely; surface the underlying
             // failure to the caller.
+            $cached = $this->snapshotsByModel[$modelId] ?? null;
             if ($cached !== null && (time() - $cached->capturedAtUnixTs) < self::TTL_SECONDS) {
                 return $cached;
             }
             throw $e;
         }
+
+        return $this->snapshotForModelAt($modelId, $tenantId, $correlationId, $liveVersion);
+    }
+
+    /**
+     * Returns the snapshot for `$modelId` as of a live schema version the
+     * caller has already read, refreshing it when that version is newer than
+     * the cached snapshot's.
+     *
+     * This is the half of {@see self::snapshotForModel()} that comes after
+     * the version probe: it sends no probe of its own, and it holds the
+     * compare, the load and the `cache_miss` event, so a refresh emits one
+     * event whichever way the version arrived. `$liveVersion` must be a value
+     * read from `stardust_schema_version` during the current request, never
+     * one remembered from an earlier request.
+     */
+    public function snapshotForModelAt(
+        int $modelId,
+        int $tenantId,
+        string $correlationId,
+        int $liveVersion,
+    ): SnapshotEntry {
+        $cached = $this->snapshotsByModel[$modelId] ?? null;
 
         if ($cached !== null && $cached->capturedAtVersion === $liveVersion) {
             return $cached;
