@@ -60,6 +60,8 @@ Top-level orchestrator, and the single path for `search()`, `read()`, and `get()
 
 **The pre-flight gate is `filter !== null || sort !== null || cursor !== null`**, widened from filter-only by ADR 0041. The old condition let a match-all sorted read skip pre-flight entirely — no field resolution, no capability check, no cursor/sort agreement check — which is exactly the shape a "newest first" listing takes.
 
+**The built-in driver is handed the snapshot it was about to look up again.** When the gate is open, `SearchService` resolves the snapshot once (one schema-version check). For a `MysqlNativeDriver` it then calls `withVerifiedSnapshot($snapshot)`, which returns a copy of the driver for this request, and pre-flight and `list()` both run against the copy. The copy's `list()` reads the carried snapshot instead of sending a second version check, so pre-flight and the query can no longer see two different snapshots if the version moves between them. The shared driver instance is never modified: a direct `list()` on it still checks the version, and a custom driver is called exactly as before. `lastCompileStrategy()` is read from the copy for that request. A request that skips the gate sends its one version check from the driver's own `list()`.
+
 ## `Mysql/MysqlNativeDriver`
 
 Wraps Phase 4's collaborators (`SchemaVersionCache`, `PaginatedProbe`, `BoundedFetch`, `ResultAssembler`).
@@ -67,6 +69,8 @@ Wraps Phase 4's collaborators (`SchemaVersionCache`, `PaginatedProbe`, `BoundedF
 `supportsFilterOn(fieldId)` runs a small `JOIN stardust_slot_assignments` lookup, returning `FieldDescriptor::isIndexedNow()` — so MySQL's `is_filterable` semantics stay on the driver, where ADR 0022 places them rather than in the shared pipeline. `supportsSortOn()` delegates to it: on MySQL both questions reduce to "the field has a live indexed slot".
 
 `list()` encodes its next-page token with `CursorCodec::encodeFor($request->sort, …)`, so the token records the ordering it was issued under. A null sort still emits the v1 format.
+
+`withVerifiedSnapshot(SnapshotEntry)` is a concrete method of this class and not part of `EntrySearchInterface`. It returns a `clone` that stores the snapshot in a private property, and `list()` on the clone uses it when its model id matches the request. The copy is correct for the schema version it was checked against and for nothing later, so it must not outlive the request. It exists so that `SearchService` sends one version check per filtered read, and it is why `SearchService` special-cases this class, as it already does for `lastCompileStrategy()`.
 
 ## `Mysql/SqlFilterCompiler`
 
@@ -128,7 +132,7 @@ The point read returns the payload verbatim, so during a rename backfill it woul
 
 `MysqlNativeDriver::list()` returns an empty `SearchResult` and `get()` returns `null` when the snapshot carries `isModelDeleting()`. Both checks live in the driver rather than in `SearchService` or the pre-flight, for two structural reasons:
 
-- **`SearchService` resolves the snapshot only when `filter !== null`.** A match-all read would sail straight past a check placed there. The driver resolves it unconditionally, so one site covers filtered and unfiltered alike.
+- **`SearchService` resolves the snapshot only when there is a filter, a sort or a cursor.** A plain match-all read would sail straight past a check placed there. The driver resolves it unconditionally, so one site covers filtered and unfiltered alike.
 - **`get()` bypasses `SearchService` entirely.** Putting the check in the driver is what keeps `get()` and `list()` agreeing, which is the invariant `DeleteWindowTest` already pins for fields.
 
 In `get()` the check must come **before** `canonicalisePayloadKeys()`, not be folded into it: a model deletion marks every field, so the canonicaliser would strip every key and hand back a real `Entry` with a real id and `fields: []` — a positive existence claim, worse than the leak it was meant to prevent.

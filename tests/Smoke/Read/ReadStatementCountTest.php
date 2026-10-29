@@ -129,7 +129,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
 
         $sent = $this->warm($engine, $pdo, static fn (StarDust $e) => $e->read($query));
 
-        self::assertSame(['version', 'filterability', 'version', 'probe', 'fetch'], $sent);
+        self::assertSame(['version', 'filterability', 'probe', 'fetch'], $sent);
     }
 
     public function testWarmReadWithThreeFilterLeaves(): void
@@ -148,10 +148,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
 
         $sent = $this->warm($engine, $pdo, static fn (StarDust $e) => $e->read($query));
 
-        self::assertSame(
-            ['version', 'filterability', 'filterability', 'filterability', 'version', 'probe', 'fetch'],
-            $sent,
-        );
+        self::assertSame(['version', 'filterability', 'filterability', 'filterability', 'probe', 'fetch'], $sent);
     }
 
     public function testWarmReadSortedByAFieldWithNoFilter(): void
@@ -162,7 +159,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
 
         $sent = $this->warm($engine, $pdo, static fn (StarDust $e) => $e->read($query));
 
-        self::assertSame(['version', 'filterability', 'version', 'probe', 'fetch'], $sent);
+        self::assertSame(['version', 'filterability', 'probe', 'fetch'], $sent);
     }
 
     public function testWarmReadWithACursorOnly(): void
@@ -173,7 +170,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
 
         $sent = $this->warm($engine, $pdo, static fn (StarDust $e) => $e->read($query));
 
-        self::assertSame(['version', 'version', 'probe', 'fetch'], $sent);
+        self::assertSame(['version', 'probe', 'fetch'], $sent);
     }
 
     public function testWarmReadWithNoFilterSortOrCursorSkipsPreFlight(): void
@@ -198,7 +195,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
 
         $sent = $this->warm($engine, $pdo, static fn (StarDust $e) => $e->read($query));
 
-        self::assertSame(['version', 'filterability', 'version', 'probe'], $sent);
+        self::assertSame(['version', 'filterability', 'probe'], $sent);
     }
 
     public function testWarmPointRead(): void
@@ -235,7 +232,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
             [
                 'version',
                 'snapshot registry', 'snapshot pages', 'snapshot indexes',
-                'filterability', 'version', 'probe', 'fetch',
+                'filterability', 'probe', 'fetch',
             ],
             $this->sent($pdo),
         );
@@ -253,7 +250,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
             [
                 'version',
                 'snapshot registry', 'snapshot pages', 'snapshot indexes', 'snapshot string keys',
-                'filterability', 'version', 'probe', 'fetch',
+                'filterability', 'probe', 'fetch',
             ],
             $this->sent($pdo),
         );

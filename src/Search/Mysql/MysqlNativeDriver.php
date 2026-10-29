@@ -17,6 +17,7 @@ use StarDust\Read\EntryQuery;
 use StarDust\Read\PaginatedProbe;
 use StarDust\Read\ResultAssembler;
 use StarDust\Read\SchemaVersionCache;
+use StarDust\Read\SnapshotEntry;
 use StarDust\Search\ConsistencyModel;
 use StarDust\Search\EntrySearchInterface;
 use StarDust\Search\SearchRequest;
@@ -41,12 +42,22 @@ use StarDust\Support\UuidV4;
  * `assigned` or `ready` status — the same definition used by
  * {@see \StarDust\Read\FieldDescriptor::isIndexedNow()}.
  *
+ * {@see self::withVerifiedSnapshot()} returns a request-scoped copy whose
+ * `list()` reads a snapshot the caller has already checked against the live
+ * schema version, instead of checking it again.
+ *
  * Strong consistency: every read sees every committed write
  * ({@see ConsistencyModel::STRONG}).
  */
 final class MysqlNativeDriver implements EntrySearchInterface
 {
     private string $lastCompileStrategy = 'joins';
+
+    /**
+     * Set only on the copy {@see self::withVerifiedSnapshot()} returns, which
+     * lives for one request. The shared instance never carries one.
+     */
+    private ?SnapshotEntry $verified = null;
 
     private readonly SqlFilterCompiler $compiler;
     private readonly PaginatedProbe $probe;
@@ -114,13 +125,36 @@ final class MysqlNativeDriver implements EntrySearchInterface
         $this->assembler = $assembler ?? new ResultAssembler();
     }
 
+    /**
+     * A copy of this driver for one request, carrying a snapshot the caller
+     * has just checked against the live schema version.
+     *
+     * {@see self::list()} on the copy reads that snapshot instead of checking
+     * the version a second time, so the pre-flight that resolved the snapshot
+     * and the query that follows it work from the same one, and the request
+     * sends one version check. The copy shares everything else with this
+     * instance and is meant to be dropped when the request ends.
+     *
+     * `SearchService` is the intended caller. The shared instance keeps
+     * checking the version on every `list()`, as before.
+     */
+    public function withVerifiedSnapshot(SnapshotEntry $snapshot): self
+    {
+        $copy = clone $this;
+        $copy->verified = $snapshot;
+
+        return $copy;
+    }
+
     public function list(SearchRequest $request): SearchResult
     {
-        $snapshot = $this->cache->snapshotForModel(
-            $request->modelId,
-            $request->tenantId,
-            $request->correlationId,
-        );
+        $snapshot = $this->verified !== null && $this->verified->modelId === $request->modelId
+            ? $this->verified
+            : $this->cache->snapshotForModel(
+                $request->modelId,
+                $request->tenantId,
+                $request->correlationId,
+            );
 
         // ADR 0038: the read surfaces go DARK for a model being deleted —
         // an empty page, indistinguishable from a model that never
@@ -129,8 +163,9 @@ final class MysqlNativeDriver implements EntrySearchInterface
         //
         // This belongs here rather than in `SearchService` or the
         // pre-flight, and the reason is structural: `SearchService`
-        // resolves the snapshot only when `filter !== null`, so a
-        // match-all read would sail straight past a check placed there.
+        // resolves the snapshot only when there is a filter, a sort or a
+        // cursor, so a plain match-all read would sail straight past a
+        // check placed there.
         // The driver resolves it unconditionally, so this one site covers
         // filtered and unfiltered alike — and covers `read()`, which is a
         // façade over exactly this call.
@@ -306,7 +341,10 @@ final class MysqlNativeDriver implements EntrySearchInterface
     /**
      * Exposed for `SearchService::execute()` so the `search_request`
      * event can carry the chosen compile strategy (`joins` or
-     * `exists`). Reset on every `list()` call.
+     * `exists`). Reset on every `list()` call. A filtered, sorted or cursor
+     * read goes through the per-request copy, so the service reads it from
+     * that copy, and the shared instance keeps the strategy of its own last
+     * `list()`.
      */
     public function lastCompileStrategy(): string
     {
