@@ -65,7 +65,7 @@ foreach ($company?->fields ?? [] as $field) {
 $company?->indexedFields();
 ```
 
-Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
+Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and for a newly registered filterable field until its first write has been processed by a running Reconciler, which is when the field gets its slot. A filter on such a field is rejected with `FieldNotFilterableException` until then, even on a model with no entries. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
 The daemons, exports, model deletion, index headroom, and the combined tick are tuned through 46 optional `Config` parameters:
 
