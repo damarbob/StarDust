@@ -1,23 +1,33 @@
 {
     "name": "damarbob/stardust",
-    "description": "MySQL & MariaDB-native, framework-neutral Vertical Schema Partitioning engine for dynamic data models. Zero runtime framework dependencies.",
+    "description": "Filterable user-defined fields for PHP on MySQL and MariaDB. Records are stored as JSON, and filterable fields are mirrored into indexed columns.",
     "type": "library",
     "license": "MIT",
     "keywords": [
-        "stardust",
+        "custom-fields",
+        "user-defined-fields",
+        "dynamic-fields",
+        "eav",
+        "multi-tenant",
+        "saas",
         "mysql",
         "mariadb",
-        "schema-partitioning",
-        "dynamic-fields",
         "json",
-        "vertical-partitioning"
+        "vertical-partitioning",
+        "stardust"
     ],
+    "homepage": "https://stardust.konstelasi.co.id",
     "authors": [
         {
             "name": "Damar Syah Maulana",
             "email": "ibn.damr@gmail.com"
         }
     ],
+    "support": {
+        "issues": "https://github.com/damarbob/StarDust/issues",
+        "docs": "https://stardust.konstelasi.co.id/docs/",
+        "source": "https://github.com/damarbob/StarDust"
+    },
     "require": {
         "php": "^8.1",
         "ext-pdo": "*",
