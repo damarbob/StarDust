@@ -22,7 +22,7 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 
 ## The snapshot also records which indexes keep `entry_id` order
 
-`SnapshotEntry::$orderedIndexes` (pageId → slotColumn → index name, read through `orderedIndexFor()`) is what lets `SqlFilterCompiler` drive a filtered default-order read from a slot index (see "Driving leaf" in `src/Search/CLAUDE.md`). `SlotResolver::resolveOrderedIndexes()` fills it from `information_schema.STATISTICS`, and the rules for what qualifies are in its docblock and pinned by `OrderedIndexResolutionTest`.
+`SnapshotEntry::orderedIndexMap()` (pageId → slotColumn → index name, read one column at a time through `orderedIndexFor()`) is what lets `SqlFilterCompiler` drive a filtered default-order read from a slot index (see "Driving leaf" in `src/Search/CLAUDE.md`). `DictionaryMaps::orderedIndexes()` fills it from `information_schema.STATISTICS`, and the rules for what qualifies are in the docblock of `DictionaryMaps::readOrderedIndexes()` and pinned by `OrderedIndexResolutionTest`.
 
 - **The name always comes from the dictionary, never from the `ix_{table}_{column}` convention.** A page from before ADR 0043, or an index an operator added, may be named anything, and a hint naming an index that does not exist fails the read with errno 1176 where a missing hint only slows it.
 - **It costs one query on a snapshot refresh and nothing on a warm read**, because the snapshot is cached per schema version. Anything that counts metadata round trips per read should count it as part of the refresh, not per call.
@@ -31,13 +31,13 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 
 ## The snapshot also records which string slots have a key
 
-`SnapshotEntry::$stringKeys` (pageId → slotColumn → `StringKey`, read through `stringKeyFor()`) says how a string slot is looked up through its generated key (ADR 0057): the key column, the index over it, the head width and the slot's collation. `SlotResolver::resolveStringKeys()` fills it. The compiler builds a key lookup from these four facts and never from a constant, because a page keeps the head it was built with.
+`SnapshotEntry::stringKeyMap()` (pageId → slotColumn → `StringKey`, read through `stringKeyFor()`) says how a string slot is looked up through its generated key (ADR 0057): the key column, the index over it, the head width and the slot's collation. `DictionaryMaps::stringKeys()` fills it. The compiler builds a key lookup from these four facts and never from a constant, because a page keeps the head it was built with.
 
 - **A page's shape comes from its table definition, never from a registry column.** The table is the only fact. A crash between a page's `CREATE TABLE` and the registry transaction can leave an orphan table that a later provisioning reuses by name, so a flag could name a shape the table does not have and the compiler would name a column that is not there. ADR 0043 rejected a persisted `is_indexed` for the same reason.
 - **A key column qualifies for `orderedIndexes` as it stands, under its own name.** The slot `i_str_01` is in no index on a key page, so `orderedIndexFor($pageId, 'i_str_01')` is null there and `orderedIndexFor($pageId, 'i_str_01_k')` is the index.
 - **The extra query runs only when that map holds a key column.** That is one `information_schema.COLUMNS` read per cold refresh for a model on key pages, and none for a model on prefix pages. `StringKeyResolutionTest` counts it.
 - **A slot is left out, and compiles to the SQL it had before keys, when** the index map has no usable index on its key (a hidden one included), the key column is not a `VARBINARY`, or the dictionary's collation or width cannot be trusted. `StringKey::fromDictionary()` refuses a collation name that is not a plain identifier, because it ends up inside SQL.
-- **`stringKeys` is the last `SnapshotEntry` constructor parameter and defaults to empty.** Snapshots built by hand in the unit tests carry no key information and must keep compiling to the old SQL, so never make it required.
+- **`orderedIndexes`, `stringKeys` and then `dictionary` are the last `SnapshotEntry` constructor parameters, and all three default to empty or null.** A snapshot built by hand passes the two arrays and no loader. One loaded from the database passes the `DictionaryMaps` loader and leaves the arrays empty. That is why the arrays are private and everything reads the maps through `orderedIndexMap()` and `stringKeyMap()`: a test that read the array of a loaded snapshot would see an empty one and pass for the wrong reason. Hand-built snapshots must keep compiling to the old SQL, so never make any of the three required.
 
 ## What a read costs in statements
 

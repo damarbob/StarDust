@@ -57,6 +57,13 @@ final class SnapshotEntry
      *                                       compiler then keeps the SQL the slot had before
      *                                       keys. Appended last with a default, so a snapshot
      *                                       built by hand carries none.
+     * @param ?DictionaryMaps                $dictionary where a snapshot loaded from the
+     *                                       database gets the two maps above. When it is given
+     *                                       the arrays are ignored, and the maps are read
+     *                                       through {@see self::orderedIndexMap()} and
+     *                                       {@see self::stringKeyMap()}, never from the
+     *                                       properties, which a hand-built snapshot fills and
+     *                                       a loaded one leaves empty.
      */
     public function __construct(
         public readonly int $modelId,
@@ -66,8 +73,9 @@ final class SnapshotEntry
         public readonly array $pageTableNames,
         public readonly array $pendingDeletionNames = [],
         public readonly bool $modelDeleted = false,
-        public readonly array $orderedIndexes = [],
-        public readonly array $stringKeys = [],
+        private readonly array $orderedIndexes = [],
+        private readonly array $stringKeys = [],
+        private readonly ?DictionaryMaps $dictionary = null,
     ) {
         // Computed once here rather than memoised lazily: the snapshot
         // is immutable and cached per schema version, so the answer
@@ -109,7 +117,7 @@ final class SnapshotEntry
      */
     public function orderedIndexFor(int $pageId, string $slotColumn): ?string
     {
-        return $this->orderedIndexes[$pageId][$slotColumn] ?? null;
+        return $this->orderedIndexMap()[$pageId][$slotColumn] ?? null;
     }
 
     /**
@@ -119,7 +127,31 @@ final class SnapshotEntry
      */
     public function stringKeyFor(int $pageId, string $slotColumn): ?StringKey
     {
-        return $this->stringKeys[$pageId][$slotColumn] ?? null;
+        return $this->stringKeyMap()[$pageId][$slotColumn] ?? null;
+    }
+
+    /**
+     * Every index this snapshot knows that returns a slot column in `entry_id`
+     * order, as pageId → slotColumn → index name. Tests read the whole map
+     * through this, and the compiler asks one column at a time through
+     * {@see self::orderedIndexFor()}.
+     *
+     * @return array<int, array<string, string>>
+     */
+    public function orderedIndexMap(): array
+    {
+        return $this->dictionary?->orderedIndexes() ?? $this->orderedIndexes;
+    }
+
+    /**
+     * Every string slot this snapshot knows a key for, as pageId → slotColumn →
+     * key. The counterpart of {@see self::orderedIndexMap()}.
+     *
+     * @return array<int, array<string, StringKey>>
+     */
+    public function stringKeyMap(): array
+    {
+        return $this->dictionary?->stringKeys() ?? $this->stringKeys;
     }
 
     /**

@@ -79,7 +79,7 @@ final class StringKeyResolutionTest extends WritePathTestCase
         $snapshot = $this->load($modelId);
 
         self::assertNull($snapshot->stringKeyFor($pageId, 'i_str_01'));
-        self::assertSame([], $snapshot->stringKeys);
+        self::assertSame([], $snapshot->stringKeyMap());
     }
 
     public function testALegacyPageResolvesNoKey(): void
@@ -88,7 +88,7 @@ final class StringKeyResolutionTest extends WritePathTestCase
         $modelId = $this->createModel();
         $this->forceGrandfatheredSlotFor($this->createField($modelId, 'string', false, 'a'));
 
-        self::assertSame([], $this->load($modelId)->stringKeys);
+        self::assertSame([], $this->load($modelId)->stringKeyMap());
         self::assertNotNull($pageId);
     }
 
@@ -134,7 +134,7 @@ final class StringKeyResolutionTest extends WritePathTestCase
 
         self::assertNull($snapshot->stringKeyFor($prefixPage, 'i_str_01'));
         self::assertNotNull($snapshot->stringKeyFor($keyPage, 'i_str_01'));
-        self::assertSame([$keyPage], array_keys($snapshot->stringKeys));
+        self::assertSame([$keyPage], array_keys($snapshot->stringKeyMap()));
     }
 
     /**

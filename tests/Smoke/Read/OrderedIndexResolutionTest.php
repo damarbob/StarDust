@@ -65,7 +65,7 @@ final class OrderedIndexResolutionTest extends WritePathTestCase
         self::assertNull($snapshot->orderedIndexFor($pageId, 'i_int_01'));
         // The whole map, because a wrongly accepted index would register
         // under the other column name (`tenant_id`), not under the slot.
-        self::assertSame([], $snapshot->orderedIndexes);
+        self::assertSame([], $snapshot->orderedIndexMap());
     }
 
     public function testALongerIndexResolvesNothing(): void
@@ -145,7 +145,7 @@ final class OrderedIndexResolutionTest extends WritePathTestCase
 
         $snapshot = SlotResolver::load($this->pdo, $modelId, 1);
 
-        self::assertSame([], $snapshot->orderedIndexes);
+        self::assertSame([], $snapshot->orderedIndexMap());
         self::assertNull($snapshot->orderedIndexFor(1, 'i_int_01'));
     }
 
