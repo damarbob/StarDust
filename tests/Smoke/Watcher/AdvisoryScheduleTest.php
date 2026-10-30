@@ -17,6 +17,7 @@ use StarDust\Watcher\CapacityReporter;
 use StarDust\Watcher\CardinalitySampler;
 use StarDust\Watcher\PendingDemandReader;
 use StarDust\Watcher\Watcher;
+use StarDust\Tests\Smoke\Support\TestPdo;
 
 /**
  * ADR 0052 — the advisory schedule is persisted, so it survives a
@@ -387,10 +388,7 @@ final class AdvisoryScheduleTest extends Phase5TestCase
             self::markTestSkipped('STARDUST_TEST_DSN / STARDUST_TEST_USER not set.');
         }
 
-        return new PDO($dsn, $user, $pass === false ? '' : $pass, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_EMULATE_PREPARES => false,
-        ]);
+        return new PDO($dsn, $user, $pass === false ? '' : $pass, TestPdo::options());
     }
 
     /**

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace StarDust\Read;
 
+use StarDust\Support\StringKeyLayout;
+
 /**
  * Per-model snapshot of registry state, served from {@see SchemaVersionCache}.
  *
@@ -23,6 +25,9 @@ final class SnapshotEntry
 {
     private readonly bool $renamesInFlight;
 
+    /** @var array<int, FieldDescriptor> fieldId → descriptor, for the fields in `$fieldsByName` */
+    private readonly array $fieldsById;
+
     /**
      * @param array<string, FieldDescriptor> $fieldsByName  fieldName → descriptor
      * @param array<int, string>             $pageTableNames pageId → `entry_slots_page_N`
@@ -38,6 +43,29 @@ final class SnapshotEntry
      *                                       a model registered with no fields is legal, and a
      *                                       `modelId` with no registry row at all must read
      *                                       `false` here, not `true`.
+     * @param array<int, array<string, string>> $orderedIndexes pageId → slotColumn →
+     *                                       the name of a full-width `(tenant_id, slotColumn)`
+     *                                       index on that page, as found in the data
+     *                                       dictionary. Such an index returns equal values
+     *                                       in `entry_id` order, which is what lets a
+     *                                       filtered default-order read stop after one page.
+     *                                       Empty when none was found, and the compiler then
+     *                                       keeps its ordinary shape.
+     * @param array<int, array<string, StringKey>> $stringKeys pageId → slotColumn →
+     *                                       how to look that string slot up through its
+     *                                       generated key (ADR 0057). Empty for a slot on a
+     *                                       prefix page, on a page from before ADR 0043 or
+     *                                       behind an index the optimiser skips, and the
+     *                                       compiler then keeps the SQL the slot had before
+     *                                       keys. Appended last with a default, so a snapshot
+     *                                       built by hand carries none.
+     * @param ?DictionaryMaps                $dictionary where a snapshot loaded from the
+     *                                       database gets the two maps above. When it is given
+     *                                       the arrays are ignored, and the maps are read
+     *                                       through {@see self::orderedIndexMap()} and
+     *                                       {@see self::stringKeyMap()}, never from the
+     *                                       properties, which a hand-built snapshot fills and
+     *                                       a loaded one leaves empty.
      */
     public function __construct(
         public readonly int $modelId,
@@ -47,24 +75,94 @@ final class SnapshotEntry
         public readonly array $pageTableNames,
         public readonly array $pendingDeletionNames = [],
         public readonly bool $modelDeleted = false,
+        private readonly array $orderedIndexes = [],
+        private readonly array $stringKeys = [],
+        private readonly ?DictionaryMaps $dictionary = null,
     ) {
         // Computed once here rather than memoised lazily: the snapshot
         // is immutable and cached per schema version, so the answer
-        // cannot change, and an eager bool keeps the DTO free of
+        // cannot change, and eager values keep the DTO free of
         // mutable state.
         $found = false;
+        $byId = [];
         foreach ($fieldsByName as $descriptor) {
-            if ($descriptor->isRenameInFlight()) {
-                $found = true;
-                break;
-            }
+            $found = $found || $descriptor->isRenameInFlight();
+            $byId[$descriptor->fieldId] = $descriptor;
         }
         $this->renamesInFlight = $found;
+        $this->fieldsById = $byId;
     }
 
     public function field(string $fieldName): ?FieldDescriptor
     {
         return $this->fieldsByName[$fieldName] ?? null;
+    }
+
+    /**
+     * The descriptor of a field by its id, or null when this snapshot does not
+     * carry it. A field being deleted is not carried (see `$fieldsByName`), and
+     * nor is a field of another model.
+     */
+    public function fieldById(int $fieldId): ?FieldDescriptor
+    {
+        return $this->fieldsById[$fieldId] ?? null;
+    }
+
+    /**
+     * The index a read may name in a `FORCE INDEX` hint to walk `$slotColumn`
+     * of `$pageId` in `entry_id` order, or null when the dictionary showed none.
+     *
+     * The name always comes from the dictionary and is never built from the
+     * `ix_{table}_{column}` convention: pages from before ADR 0043 and
+     * indexes an operator added may not carry that name, and a hint naming
+     * a missing index fails the read (errno 1176) instead of slowing it.
+     */
+    public function orderedIndexFor(int $pageId, string $slotColumn): ?string
+    {
+        return $this->orderedIndexMap()[$pageId][$slotColumn] ?? null;
+    }
+
+    /**
+     * How `$slotColumn` of `$pageId` is looked up through its generated key,
+     * or null when the page does not index it that way. A null means the slot
+     * keeps the SQL it had before keys (ADR 0057).
+     *
+     * The compiler asks this for every leaf of a filter, so a column that is
+     * not a string slot is answered here without reading either map. Only a
+     * string slot can have a key, and for any other leaf the data dictionary
+     * would be queried for nothing.
+     */
+    public function stringKeyFor(int $pageId, string $slotColumn): ?StringKey
+    {
+        if (! StringKeyLayout::isStringSlot($slotColumn)) {
+            return null;
+        }
+
+        return $this->stringKeyMap()[$pageId][$slotColumn] ?? null;
+    }
+
+    /**
+     * Every index this snapshot knows that returns a slot column in `entry_id`
+     * order, as pageId → slotColumn → index name. Tests read the whole map
+     * through this, and the compiler asks one column at a time through
+     * {@see self::orderedIndexFor()}.
+     *
+     * @return array<int, array<string, string>>
+     */
+    public function orderedIndexMap(): array
+    {
+        return $this->dictionary?->orderedIndexes() ?? $this->orderedIndexes;
+    }
+
+    /**
+     * Every string slot this snapshot knows a key for, as pageId → slotColumn →
+     * key. The counterpart of {@see self::orderedIndexMap()}.
+     *
+     * @return array<int, array<string, StringKey>>
+     */
+    public function stringKeyMap(): array
+    {
+        return $this->dictionary?->stringKeys() ?? $this->stringKeys;
     }
 
     /**

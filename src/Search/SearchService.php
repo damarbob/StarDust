@@ -26,7 +26,8 @@ use StarDust\Support\UuidV4;
  *      throws typed exceptions on rejection (Phase 8 wire-format
  *      blueprint §4.7).
  *   4. Hand the resolved filter to the active driver and capture the
- *      result.
+ *      result. The built-in MySQL driver is handed the snapshot from step
+ *      2, so the request sends one schema-version check and not two.
  *   5. Emit one `search_request` event carrying latency, row count,
  *      whether a next page exists, the tree node count, and the
  *      compile strategy ('joins' or 'exists') so operators can spot
@@ -55,6 +56,7 @@ final class SearchService
         $request = $request->withCorrelationId($correlationId);
 
         $startedAt = hrtime(true);
+        $driver = $this->driver;
 
         // The snapshot is resolved when there is a filter OR a sort OR a
         // cursor. The filter-only condition this replaces would have let
@@ -69,11 +71,19 @@ final class SearchService
                 $correlationId,
             );
 
+            // The built-in driver is handed the snapshot it would otherwise
+            // look up again, so the request sends one version check and
+            // pre-flight and the query work from the same snapshot. A custom
+            // driver is left as it was.
+            if ($driver instanceof Mysql\MysqlNativeDriver) {
+                $driver = $driver->withVerifiedSnapshot($snapshot);
+            }
+
             if ($request->filter !== null) {
                 $resolved = $this->preFlight->validate(
                     $request->filter,
                     $snapshot,
-                    $this->driver,
+                    $driver,
                     $request->tenantId,
                     $correlationId,
                 );
@@ -84,13 +94,13 @@ final class SearchService
                 $request->sort,
                 $request->cursor,
                 $snapshot,
-                $this->driver,
+                $driver,
                 $request->tenantId,
                 $correlationId,
             );
         }
 
-        $result = $this->driver->list($request);
+        $result = $driver->list($request);
 
         $latencyMs = (int) ((hrtime(true) - $startedAt) / 1_000_000);
         $this->logger->info('search executed', [
@@ -104,8 +114,8 @@ final class SearchService
             'rows_returned'    => count($result->rows),
             'has_more'         => $result->nextCursor !== null,
             'tree_node_count'  => $this->nodeCount($request->filter),
-            'compile_strategy' => $this->driver instanceof Mysql\MysqlNativeDriver
-                ? $this->driver->lastCompileStrategy()
+            'compile_strategy' => $driver instanceof Mysql\MysqlNativeDriver
+                ? $driver->lastCompileStrategy()
                 : 'driver_specific',
         ]);
 

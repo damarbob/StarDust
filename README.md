@@ -121,7 +121,8 @@ Every entry's full payload is stored as JSON in `entry_data`. That's the system 
    │     7     │  "Acme"  │   340    │                           │
    │           │ (name)   │(employees)                           │
    └─────────────────────────────────────────────────────────────┘
-        ▲ composite index (tenant_id, i_str_01), (tenant_id, i_int_01), …
+        ▲ composite index (tenant_id, i_str_01_k), (tenant_id, i_int_01), …
+          (i_str_01_k is a key the database computes from i_str_01)
 
    "city" was never made filterable → it never occupies a slot
    column at all. It lives in JSON only: still readable, just not
@@ -184,7 +185,7 @@ Some vocabulary here is specific to StarDust, such as *slot*, *page*, *spread* a
 - The **slot and page system** allocates `entry_slots_page_N` extension pages automatically, indexes them according to each field's `is_filterable` flag, and reserves free slots atomically. Reservation keeps a model's filterable fields together on as few pages as it can, so filtered queries stay at fewer joins as a model grows.
 - **Writes** come in three forms: single-entry, synchronous chunked bulk (≤ 1 000 per call), and async submission for larger batches. They stay available even when slot capacity is exhausted. The value still lands in the JSON payload and is queued for backfill.
 - **Entry updates and deletes.** `updateEntry()` replaces an entry's fields wholesale, rewriting both the JSON payload and the indexed slot columns, and clearing the slot of any field the new payload omits so a filter can never match a stale value. `deleteEntry()` soft-deletes: one timestamp, after which the entry is gone from reads, filters, point-reads, and exports alike.
-- **Reads** are cursor-paginated two-query bounded reads, with tenant-isolated SQL on every `WHERE` and `JOIN` and an in-process schema-version cache.
+- **Reads** are cursor-paginated two-query bounded reads, with tenant-isolated SQL on every `WHERE` and `JOIN` and an in-process schema-version cache. An equality on an integer, numeric or datetime field, or on a text field on a newer page, examines about one page of rows however many entries match.
 - **Search** goes through a unified `search()` surface. The JSON wire format is decoded into a closed filter AST (twelve operators, full AND/OR/NOT), and the filter tree passes three pre-flight validation stages (field resolution, capability, value type) plus a fourth that validates the sort key and cursor agreement. The driver is swappable. The built-in native driver keeps pure-AND filters on indexed joins and switches to `EXISTS` subqueries for OR/NOT, and you can inject your own to delegate to an external search service.
 - **Background daemons** (all runnable via `bin/stardust`). The **Watcher** keeps slot capacity provisioned and indexes each new page for the fields currently waiting on one. The **Reconciler** drains six work sources (sync queue, async imports, retype backfills, rename rewrites, field-deletion purges, and model-deletion purges) and claims a slot for any filterable field still waiting on one. It also has a dead-letter queue with operator replay, and it recovers import jobs abandoned by a crashed worker, resuming from the last committed checkpoint. The **Liberator** reclaims tombstoned slots, and the **Chronicler** streams CSV/JSON exports to disk.
 - **Field lifecycle.** Online field retype, and filterability promotion and demotion, go through a type-coercion matrix, with JSON-payload fallback throughout the backfill window. Demotion is registry-only and takes effect immediately: the slot is tombstoned for the Liberator to reclaim, and reads fall straight back to the payload.
@@ -250,8 +251,9 @@ A minimal end-to-end walkthrough: bootstrap the schema, define a model, make its
 use StarDust\Config\Config;
 use StarDust\StarDust;
 
-// Both attributes are required: with emulated prepares (PHP's default)
-// the first read fails with a MySQL syntax error. See docs/configuration.md.
+// ERRMODE_EXCEPTION is required. Emulated prepares work too (PHP's
+// default); native ones are what this walkthrough and the test suite use
+// by default. See docs/configuration.md.
 $pdo = new PDO('mysql:host=127.0.0.1;dbname=app', $user, $pass, [
     PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_EMULATE_PREPARES => false,
@@ -280,9 +282,9 @@ $modelId = $company->modelId;
 
 Registering a field records *intent*. The field becomes filterable once its value lands in an indexed slot column.
 
-**In a running deployment this is automatic.** The Watcher notices fields waiting on a slot and provisions pages indexed for them, and the Reconciler then claims a slot for any registered filterable field it finds still unmapped while draining the sync queue. Write an entry touching the field and it becomes queryable a moment later, without you reserving anything.
+**In a running deployment this is automatic.** The Watcher notices fields waiting on a slot and provisions pages indexed for them, and the Reconciler then claims a slot for any registered filterable field it finds still unmapped while draining the sync queue. Write an entry touching the field and it becomes queryable a moment later, without you reserving anything. Until that first write has been processed, a filter on the field is rejected with `FieldNotFilterableException`, even on a model with no entries, and `describeModel()` reports the field with `isIndexed = false`. Gate a filter control on `isIndexed` rather than on `isFilterable`.
 
-The manual route below is for one-off setup (a seed script, a test fixture, or a deployment where you want the slot in place before the first write). A page is created with exactly the slot columns you name, and every one of them is indexed, so name the slots your filterable fields will use, then reserve one per field:
+The manual route below is for one-off setup (a seed script, a test fixture, or a deployment where you want the slot in place before the first write). A page is created with exactly the slot columns you name, and every one of them is indexed, so name the slots your filterable fields will use, then reserve one per field. A text slot is indexed through a second column, a key the database fills in from it on every write, so nothing about writing or reserving changes:
 
 ```php
 use StarDust\Page\PageProvisioner;
@@ -290,7 +292,8 @@ use StarDust\Slot\SlotReserver;
 
 // Provision a page carrying the two slots the filterable fields will use.
 // The page is created with exactly these columns, each with its own
-// composite (tenant_id, slot) index, and the list may not be empty.
+// composite (tenant_id, slot) index (for i_str_01 the index is on its
+// key column), and the list may not be empty.
 (new PageProvisioner($pdo, $engine->config()->clock, $engine->logger(), $engine->serverEngine()))
     ->provision(filterableSlots: ['i_str_01', 'i_int_01']);
 
@@ -462,7 +465,7 @@ vendor/bin/phpunit --testsuite Smoke
 
 A handful of the suite's tests need no database at all (e.g. the wire-format decoder, the event-vocabulary guard, and the schema-conformance cross-check), so they run even on a bare clone.
 
-GitHub Actions runs the same suite on every push against MySQL and against MariaDB 10.11+ (both **must pass**), plus a job that asserts the suite **fails** against MariaDB 10.6, which is below the supported floor.
+GitHub Actions runs the same suite on every push against MySQL and against MariaDB 10.11+ (both **must pass**), once more against MySQL with PDO's prepared-statement emulation switched on (**must pass**), plus a job that asserts the suite **fails** against MariaDB 10.6, which is below the supported floor.
 
 For the full setup guide and a breakdown of exactly which behaviours the suite proves, see **[TESTING.md](TESTING.md)**.
 

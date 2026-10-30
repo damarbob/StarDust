@@ -14,6 +14,7 @@ use StarDust\Support\ServerEngine;
 use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
+use StarDust\Tests\Smoke\Support\TestPdo;
 
 /**
  * Phase 2 ADR 0012 guard smoke suite.
@@ -39,11 +40,7 @@ final class EmptyTableGuardTest extends TestCase
         }
 
         try {
-            $this->pdo = new PDO($dsn, $user, $pass, [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_EMULATE_PREPARES   => false,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            ]);
+            $this->pdo = new PDO($dsn, $user, $pass, TestPdo::options());
         } catch (PDOException $e) {
             self::fail('Could not connect to test database: ' . $e->getMessage());
         }

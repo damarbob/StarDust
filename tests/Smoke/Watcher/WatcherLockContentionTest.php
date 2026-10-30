@@ -9,6 +9,7 @@ use StarDust\Clock\SystemClock;
 use StarDust\Daemon\AdvisoryLock;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Tests\Smoke\Phase5TestCase;
+use StarDust\Tests\Smoke\Support\TestPdo;
 
 /**
  * End-to-end Watcher → `lock_contention` event flow.
@@ -72,11 +73,7 @@ final class WatcherLockContentionTest extends Phase5TestCase
         $dsn  = getenv('STARDUST_TEST_DSN') ?: '';
         $user = getenv('STARDUST_TEST_USER') ?: '';
         $pass = getenv('STARDUST_TEST_PASS') ?: '';
-        return new PDO($dsn, $user, $pass, [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_EMULATE_PREPARES   => false,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
+        return new PDO($dsn, $user, $pass, TestPdo::options());
     }
 
     /** @return list<array<string, mixed>> */

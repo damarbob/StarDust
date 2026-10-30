@@ -15,8 +15,8 @@ All typed errors extend `RuntimeException`.
 ## Phase 4 — read path
 
 - `UnknownFieldException` — filter references a field not in `stardust_fields`.
-- `FieldNotFilterableException` — filter target has `is_filterable = false`.
-- `FieldNotIndexedException` — filter target's slot is `backfilling` / `tombstoned` / unmapped; three states uniformly rejected per ADR 0004.
+- `FieldNotFilterableException` — the active driver cannot filter on the target. For the MySQL driver that is `is_filterable = false` **and also** a field declared filterable whose slot is `backfilling` / `tombstoned` / unmapped, because `supportsFilterOn()` is one yes/no question (ADR 0022) and the wire code `field_not_filterable` covers both. Only the message differs (`CapabilityChecker` says "declared filterable but is not indexed yet" for the second), so a caller sees the same class and code either way.
+- `FieldNotIndexedException` — **declared, never thrown by the built-in engine.** It documents ADR 0004's three states (`backfilling` / `tombstoned` / unmapped), which have surfaced as `FieldNotFilterableException` since the search driver seam. Do not make the pre-flight throw it without a new ADR superseding the wire-format rule, because a caller mapping `FieldNotFilterableException` to the `field_not_filterable` response would start returning a server error.
 - `FieldNotSortableException` (ADR 0041) — the **sort** target is a known field the active driver will not order by. The sort half of ADR 0004's "reject filters *and sorts*" clause, which had been unenforceable since that ADR was accepted because there was no sort parameter to reject.
 
   > **Not a reuse of `FieldNotFilterableException`, and not of `FieldNotIndexedException` either.** The first rejects a *filter* on such a field, this one a *sort* — the two coincide on the MySQL driver and need not on any other, since `supportsFilterOn()` and `supportsSortOn()` are separate ADR 0022 capabilities. The second names a *slot-status* fact, while this one reports a *driver-capability* answer and so cannot be keyed to a status at all.

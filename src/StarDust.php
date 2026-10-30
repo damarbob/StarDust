@@ -309,7 +309,6 @@ final class StarDust
      * Throws {@see \StarDust\Exception\InvalidTenantIdException},
      * {@see \StarDust\Exception\UnknownFieldException},
      * {@see \StarDust\Exception\FieldNotFilterableException},
-     * {@see \StarDust\Exception\FieldNotIndexedException},
      * {@see \StarDust\Exception\InvalidCursorException},
      * {@see \StarDust\Exception\PageSizeOutOfRangeException}.
      */
@@ -399,8 +398,8 @@ final class StarDust
      *
      * Filterability remains suppressed (`JSON_EXTRACT` fallback)
      * for the entire backfill window; filter queries against the
-     * field throw {@see \StarDust\Exception\FieldNotIndexedException}
-     * while the slot is `backfilling` (Phase 4 read-path rule).
+     * field throw {@see \StarDust\Exception\FieldNotFilterableException}
+     * while the slot is `backfilling`.
      */
     public function promoteFieldToFilterable(int $tenantId, int $fieldId): void
     {

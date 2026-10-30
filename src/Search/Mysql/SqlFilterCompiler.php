@@ -17,6 +17,8 @@ use StarDust\Read\SnapshotEntry;
 use StarDust\Read\SortDirection;
 use StarDust\Read\SortSpec;
 use StarDust\Read\SortTarget;
+use StarDust\Read\StringKey;
+use StarDust\Support\StringKeyLayout;
 
 /**
  * Phase 8 adaptive SQL compiler for the bounded probe (ADR 0005 Query 1).
@@ -40,6 +42,59 @@ use StarDust\Read\SortTarget;
  * Tenant isolation invariant (Architecture Blueprint §1.2) preserved
  * on both strategies — `entry_data.tenant_id = ?` is bound at the
  * outer level and replayed inside every JOIN / EXISTS.
+ *
+ * **Driving leaf (ADR 0056).** A filtered read in the default order used
+ * to lead with `entry_data` and order by `entry_data.id`, so on MySQL an
+ * equality matching a few percent of a tenant read the whole match set and
+ * sorted it to find one page. When the filter takes the JOIN strategy, the
+ * order is the default (or `Id`), and some leaf is an equality on a
+ * full-width slot column (int, numeric or datetime) whose index the
+ * snapshot knows, the query is emitted as
+ * `SELECT STRAIGHT_JOIN … FROM {driving page} FORCE INDEX (…) INNER JOIN
+ * entry_data … ORDER BY {driving}.entry_id`. Everything else keeps its
+ * SQL byte for byte. Each part is there for a measured reason:
+ *
+ *   - `STRAIGHT_JOIN` with the driving page first. `FORCE INDEX` alone
+ *     leaves `FROM entry_data` first, and the optimiser starts there and
+ *     sorts the join: one equality matching 50% went from 222 rows to
+ *     200 001 on 8.0.46.
+ *   - `FORCE INDEX`. With a string leaf in the same AND, ordering by the
+ *     page without it touched 13 618 rows against 768 with it.
+ *   - The index name is the snapshot's, from the data dictionary, never the
+ *     `ix_{table}_{column}` convention. Naming a missing index fails the
+ *     read (errno 1176).
+ *   - Equality only. `in` must not take the shape (238 rows became 200 001),
+ *     and a range or `prefix` leaf gains nothing from it. A string equality
+ *     drives only through its generated key (ADR 0057), and only when no
+ *     integer, numeric or datetime equality qualified, so every query that
+ *     drives today keeps its plan. A string leaf on a prefix page never
+ *     drives, even when it comes first.
+ *
+ * The bound is the driving leaf's match count, not the page size, once
+ * other leaves filter its rows further. The driving leaf is the first
+ * qualifying one in filter order, not the most selective, so a common leaf
+ * written before a rare one reads far more (150 025 rows against 31 in the
+ * widest case measured). MariaDB already plans the old shape well and can
+ * plan it better than this rule, so a green MariaDB run proves nothing
+ * about the rule.
+ *
+ * **String keys (ADR 0057).** On a page that indexes a string slot through a
+ * generated key, a JOIN-strategy leaf on that slot gets a key predicate ahead
+ * of its original one: `{key predicate} AND {original}`. The key predicate only
+ * has to find a superset of the matches, and the original always stays as the
+ * recheck, so the result is whatever the collation says. `neq` and `nin` get
+ * none, since they cannot use an index either way, and neither do `is_null` and
+ * `is_not_null`, whose key rewrite changed no plan and cost one on MySQL 8.0.13.
+ * The EXISTS strategy keeps
+ * the SQL a string leaf had before keys, because it reaches the page by primary
+ * key per entry and a key adds nothing there. A slot the snapshot records no
+ * key for, whether it sits on a prefix page, a page from before pages carried
+ * only their indexed columns or behind a key index the optimiser skips, keeps
+ * its SQL byte for byte. {@see StringKeyLayout} builds every key predicate, and
+ * its docblock lists the three ways a slightly wrong one returns wrong rows
+ * without an error. A prefix or range bound narrows the index only within the
+ * key's head, so a longer bound on a column whose values all share that head can
+ * no longer narrow it.
  *
  * The compiler assumes every {@see LeafNode}'s {@see \StarDust\Filter\Ast\FieldRef}
  * has been resolved (descriptor populated with `pageId` + `slotColumn`)
@@ -68,10 +123,24 @@ final class SqlFilterCompiler
         $filterWhere = '';
         /** @var array<int, string> $aliasByPage */
         $aliasByPage = [];
+        /** @var ?array{pageId: int, indexName: string} $driving */
+        $driving = null;
+
+        $sort = $query->sort;
 
         if ($strategy === 'joins') {
             $leaves = $this->collectLeaves($filter);
-            [$joinsSql, $filterWhere, $aliasByPage] = $this->compileAsJoins($leaves, $snapshot, $filterBindings);
+            // Only the default order qualifies: a field sort has to order by
+            // its own column, and `created_at` by the core table's.
+            if ($sort === null || $sort->target === SortTarget::Id) {
+                $driving = $this->selectDrivingLeaf($leaves, $snapshot);
+            }
+            [$joinsSql, $filterWhere, $aliasByPage] = $this->compileAsJoins(
+                $leaves,
+                $snapshot,
+                $filterBindings,
+                $driving['pageId'] ?? null,
+            );
         } else {
             // EXISTS strategy — $filter is guaranteed non-null because
             // chooseStrategy() never picks 'exists' on a null tree.
@@ -79,7 +148,12 @@ final class SqlFilterCompiler
             $filterWhere = $this->compileAsExists($filter, $snapshot, $filterBindings);
         }
 
-        $sort = $query->sort;
+        // The column the default order, and its keyset, run on. With a driving
+        // leaf it is the driving page's `entry_id`, which the INNER JOIN holds
+        // equal to `entry_data.id`, so the ordering and the cursor are unchanged.
+        $orderColumn = $driving === null
+            ? 'entry_data.id'
+            : $aliasByPage[$driving['pageId']] . '.entry_id';
 
         // The sort column must be reachable from the outer query, so a
         // field sort joins its page whatever the strategy chose — you
@@ -99,7 +173,7 @@ final class SqlFilterCompiler
             if ($sortExpression === null) {
                 // Sorting by entry_data.id: the cursor *is* the sort
                 // value, so no anchor lookup is needed at all.
-                $keysetWhere      = 'entry_data.id ' . $this->directionOf($sort)->keysetOperator() . ' ?';
+                $keysetWhere      = $orderColumn . ' ' . $this->directionOf($sort)->keysetOperator() . ' ?';
                 $keysetBindings[] = $anchorId;
             } else {
                 [$anchorJoinSql, $anchorBindings] =
@@ -112,9 +186,19 @@ final class SqlFilterCompiler
         $whereClauses = [
             'entry_data.tenant_id = ?',
             'entry_data.model_id = ?',
-            'entry_data.deleted_at IS NULL',
         ];
         $outerBindings = [$query->tenantId, $query->modelId];
+
+        if ($driving !== null) {
+            // Stated on the driving page too, so its index range is bounded
+            // by both key parts rather than by `tenant_id` through the join.
+            // The placeholder sits ahead of the keyset and filter ones, which
+            // is where its binding goes.
+            $whereClauses[] = $aliasByPage[$driving['pageId']] . '.tenant_id = ?';
+            $outerBindings[] = $query->tenantId;
+        }
+
+        $whereClauses[] = 'entry_data.deleted_at IS NULL';
 
         if ($keysetWhere !== '') {
             $whereClauses[] = $keysetWhere;
@@ -123,11 +207,17 @@ final class SqlFilterCompiler
             $whereClauses[] = $filterWhere;
         }
 
-        $sql = 'SELECT entry_data.id FROM entry_data'
+        $orderBy = $driving === null
+            ? $this->compileOrderBy($sortExpression, $this->directionOf($sort))
+            : $orderColumn . ' ' . $this->directionOf($sort)->sql();
+
+        $sql = ($driving === null
+                ? 'SELECT entry_data.id FROM entry_data'
+                : $this->compileDrivingFrom($driving, $aliasByPage[$driving['pageId']], $snapshot))
             . ($joinsSql === '' ? '' : ' ' . $joinsSql)
             . ($anchorJoinSql === '' ? '' : ' ' . $anchorJoinSql)
             . ' WHERE ' . implode(' AND ', $whereClauses)
-            . ' ORDER BY ' . $this->compileOrderBy($sortExpression, $this->directionOf($sort))
+            . ' ORDER BY ' . $orderBy
             . ' LIMIT ?';
 
         return new SqlFragment(
@@ -347,12 +437,107 @@ final class SqlFilterCompiler
     }
 
     /**
+     * Slot column prefixes of the families whose index holds the whole value.
+     * A string slot on a prefix page is indexed on a prefix, which cannot
+     * answer an equality alone, so it does not qualify here. On a key page it
+     * qualifies in the second pass of {@see self::selectDrivingLeaf()}. The
+     * family comes from the physical column, because that is what the index
+     * covers.
+     */
+    private const FULL_WIDTH_SLOT_PREFIXES = ['i_int_', 'i_num_', 'i_dt_'];
+
+    /**
+     * The leaf a default-order read is driven from, or null when none qualifies
+     * (ADR 0056). That is the first equality on a full-width slot column whose
+     * index the snapshot recorded. Any qualifying leaf measured bounded, so
+     * "first" is only the deterministic choice, not the cheapest one.
+     *
+     * When none qualifies, the first equality on a string slot whose page
+     * indexes it through a generated key does (ADR 0057), and the index is the
+     * key's. Numbers and dates go first so that no query that drives today
+     * changes its plan.
+     *
+     * @param list<LeafNode> $leaves
+     * @return ?array{pageId: int, indexName: string}
+     */
+    private function selectDrivingLeaf(array $leaves, SnapshotEntry $snapshot): ?array
+    {
+        foreach ($leaves as $leaf) {
+            if ($leaf->operator !== Operator::EQ) {
+                continue;
+            }
+            [$pageId, $slotColumn] = $this->resolvedSlotFor($leaf);
+            if (! $this->isFullWidthSlot($slotColumn)) {
+                continue;
+            }
+            $indexName = $snapshot->orderedIndexFor($pageId, $slotColumn);
+            if ($indexName === null) {
+                continue;
+            }
+            return ['pageId' => $pageId, 'indexName' => $indexName];
+        }
+
+        foreach ($leaves as $leaf) {
+            if ($leaf->operator !== Operator::EQ) {
+                continue;
+            }
+            [$pageId, $slotColumn] = $this->resolvedSlotFor($leaf);
+            $key = $snapshot->stringKeyFor($pageId, $slotColumn);
+            if ($key === null) {
+                continue;
+            }
+            return ['pageId' => $pageId, 'indexName' => $key->indexName];
+        }
+
+        return null;
+    }
+
+    private function isFullWidthSlot(string $slotColumn): bool
+    {
+        foreach (self::FULL_WIDTH_SLOT_PREFIXES as $prefix) {
+            if (str_starts_with($slotColumn, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The select list and `FROM` of a driven query: the driving page first,
+     * under `STRAIGHT_JOIN` so the order is the one written, then `entry_data`.
+     * The other pages are joined after it and their `ON` clauses, which name
+     * `entry_data`, need no change.
+     *
+     * The index name is quoted as an identifier, doubling any backtick,
+     * because it comes from the data dictionary and an operator could have
+     * named it anything.
+     *
+     * @param array{pageId: int, indexName: string} $driving
+     */
+    private function compileDrivingFrom(array $driving, string $alias, SnapshotEntry $snapshot): string
+    {
+        $table = $snapshot->pageTableNames[$driving['pageId']];
+        $index = '`' . str_replace('`', '``', $driving['indexName']) . '`';
+
+        return "SELECT STRAIGHT_JOIN entry_data.id FROM {$table} {$alias} FORCE INDEX ({$index})"
+            . " INNER JOIN entry_data ON entry_data.id = {$alias}.entry_id"
+            . " AND entry_data.tenant_id = {$alias}.tenant_id";
+    }
+
+    /**
      * @param list<LeafNode> $leaves
      * @param list<mixed>    $bindings (in/out)
+     * @param ?int           $drivingPageId the page {@see self::compileDrivingFrom()} puts in
+     *                       `FROM`; it keeps its alias but gets no `INNER JOIN` here
      * @return array{0:string, 1:string, 2:array<int, string>} [joinsSql, predicatesSql, aliasByPage]
      */
-    private function compileAsJoins(array $leaves, SnapshotEntry $snapshot, array &$bindings): array
-    {
+    private function compileAsJoins(
+        array $leaves,
+        SnapshotEntry $snapshot,
+        array &$bindings,
+        ?int $drivingPageId = null,
+    ): array {
         $joins = [];
         /** @var array<int, string> $aliasByPage */
         $aliasByPage = [];
@@ -363,6 +548,9 @@ final class SqlFilterCompiler
             }
             $alias = 'p' . count($aliasByPage);
             $aliasByPage[$pageId] = $alias;
+            if ($pageId === $drivingPageId) {
+                continue;
+            }
             $table = $snapshot->pageTableNames[$pageId];
             $joins[] = "INNER JOIN {$table} {$alias}"
                 . " ON {$alias}.entry_id = entry_data.id"
@@ -372,14 +560,99 @@ final class SqlFilterCompiler
         $predicates = [];
         foreach ($leaves as $leaf) {
             [$pageId, $slotColumn] = $this->resolvedSlotFor($leaf);
-            $alias = $aliasByPage[$pageId];
-            $column = "{$alias}.{$slotColumn}";
-            $predicates[] = $this->compileLeafPredicate($leaf, $column, $bindings);
+            $predicates[] = $this->compileJoinedLeaf(
+                $leaf,
+                $aliasByPage[$pageId],
+                $slotColumn,
+                $snapshot->stringKeyFor($pageId, $slotColumn),
+                $bindings,
+            );
         }
 
         // The alias map is returned so a field sort can reuse a page the
         // filter already joined instead of joining it twice.
         return [implode(' ', $joins), implode(' AND ', $predicates), $aliasByPage];
+    }
+
+    /**
+     * One leaf of the JOIN strategy. A string slot that its page indexes through
+     * a key gets the key predicate first and the original after it, which stays
+     * as the recheck. The key predicate's bindings are pushed first, because
+     * that is the order its placeholders come in.
+     *
+     * @param list<mixed> $bindings (in/out)
+     */
+    private function compileJoinedLeaf(
+        LeafNode $leaf,
+        string $alias,
+        string $slotColumn,
+        ?StringKey $key,
+        array &$bindings,
+    ): string {
+        $column = "{$alias}.{$slotColumn}";
+        $keyPredicate = $key === null ? null : $this->keyPredicate($leaf, "{$alias}.{$key->keyColumn}", $key);
+        if ($keyPredicate === null) {
+            return $this->compileLeafPredicate($leaf, $column, $bindings);
+        }
+
+        array_push($bindings, ...$keyPredicate['bindings']);
+
+        return $keyPredicate['sql'] . ' AND ' . $this->compileLeafPredicate($leaf, $column, $bindings);
+    }
+
+    /**
+     * The predicate on a string slot's key that finds a superset of what the
+     * leaf matches, or null for an operator no key can serve.
+     *
+     * @return ?array{sql: string, bindings: list<string>}
+     */
+    private function keyPredicate(LeafNode $leaf, string $keyColumn, StringKey $key): ?array
+    {
+        $head = $key->headBytes;
+        $collation = $key->collation;
+
+        switch ($leaf->operator) {
+            case Operator::EQ:
+                return StringKeyLayout::equals($keyColumn, $this->stringOperand($leaf), $head, $collation);
+            case Operator::IN:
+                $operands = $this->stringOperands($leaf);
+
+                return $operands === [] ? null : StringKeyLayout::inList($keyColumn, $operands, $head, $collation);
+            case Operator::PREFIX:
+                // The prefix as written. The escaping is for the LIKE recheck only.
+                return StringKeyLayout::prefix($keyColumn, $this->stringOperand($leaf), $head, $collation);
+            case Operator::GT:
+            case Operator::GTE:
+                return StringKeyLayout::atLeast($keyColumn, $this->stringOperand($leaf), $head, $collation);
+            case Operator::LT:
+            case Operator::LTE:
+                return StringKeyLayout::atMost($keyColumn, $this->stringOperand($leaf), $head, $collation);
+            case Operator::BETWEEN:
+                $range = $this->stringOperands($leaf);
+
+                return count($range) === 2
+                    ? StringKeyLayout::between($keyColumn, $range[0], $range[1], $head, $collation)
+                    : null;
+            default:
+                // neq and nin cannot use an index, with or without a key. is_null
+                // and is_not_null keep their own SQL: asking the key column too
+                // changed no plan on 8.0.46 or MariaDB and made is_not_null slower
+                // on 8.0.13.
+                return null;
+        }
+    }
+
+    private function stringOperand(LeafNode $leaf): string
+    {
+        return (string) $this->scalar($leaf);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringOperands(LeafNode $leaf): array
+    {
+        return array_map('strval', $this->listValue($leaf));
     }
 
     /**

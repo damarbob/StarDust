@@ -103,6 +103,8 @@ The affine page-set read is a **plain `SELECT`, before the candidate query and n
 
 The predicate tests "participates in any index", not specifically the `(tenant_id, slot)` composite — equivalent for engine-built pages, since the only other indexes a page carries are `PRIMARY KEY (entry_id)` and `ix_<table>_tenant`.
 
+**A string slot on a key page is indexed through its key column (ADR 0057).** `i_str_01` is in no index there and `i_str_01_k` is, so the predicate accepts the slot column or `Support\StringKeyLayout::KEY_SUFFIX` appended to it. It had to land before any key page could be built. Without it the reserver refuses every string slot on a key page, `CapacityReporter` counts none of them as usable and the Watcher provisions another page on every tick. `tests/Smoke/Slot/KeyPageCapacityTest` builds a key page by hand to prove all three consumers agree. An older release does not know the suffix, which is why a rolling upgrade finishes before the first key page is built.
+
 Because indexedness is derived from `information_schema.STATISTICS` rather than persisted, this class is also the seam that would keep a future `stardust_slot_assignments.is_indexed` column a one-file migration.
 
 ## `IndexedFreeCapacityReader`

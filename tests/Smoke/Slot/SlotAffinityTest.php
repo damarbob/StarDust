@@ -18,6 +18,7 @@ use StarDust\Support\ServerEngineDetector;
 use StarDust\Tests\Smoke\Support\LegacyPage;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 use StarDust\Watcher\SpreadSampler;
+use StarDust\Tests\Smoke\Support\TestPdo;
 
 /**
  * ADR 0032 model-affine slot reservation.
@@ -470,11 +471,7 @@ final class SlotAffinityTest extends TestCase
             (string) getenv('STARDUST_TEST_DSN'),
             (string) getenv('STARDUST_TEST_USER'),
             (string) (getenv('STARDUST_TEST_PASS') ?: ''),
-            [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_EMULATE_PREPARES   => false,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            ],
+            TestPdo::options(),
         );
     }
 

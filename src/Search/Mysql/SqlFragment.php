@@ -9,6 +9,12 @@ namespace StarDust\Search\Mysql;
  *
  * Produced by {@see SqlFilterCompiler}; consumed by {@see \StarDust\Read\PaginatedProbe}
  * which appends pagination + LIMIT params before executing.
+ *
+ * **Bind typed, never through an untyped `execute($bindings)`.** The
+ * bindings end with the `LIMIT ?` page size, and under
+ * `PDO::ATTR_EMULATE_PREPARES => true` an untyped execute inlines it as a
+ * quoted string (`LIMIT '51'`), which the server rejects with errno 1064.
+ * {@see \StarDust\Support\TypedBinding::bind()} is the one way to do it.
  */
 final class SqlFragment
 {

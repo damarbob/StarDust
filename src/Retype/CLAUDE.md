@@ -87,7 +87,14 @@ Covered by the DB-free `tests/Smoke/Retype/RetypeCoercionMatrixTest`.
 
 ## `RetypeBackfillExecutor`
 
-`processChunk()` SELECTs `id, fields FROM entry_data WHERE tenant_id=? AND model_id=? AND id > :cursor LIMIT N`, runs the coercion engine per row, calls `SlotRowUpserter::upsert()` (the Phase 3 helper, reused verbatim), and collects `CoercionNullEvent`s for post-commit emission.
+`processChunk()` SELECTs `id, fields FROM entry_data WHERE tenant_id=? AND model_id=? AND id > :cursor LIMIT N`, runs the coercion engine per row, collects the coerced values, writes them with `SlotRowUpserter::upsertMany()` and collects `CoercionNullEvent`s for post-commit emission.
+
+**One multi-row UPSERT per chunk, not one per row.** The row-at-a-time version cost three round trips per row (prepare, execute, close). Profiled on 30 000 rows over the Docker bridge: 96.5% of the drain was inside retype chunks (not tick pacing), 1.03 prepared statements per row, 2.03 ms per row; 500 single upserts took 750 ms against 49 ms for one `upsertMany()`. A default emulated PDO pays one round trip per upsert rather than three, so expect a smaller gain there.
+
+- **Uniform columns are free here.** A checkpoint is one tenant, one model and one slot column on one page table, so every row of the VALUES list has the same column set and nothing is padded with NULL. That is what makes `upsertMany()` safe on the UPDATE branch. A padded NULL would overwrite a stored value in a column the backfill does not own, which is why `SlotRowUpserter::upsertMany()`'s docblock forbids padding unless the caller can prove every row inserts.
+- **The chunk is still cut by `Support\MultiRowBatches`**, the same cut the chunk writer uses: a placeholder budget (3 per row) and half of `@@max_allowed_packet`, read once and only for a chunk of more than one row. Do not drop the byte budget as unneeded. A string retype over large values would otherwise send one statement bigger than the packet where the per-row version never did. Both budgets are constructor parameters so `RetypeBackfillExecutorTest` can force splitting.
+- **A resume is unchanged.** The cursor still advances only on commit and the UPSERT is idempotent on `entry_id`, so a rolled-back chunk is re-executed byte for byte, one statement or many.
+- **`coercion_null` events stay per row**, collected during the loop and emitted by the work source after the commit.
 
 ## `RetypeBackfillWorkSource`
 

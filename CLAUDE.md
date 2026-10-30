@@ -117,9 +117,10 @@ bin/stardust compact:model --tenant=1 --model=7 --dry-run
 bin/stardust tick --budget=50 [--advisories] [--exports]
 ```
 
-**CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs six jobs: `static-analysis`, `markdown-lint`, `mysql-smoke` (full PHP matrix), `mariadb-smoke` (full PHP matrix × MariaDB 10.11 and 11, must pass), `mariadb-rejection` (MariaDB 10.6, must fail, proving the floor holds) and `coverage-finish`.
+**CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs seven jobs: `static-analysis`, `markdown-lint`, `mysql-smoke` (full PHP matrix), `mysql-smoke-emulated` (below), `mariadb-smoke` (full PHP matrix × MariaDB 10.11 and 11, must pass), `mariadb-rejection` (MariaDB 10.6, must fail, proving the floor holds) and `coverage-finish`.
 
 - **Coverage is collected in exactly two cells**, PHP 8.4 on MySQL and PHP 8.4 on MariaDB 10.11, because a MySQL-only number misses every MariaDB branch in `Support\Dialect` and `ServerEngineDetector`. Both upload to Coveralls as one parallel build that `coverage-finish` closes under `always()`. Don't enable PCOV across the whole matrix.
+- **`mysql-smoke-emulated` reruns the whole suite with emulated prepares** (PHP 8.4, MySQL 8.0, no coverage, must pass). `STARDUST_TEST_EMULATE_PREPARES=1` makes `tests/Smoke/Support/TestPdo.php` set `PDO::ATTR_EMULATE_PREPARES` on every connection the suite opens. The engine supports both modes, and pdo_mysql defaults to emulated. Two consequences for new code: a query binding `LIMIT ?` must bind it typed (`Support\TypedBinding` or `PDO::PARAM_INT`), because untyped emulation inlines it quoted and the server raises errno 1064; and a test that opens its own PDO must take `TestPdo::options()`. `Search\EmulatedPreparesTest` forces emulation on regardless, so the native cells still cover the read path under it.
 - **Coverage is reported, never a gate.** Every Coveralls step uses `fail-on-error: false`, and the decrease threshold is deliberately unset.
 - About 12 lines of `Filter\Json\JsonFilterDecoder` are uncovered by design (the post-`json_decode` narrowing guard and an unreachable `match` default). Don't contort tests to reach them.
 
@@ -148,7 +149,7 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 
 - **Setup and introspection.** `bootstrap()`, `schemaBuilder()`, and the read-only `listModels()` / `describeModel()` (backed by `Schema\SchemaReader`).
 - **Writes** (`src/Write/CLAUDE.md`). `write()`, `bulkWrite()`, `submitBulkWrite()` returning an `ImportJobId`, and `getImportJob()`, whose counters are nullable ints where **`null` (no chunk committed) is deliberately distinct from `0`**. `updateEntry()` is a full replace that clears omitted fields' slots and throws `EntryNotFoundException`. `deleteEntry()` is a soft delete that returns `false` instead of throwing; the asymmetry is deliberate.
-- **Reads** (`src/Read/CLAUDE.md`, `src/Search/CLAUDE.md`). `read(EntryQuery)`, `get()` and `search(SearchRequest)` all run through `SearchService` and the active `EntrySearchInterface` driver (`MysqlNativeDriver` when `Config::$searchDriver` is null); `EntryReader` is a thin façade. `EntryQuery` and `SearchRequest` take an optional `SortSpec` (ADR 0041); `null` means `entry_data.id ASC`. A field sort filesorts over the whole filtered set, while materialisation stays bounded and the read stays two queries. **Sorting is not part of the QueryFilter wire format**, so the JSON schema and the 13-code taxonomy don't mention it. A custom driver must implement `supportsSortOn()`.
+- **Reads** (`src/Read/CLAUDE.md`, `src/Search/CLAUDE.md`). `read(EntryQuery)`, `get()` and `search(SearchRequest)` all run through `SearchService` and the active `EntrySearchInterface` driver (`MysqlNativeDriver` when `Config::$searchDriver` is null); `EntryReader` is a thin façade. A warm read sends the schema-version check and the two bounded queries whatever the number of filter leaves, and a warm `get()` sends one statement; `ReadStatementCountTest` pins both, and `src/Read/CLAUDE.md` lists the cold cost. `EntryQuery` and `SearchRequest` take an optional `SortSpec` (ADR 0041); `null` means `entry_data.id ASC`. A field sort filesorts over the whole filtered set, while materialisation stays bounded and the read stays two queries. A filtered default-order read with an `eq` on an int, numeric or datetime slot is driven from that slot's index (ADR 0056, `SqlFilterCompiler`), which keeps discovery near a page on MySQL; string, range and `in` filters are not bounded. **Sorting is not part of the QueryFilter wire format**, so the JSON schema and the 13-code taxonomy don't mention it. A custom driver must implement `supportsSortOn()`.
 - **Field and model lifecycles.**
   - `retypeField()`, `promoteFieldToFilterable()`, `demoteFieldFromFilterable()`: all `RetypeInitiator::initiate()`, asynchronous (`src/Retype/CLAUDE.md`).
   - `renameField()`: returns when the registry commits, and the payload rewrite is asynchronous. Reads, writes and CSV export bridge the window; filters and the JSON export artifact deliberately don't (`src/Rename/CLAUDE.md`).
@@ -173,7 +174,7 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 | [src/Schema/](src/Schema/) | `SchemaBuilder` and `SchemaReader` (below). |
 | [src/Page/](src/Page/) | `PageProvisioner` and the ADR 0012 `EmptyTableGuard`. |
 | [src/Slot/](src/Slot/) | `SlotReserver` (the ADR 0034 filterability chokepoint, with ADR 0032 model affinity), `LiveSlotTombstoner`, `IndexedSlotPredicate`. |
-| [src/Write/](src/Write/) | `EntryWriter`, `PayloadSplitter`, `LiveSlotMap`, `BulkIngestor`, `BulkIngestSubmitter`, `BackfillExecutor`, `EntryDeleter`. |
+| [src/Write/](src/Write/) | `EntryWriter`, `EntryChunkWriter` (the one write implementation: a chunk in a constant number of multi-row statements, NULL-padded per page, ids from `LAST_INSERT_ID()`), `PayloadSplitter`, `LiveSlotMap`, `BulkIngestor`, `BulkIngestSubmitter`, `BackfillExecutor`, `EntryDeleter`. |
 | [src/Read/](src/Read/) | Two-query bounded read (ADR 0005), sort DTOs, cursor codec. Mostly delegates to `src/Search/`. |
 | [src/Daemon/](src/Daemon/) | `PollLoop`, `Tickable`, `ShutdownSignal`, `PidFileGuard`, `AdvisoryLock`, `CombinedTick`, `TickBudget`. |
 | [src/Watcher/](src/Watcher/) | Singleton page provisioner (capacity- and demand-driven), cardinality and spread advisories. |
@@ -202,7 +203,9 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 - **`ArtifactDirectory`**: the race-tolerant `is_dir() || @mkdir(recursive) || is_dir()`. The trailing `|| is_dir()` is the race tolerance. Returns `bool` and never throws; what a caller does with `false` is its own policy.
 - **`Dialect`**: the engine-specific DDL, `tableOptionsClause()` (collation) and `liveSlotUniqueIndexDdl()` (ADR 0017), each branching on `ServerEngine`. It is the one file that names both engines' literals. If a JSON-fallback SQL comparison ever ships, its collation gets a method here too.
 - **`UuidV4`**: the source of every `correlation_id` / `chunk_correlation_id` and of `WorkerIdentity`'s uniqueness suffix.
-- **`LikePattern`**, **`PdoQuery`** and **`WorkerIdentity`** follow the same one-definition rule.
+- **`MultiRowBatches`**: how a chunk is cut into multi-row statements, under a placeholder cap and half of `@@max_allowed_packet` (`ranges()`, plus `costOf()` for a row's wire size). Shared by `EntryChunkWriter` and `RetypeBackfillExecutor`. A new multi-row INSERT or UPSERT over a variable number of rows goes through it rather than assuming a chunk fits in one statement.
+- **`StringKeyLayout`** (ADR 0057): the generated key that indexes a string slot (a zero-padded head of its weight string plus a digest), its column DDL and every lookup predicate. The page DDL and the compiler both build their SQL here, because a lookup that repeats the layout even slightly wrong returns wrong rows with no error. `StringKeyLayoutTest` fails when the weight-string or digest function appears in any other file under `src/`, comments included.
+- **`LikePattern`**, **`PdoQuery`**, **`TypedBinding`** and **`WorkerIdentity`** follow the same one-definition rule.
 
 ### Cross-cutting rules
 
@@ -215,7 +218,7 @@ A framework-neutral Composer library with zero framework, ORM or query-builder r
 They live in [src/Bootstrap/CLAUDE.md](src/Bootstrap/CLAUDE.md). That file loads only when you work in `src/Bootstrap/`, so **read it before writing SQL anywhere** that relies on a table's shape. The topics it covers:
 
 - The slot-status ENUM, the live-slot unique index on both engines, the sweep annotations, and the `RESTRICT` FK with the two-step tombstone.
-- The extension-page shape: `TEXT` string slots with a 766-char prefix and `ROW_FORMAT=DYNAMIC`, exactly-indexed pages, and two permanent page shapes.
+- The extension-page shape: `TEXT` string slots indexed through a stored generated key (a 766-char prefix before ADR 0057), `ROW_FORMAT=DYNAMIC`, exactly-indexed pages, and three permanent page shapes.
 - The drain-window markers: `previous_name` and both `deleted_at` columns.
 - `backfill_checkpoints`' four namespaces, `LIKE` escaping, upserts and correlation ids.
 - The sync-queue `entry_id` index, the two singletons, and the DLQ's deliberately missing FK.

@@ -47,8 +47,10 @@ npx --yes markdownlint-cli2@0.23.2 "*.md" "src/**/*.md" ".agent/**/*.md" "docs/*
 vendor/bin/phpunit --testsuite Smoke
 ```
 
-CI runs six jobs: PHPStan, markdownlint, the suite across the full PHP matrix
-against MySQL, the same matrix against MariaDB 10.11+ (must pass, same as MySQL),
+CI runs seven jobs: PHPStan, markdownlint, the suite across the full PHP matrix
+against MySQL, the suite once more on MySQL with emulated prepared statements
+(`STARDUST_TEST_EMULATE_PREPARES=1`, must pass), the same matrix against
+MariaDB 10.11+ (must pass, same as MySQL),
 the MariaDB-below-floor rejection check (targets 10.6, must fail), and a job that
 merges the coverage reports from one MySQL and one MariaDB cell. Coverage is
 reported, never a gate, so it cannot fail your pull request.

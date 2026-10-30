@@ -13,7 +13,7 @@ Everything that changes a model's shape after entries exist — retype, filterab
 //   - stardust_schema_version bumps;
 //   - a backfill_checkpoints row inserts as `running`.
 // Reads fall back to JSON_EXTRACT throughout the backfill window;
-// filter queries against the field throw FieldNotIndexedException
+// filter queries against the field throw FieldNotFilterableException
 // until the slot promotes to `ready`. Uncoercible values store NULL
 // (with a per-row `coercion_null` audit event); the JSON payload
 // remains authoritative.

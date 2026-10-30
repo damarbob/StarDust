@@ -17,6 +17,7 @@ use StarDust\Search\PreFlight\PreFlightPipeline;
 use StarDust\Search\PreFlight\SortValidator;
 use StarDust\Search\PreFlight\ValueTypeValidator;
 use StarDust\Search\SearchRequest;
+use StarDust\Support\TypedBinding;
 use StarDust\Tests\Smoke\Phase8TestCase;
 
 /**
@@ -247,7 +248,10 @@ final class DatetimeBoundNormalisationTest extends Phase8TestCase
 
         // And the literal it swapped in still selects the right row.
         $stmt = $this->pdo->prepare($fragment->sql);
-        $stmt->execute($fragment->bindings);
+        // Typed, as PaginatedProbe binds it: the fragment ends in LIMIT ?,
+        // which an untyped execute() breaks under emulated prepares.
+        TypedBinding::bind($stmt, $fragment->bindings);
+        $stmt->execute();
         self::assertCount(1, $stmt->fetchAll(\PDO::FETCH_ASSOC), 'the fragment should still select the 03:00Z row');
     }
 

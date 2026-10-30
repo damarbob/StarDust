@@ -12,9 +12,11 @@ use PDO;
  * Reads `stardust_models`, `stardust_fields` and
  * `stardust_slot_assignments` together with outer joins so the snapshot
  * carries one {@see FieldDescriptor} per registered field, regardless of
- * whether that field has a live slot. Also resolves page-id → table-name
- * mappings for any pages referenced by the snapshot's slot assignments so
- * the SQL builder does not need a second registry read at query time.
+ * whether that field has a live slot. The same join carries the table name
+ * of each page the slot assignments reference, so the SQL builder does not
+ * need a second registry read at query time. The data dictionary lookups the
+ * filter compiler needs, such as the index on a page that returns a slot
+ * column in `entry_id` order, sit behind {@see DictionaryMaps}.
  *
  * **There is deliberately no tenant predicate.** Tenant scoping is the
  * caller's job and is enforced in every probe/fetch WHERE clause.
@@ -60,11 +62,13 @@ final class SlotResolver
             . '       m.deleted_at    AS model_deleted_at,'
             . '       a.slot_column   AS slot_column,'
             . '       a.status        AS slot_status,'
-            . '       a.page_id       AS page_id'
+            . '       a.page_id       AS page_id,'
+            . '       p.table_name    AS page_table'
             . ' FROM stardust_models m'
             . ' LEFT JOIN stardust_fields f ON f.model_id = m.id'
             . ' LEFT JOIN stardust_slot_assignments a'
             . "   ON a.field_id = f.id AND a.status IN ({$placeholders})"
+            . ' LEFT JOIN stardust_pages p ON p.id = a.page_id'
             . ' WHERE m.id = ?'
         );
         // Binding order is unchanged: statuses first, model id last. If
@@ -84,8 +88,8 @@ final class SlotResolver
 
         /** @var array<string, FieldDescriptor> $byName */
         $byName = [];
-        /** @var array<int, true> $pageIdsSeen */
-        $pageIdsSeen = [];
+        /** @var array<int, string> $pageTableNames pageId → table name */
+        $pageTableNames = [];
         /** @var list<string> $pendingDeletionNames */
         $pendingDeletionNames = [];
         foreach ($rows as $row) {
@@ -114,8 +118,8 @@ final class SlotResolver
             }
 
             $pageId = $row['page_id'] === null ? null : (int) $row['page_id'];
-            if ($pageId !== null) {
-                $pageIdsSeen[$pageId] = true;
+            if ($pageId !== null && $row['page_table'] !== null) {
+                $pageTableNames[$pageId] = (string) $row['page_table'];
             }
 
             $byName[$name] = new FieldDescriptor(
@@ -130,8 +134,6 @@ final class SlotResolver
             );
         }
 
-        $pageTableNames = self::resolvePageTableNames($pdo, array_keys($pageIdsSeen));
-
         return new SnapshotEntry(
             modelId: $modelId,
             capturedAtVersion: $atVersion,
@@ -140,29 +142,7 @@ final class SlotResolver
             pageTableNames: $pageTableNames,
             pendingDeletionNames: $pendingDeletionNames,
             modelDeleted: $modelDeleted,
+            dictionary: new DictionaryMaps($pdo, $pageTableNames),
         );
-    }
-
-    /**
-     * @param list<int> $pageIds
-     * @return array<int, string>
-     */
-    private static function resolvePageTableNames(PDO $pdo, array $pageIds): array
-    {
-        if ($pageIds === []) {
-            return [];
-        }
-
-        $placeholders = implode(',', array_fill(0, count($pageIds), '?'));
-        $stmt = $pdo->prepare(
-            "SELECT id, table_name FROM stardust_pages WHERE id IN ({$placeholders})"
-        );
-        $stmt->execute($pageIds);
-
-        $out = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $out[(int) $row['id']] = (string) $row['table_name'];
-        }
-        return $out;
     }
 }

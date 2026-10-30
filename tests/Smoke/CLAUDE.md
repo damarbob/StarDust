@@ -7,6 +7,7 @@ Test conventions: fixtures, base classes and the traps they guard against. [TEST
 - **Every smoke test hits a real database.** There are no mocked databases anywhere in this repo. The suite skips (does not fail) when `STARDUST_TEST_DSN` / `STARDUST_TEST_USER` are unset.
 - **Keep tests strict-clean.** `phpunit.xml.dist` sets `failOnWarning`, `failOnRisky`, `beStrictAboutOutputDuringTests` and `beStrictAboutTestsThatDoNotTestAnything`.
 - **Guard every `tearDown()` with `isset($this->pdo)`.** PHPUnit still calls `tearDown` after a `markTestSkipped()` or `fail()` in `setUp`, leaving the typed property uninitialised.
+- **A test that opens its own PDO takes its options from `Support\TestPdo::options()`**, so it follows whatever prepare mode the CI cell runs.
 - **`str_getcsv()` in helpers passes `''` as `$escape`** explicitly (PHP 8.4 deprecation, and the RFC 4180-correct choice).
 
 ## The per-test clean slate
@@ -23,7 +24,7 @@ Each base class extends the one above it and adds helpers. Use the lowest one th
 
 | Base class | Adds | Used by |
 | :-- | :-- | :-- |
-| `WritePathTestCase` | Connection scaffolding and registry seeding: `provisionPage()`, `provisionLegacyPage()`, `createModel()`, `createField()`, `reserveSlotFor()`, `setupModelWithReservedField()`, `forceGrandfatheredSlotFor()`, `makeSiblingPdo()`. | Write path |
+| `WritePathTestCase` | Connection scaffolding and registry seeding: `provisionPage()`, `provisionLegacyPage()`, `provisionPrefixPage()` (the frozen `Support/PrefixIndexPage`, a string slot indexed on its first 766 characters), `createModel()`, `createField()`, `reserveSlotFor()`, `setupModelWithReservedField()`, `forceGrandfatheredSlotFor()`, `makeSiblingPdo()`. | Write path |
 | `ReadPathTestCase` | `seedEntry()` (through the real `EntryWriter`, so slot UPSERTs match production), `setupFilterableStringField()`, `reader()`. | Read path |
 | `Phase5TestCase` | Daemon helpers: `fillAllFreeStringSlots()`, `enqueueSyncRow()`, `writePendingImportJob()`, `writeProcessingImportJob()` (controllable heartbeat age and manifest checkpoint), `seedImportJob()`, `seedDlqRow()`, the `make*()` factories for the Watcher, Reconciler, work sources and DLQ, plus the ADR 0035 demand fixtures `provisionPageWithIndexedFamily()` and `unmappedFilterableField()`. | `Watcher/`, `Reconciler/` |
 | `Phase6aTestCase` | Liberator helpers: `tombstoneSlotAssignment()`, `setTombstonedAt()`, `seedSlotValues()` (cheap direct seeding of entries and slot rows), `fetchSlotAssignment()`, `countNonNullValues()`, `makeSlotSweeper()`, `makeLiberator()`, `readNdjsonStream()`. | `Liberator/` |
@@ -36,6 +37,7 @@ Each base class extends the one above it and adds helpers. Use the lowest one th
 - **A reserved slot implies a filterable field (ADR 0034).** `createField()` defaults to `$isFilterable = false`, matching the DDL, but `reserveSlotFor()` throws for a non-filterable field. `setupModelWithReservedField()` seeds a filterable one.
 - **`forceGrandfatheredSlotFor()` is the only way to build a pre-0034 slot** (a live slot held by a non-filterable field), by direct registry UPDATE. `QueryValidatorTest` and `RetypeFilterabilityPromotionTest` need it.
 - **A retype fixture with a filterable field needs the target family's indexed column on its page**, for example `provisionPage(['i_int_01'])` for `string → int`, because the replacement reservation demands an indexed slot (ADR 0016).
+- **`provisionPage()` builds whatever shape the provisioner builds now, which is a key page for any string slot (ADR 0057).** `provisionPrefixPage()` and `provisionLegacyPage()` build the two older shapes from the frozen `Support/PrefixIndexPage` and `Support/LegacyPage`. Use an older helper only when the subject is that shape, and keep both fixtures off `PageProvisioner` and `Dialect`. A test about a string slot's index reads the finished table from `information_schema`, never the DDL text. `entryIdsFoundByKey()` runs the lookup a key exists to serve, so a test can prove what the server stored in a key without recomputing it.
 - **Direct registry UPDATEs are the documented way to build a fragmented model.** `SlotReserver` packs onto the oldest page first, so tests such as `Watcher/SpreadSamplerTest` and `Slot/SlotAffinityTest` place slots on exact `(page, column, status)` triples by hand. `seedSlotValues()` is the same precedent.
 - **`threshold: 0.0` does not keep the Watcher quiet.** The demand trigger ignores the threshold, so a quiet-Watcher test must also leave no filterable field without a slot.
 - **Daemon factories use zero backoff and a no-op `sleepFn`**, so timeout scenarios add no wall-clock time.

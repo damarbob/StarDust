@@ -24,6 +24,10 @@ use Psr\Log\LoggerInterface;
  * TTL during a probe failure surfaces the underlying exception rather
  * than serving silently stale data.
  *
+ * A caller that reads the version some other way can hand it to
+ * {@see self::snapshotForModelAt()} instead of paying for a probe. The point
+ * read does: it selects the version in the same statement as the entry.
+ *
  * The cache is per-instance (one cache per `EntryReader` lifetime).
  * It is not shared across PDO connections or processes — ADR 0015's
  * "database as sole coordination point" rule explicitly forbids
@@ -53,8 +57,6 @@ final class SchemaVersionCache
      */
     public function snapshotForModel(int $modelId, int $tenantId, string $correlationId): SnapshotEntry
     {
-        $cached = $this->snapshotsByModel[$modelId] ?? null;
-
         try {
             $liveVersion = $this->readLiveVersion();
         } catch (PDOException $e) {
@@ -63,11 +65,35 @@ final class SchemaVersionCache
             // Beyond the TTL — or when nothing is cached — the read
             // path cannot proceed safely; surface the underlying
             // failure to the caller.
+            $cached = $this->snapshotsByModel[$modelId] ?? null;
             if ($cached !== null && (time() - $cached->capturedAtUnixTs) < self::TTL_SECONDS) {
                 return $cached;
             }
             throw $e;
         }
+
+        return $this->snapshotForModelAt($modelId, $tenantId, $correlationId, $liveVersion);
+    }
+
+    /**
+     * Returns the snapshot for `$modelId` as of a live schema version the
+     * caller has already read, refreshing it when that version is newer than
+     * the cached snapshot's.
+     *
+     * This is the half of {@see self::snapshotForModel()} that comes after
+     * the version probe: it sends no probe of its own, and it holds the
+     * compare, the load and the `cache_miss` event, so a refresh emits one
+     * event whichever way the version arrived. `$liveVersion` must be a value
+     * read from `stardust_schema_version` during the current request, never
+     * one remembered from an earlier request.
+     */
+    public function snapshotForModelAt(
+        int $modelId,
+        int $tenantId,
+        string $correlationId,
+        int $liveVersion,
+    ): SnapshotEntry {
+        $cached = $this->snapshotsByModel[$modelId] ?? null;
 
         if ($cached !== null && $cached->capturedAtVersion === $liveVersion) {
             return $cached;

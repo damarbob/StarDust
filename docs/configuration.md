@@ -7,8 +7,8 @@ use StarDust\Config\Config;
 use StarDust\StarDust;
 
 $pdo = new PDO('mysql:host=127.0.0.1;dbname=app', $user, $pass, [
-    PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_EMULATE_PREPARES => false, // required — see below
+    PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION, // required, see below
+    PDO::ATTR_EMULATE_PREPARES => false, // optional, either setting works
 ]);
 
 $engine = new StarDust(new Config(pdo: $pdo));
@@ -25,7 +25,9 @@ $engine = new StarDust(new Config(pdo: $pdo));
 $engine->bootstrap();
 ```
 
-**Both PDO attributes above are required, not decoration.** PHP's MySQL driver emulates prepared statements by default, which sends every bound value as a quoted string. That breaks StarDust's paginated reads, which bind the page size into `LIMIT`: the first `read()` or `search()` fails with a MySQL syntax error (errno 1064). Turning emulation off also makes values come back from the database with their native types, which the engine relies on. `ERRMODE_EXCEPTION` matters because several of the engine's guards need a failed statement to raise rather than quietly return `false`. If your application shares one connection with other code, create a separate PDO for StarDust rather than changing these attributes under that code.
+**`ERRMODE_EXCEPTION` is required, not decoration.** Several of the engine's guards need a failed statement to raise rather than quietly return `false`. If your application shares one connection with other code, create a separate PDO for StarDust rather than changing that attribute under that code.
+
+**Prepared-statement emulation can be on or off.** PHP's MySQL driver emulates prepared statements by default, and StarDust works either way: every value that must reach the server unquoted, such as the page size in a paginated read's `LIMIT`, is bound with an explicit integer type, and values read back from the database arrive with the same PHP types in both. Native prepares (`PDO::ATTR_EMULATE_PREPARES => false`, as above) are the tested default, the full test suite runs that way against every supported server, and the suite is also run in full with emulation on, so leaving PHP's default in place is supported too.
 
 The page provisioner and slot reserver remain internal classes (`StarDust\Page\PageProvisioner`, `StarDust\Slot\SlotReserver`); the Watcher daemon (`bin/stardust watcher`) wires them automatically.
 
@@ -63,7 +65,7 @@ foreach ($company?->fields ?? [] as $field) {
 $company?->indexedFields();
 ```
 
-Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and while a newly registered filterable field is still waiting on capacity. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
+Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and for a newly registered filterable field until its first write has been processed by a running Reconciler, which is when the field gets its slot. A filter on such a field is rejected with `FieldNotFilterableException` until then, even on a model with no entries. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
 The daemons, exports, model deletion, index headroom, and the combined tick are tuned through 46 optional `Config` parameters:
 

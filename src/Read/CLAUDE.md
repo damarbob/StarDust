@@ -20,9 +20,59 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 
 **ADR 0037 adds the mirror-image case: a field the snapshot must stop reporting.** `SlotResolver` excludes any row with a non-null `deleted_at` from `fieldsByName`, which is what makes `read()` drop the field and the pre-flight reject a filter on it the instant the deletion commits — while the values are still physically in `entry_data` for the length of the purge. The names are still carried, on `SnapshotEntry::$pendingDeletionNames`, for the point read alone.
 
+## The snapshot also records which indexes keep `entry_id` order
+
+`SnapshotEntry::orderedIndexMap()` (pageId → slotColumn → index name, read one column at a time through `orderedIndexFor()`) is what lets `SqlFilterCompiler` drive a filtered default-order read from a slot index (see "Driving leaf" in `src/Search/CLAUDE.md`). `DictionaryMaps::orderedIndexes()` fills it from `information_schema.STATISTICS`, and the rules for what qualifies are in the docblock of `DictionaryMaps::readOrderedIndexes()` and pinned by `OrderedIndexResolutionTest`.
+
+- **The name always comes from the dictionary, never from the `ix_{table}_{column}` convention.** A page from before ADR 0043, or an index an operator added, may be named anything, and a hint naming an index that does not exist fails the read with errno 1176 where a missing hint only slows it.
+- **It costs one query the first time a read asks for an index, and nothing after that or on a read that never asks**, because `DictionaryMaps` keeps the map on the snapshot and the snapshot is cached per schema version. Anything that counts metadata round trips per read should count it with the first read that needs it, not per call.
+- **Dropping or hiding a page index without bumping `stardust_schema_version` leaves a stale name in the cache** until the next refresh, and a read that names it fails with errno 1176 in the meantime. Nothing in the engine drops a page index, so only a hand-run `ALTER TABLE` can cause it.
+- **`SELECT *` is deliberate.** The visibility column is `IS_VISIBLE` on MySQL and `IGNORED` on MariaDB, and the keys come back upper case on MySQL 8, so the rows are lower-cased and both flags are read if present.
+
+## The snapshot also records which string slots have a key
+
+`SnapshotEntry::stringKeyMap()` (pageId → slotColumn → `StringKey`, read through `stringKeyFor()`) says how a string slot is looked up through its generated key (ADR 0057): the key column, the index over it, the head width and the slot's collation. `DictionaryMaps::stringKeys()` fills it. The compiler builds a key lookup from these four facts and never from a constant, because a page keeps the head it was built with.
+
+- **A page's shape comes from its table definition, never from a registry column.** The table is the only fact. A crash between a page's `CREATE TABLE` and the registry transaction can leave an orphan table that a later provisioning reuses by name, so a flag could name a shape the table does not have and the compiler would name a column that is not there. ADR 0043 rejected a persisted `is_indexed` for the same reason.
+- **A key column qualifies for `orderedIndexes` as it stands, under its own name.** The slot `i_str_01` is in no index on a key page, so `orderedIndexFor($pageId, 'i_str_01')` is null there and `orderedIndexFor($pageId, 'i_str_01_k')` is the index.
+- **The extra query runs only when that map holds a key column.** That is one `information_schema.COLUMNS` read, the first time a read asks for a string slot's key, for a model on key pages, and none for a model on prefix pages. `StringKeyResolutionTest` and `LazyDictionaryTest` count it.
+- **Neither map is read when the snapshot loads.** `SlotResolver::load()` gives the entry a `DictionaryMaps` and sends no dictionary query. The first `orderedIndexFor()`, `stringKeyFor()`, `orderedIndexMap()` or `stringKeyMap()` that needs a map reads it, and `DictionaryMaps` keeps it, except when the read fails: the exception goes to the caller and the next call tries again, because an empty map kept from a failure would say "no such index" for as long as the snapshot lives. `stringKeyFor()` answers null for any column that is not an `i_str_NN` string slot without reading either map, because the compiler asks it for every leaf of every join-strategy read. Take that early answer out and every filter loads both maps again. `LazyDictionaryTest` pins all of it, and `ReadStatementCountTest` pins what whole reads send.
+- **A slot is left out, and compiles to the SQL it had before keys, when** the index map has no usable index on its key (a hidden one included), the key column is not a `VARBINARY`, or the dictionary's collation or width cannot be trusted. `StringKey::fromDictionary()` refuses a collation name that is not a plain identifier, because it ends up inside SQL.
+- **`orderedIndexes`, `stringKeys` and then `dictionary` are the last `SnapshotEntry` constructor parameters, and all three default to empty or null.** A snapshot built by hand passes the two arrays and no loader. One loaded from the database passes the `DictionaryMaps` loader and leaves the arrays empty. That is why the arrays are private and everything reads the maps through `orderedIndexMap()` and `stringKeyMap()`: a test that read the array of a loaded snapshot would see an empty one and pass for the wrong reason. Hand-built snapshots must keep compiling to the old SQL, so never make any of the three required.
+
+## What a read costs in statements
+
+`ReadStatementCountTest` pins each list below by name, so a change to what a read sends shows up as a change to a list there. A warm read has the snapshot cached in this process (one `StarDust`, or one `EntryReader`). A cold read is the first in the process, or the first after the schema version moved.
+
+| Read, warm | Statements sent |
+| :-- | :-- |
+| no filter, sort or cursor | version check, probe, fetch (3) |
+| a filter of any number of leaves | the same three |
+| a field sort, no filter | the same three |
+| a cursor only | the same three |
+| the probe returns no ids | version check, probe (2), because the fetch is skipped |
+| point read, entry found or missing | the entry statement alone (1), with the version in its select list |
+
+A cold read adds the snapshot load, which is one join of the model, fields, slots and page table names. The two dictionary lookups join it only when the filter needs them. An equality on an integer, numeric or datetime field asks for the ordered indexes from `information_schema.STATISTICS`. Any string leaf asks for them too and, on a page with a string key column, for the string keys from `information_schema.COLUMNS` as well.
+
+| Read, cold | Statements sent |
+| :-- | :-- |
+| point read | the entry, the registry join (2) |
+| no filter, or only ranges on integer, numeric and datetime fields | version check, registry join, probe, fetch (4) |
+| an integer, numeric or datetime equality | those four and the index map (5) |
+| a string equality on a prefix page | the same five |
+| a string equality on a key page | those five and the key map (6) |
+
+A point read loads the snapshot only when the entry exists.
+
+Three things used to add statements to every warm read, and each is gone: a second version check inside the driver, one filterability query per filter leaf, and a separate version check in the point read. `ReadStatementCountTest`, `SnapshotCapabilityTest` and `PointReadVersionTest` are what fail if one comes back.
+
+- **Server detection and, on MariaDB, `SET SESSION max_sort_length`, are paid once per `StarDust` and are not counted.**
+- **Counting with the server counters needs care.** Under native prepares the server counts every statement that goes through PDO, `PDO::query()` included, as `Com_stmt_prepare`, `Com_stmt_execute` and `Com_stmt_close`, and a SELECT also adds `Com_select`. Under emulated prepares only `Com_select` moves. A harness that reads `SHOW STATUS` before and after adds one prepare, one execute and one close of its own under native prepares. The PHP-side recording connection in `tests/Smoke/Support/StatementRecordingPdo.php` is the instrument to trust, and the counters are a cross-check.
+
 ## Point read
 
-`EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013.
+`EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013. It is one statement when the snapshot is warm: the schema version is selected in the same statement as the entry and handed to `SchemaVersionCache::snapshotForModelAt()`, so there is no version check of its own (see "`get()` and the ADR 0036 rename window" in `src/Search/CLAUDE.md`).
 
 Because it returns the payload verbatim, it is the one read surface that would otherwise leak a key the registry has already severed. `SnapshotEntry::canonicalisePayloadKeys()` therefore does two jobs: it rewrites an in-flight rename's old key forward, and it strips an in-flight deletion's key outright. **Without the second, `get()` and `read()` would disagree about the same entry for the whole purge window** — the paginated read is driven by `fieldsByName`, which excludes the field, and the point read is not. `DeleteWindowTest::testPointReadAgreesWithPaginatedReadDuringTheWindow` pins it. Both halves are guarded by an eagerly-computed boolean so the steady-state cost stays at one check.
 

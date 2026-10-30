@@ -153,8 +153,9 @@ final class BulkIngestor
 
         $this->pdo->beginTransaction();
         try {
-            foreach ($chunk as $payload) {
-                $result = $this->entryWriter->writeWithinTransaction($payload, $correlationId);
+            // One chunk, a constant number of statements, see
+            // EntryChunkWriter. Results come back in payload order.
+            foreach ($this->entryWriter->chunkWriter()->writeChunk($chunk, $correlationId) as $result) {
                 $entryIds[] = $result->entryId;
             }
             $this->pdo->commit();

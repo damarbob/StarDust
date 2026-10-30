@@ -17,11 +17,11 @@ namespace StarDust\Schema;
  *     against it will work right now.
  *
  * They diverge for the whole of a promotion or retype backfill window,
- * and while a newly-registered filterable field waits for the Watcher
- * to provision capacity. During those windows the field is filterable
- * but not indexed, and a filter targeting it is rejected with
- * `FieldNotIndexedException` (ADR 0004) while reads fall back to the
- * JSON payload. A UI that offers "filter by this field" should gate on
+ * and for a newly-registered filterable field until its first write has
+ * been drained by the Reconciler, which is when the field gets a slot.
+ * During those windows the field is filterable but not indexed, and a
+ * filter targeting it is rejected with `FieldNotFilterableException`
+ * (ADR 0004, ADR 0022) while reads fall back to the JSON payload. A UI that offers "filter by this field" should gate on
  * `$isIndexed`, not `$isFilterable`.
  */
 final class FieldDescription

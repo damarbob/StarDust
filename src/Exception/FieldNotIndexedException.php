@@ -14,9 +14,12 @@ use RuntimeException;
  * or stale, so the engine refuses filter/sort traffic on the field
  * until it advances to `assigned` or `ready`.
  *
- * Operator response: wait for the active retype to finish (Phase 6b
- * lifecycle), or — for unmapped fields — reserve a slot via the
- * Phase 2 slot reserver and rerun the query.
+ * The built-in engine does not throw this. Since the search driver
+ * seam (ADR 0022) the pre-flight asks the driver one yes/no question,
+ * `supportsFilterOn()`, and a "no" for any of the states above surfaces
+ * as {@see FieldNotFilterableException}, whose message says when the
+ * field is declared filterable but not indexed yet. The class stays so
+ * a custom driver or caller can tell the two apart if it wants to.
  */
 final class FieldNotIndexedException extends RuntimeException
 {

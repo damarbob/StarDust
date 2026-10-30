@@ -17,6 +17,7 @@ use StarDust\Read\EntryQuery;
 use StarDust\Read\PaginatedProbe;
 use StarDust\Read\ResultAssembler;
 use StarDust\Read\SchemaVersionCache;
+use StarDust\Read\SnapshotEntry;
 use StarDust\Search\ConsistencyModel;
 use StarDust\Search\EntrySearchInterface;
 use StarDust\Search\SearchRequest;
@@ -41,12 +42,24 @@ use StarDust\Support\UuidV4;
  * `assigned` or `ready` status — the same definition used by
  * {@see \StarDust\Read\FieldDescriptor::isIndexedNow()}.
  *
+ * {@see self::withVerifiedSnapshot()} returns a request-scoped copy whose
+ * `list()` reads a snapshot the caller has already checked against the live
+ * schema version, instead of checking it again. The copy also answers
+ * `supportsFilterOn()` and `supportsSortOn()` from that snapshot and sends no
+ * statement for them. The shared instance always asks the database.
+ *
  * Strong consistency: every read sees every committed write
  * ({@see ConsistencyModel::STRONG}).
  */
 final class MysqlNativeDriver implements EntrySearchInterface
 {
     private string $lastCompileStrategy = 'joins';
+
+    /**
+     * Set only on the copy {@see self::withVerifiedSnapshot()} returns, which
+     * lives for one request. The shared instance never carries one.
+     */
+    private ?SnapshotEntry $verified = null;
 
     private readonly SqlFilterCompiler $compiler;
     private readonly PaginatedProbe $probe;
@@ -114,13 +127,36 @@ final class MysqlNativeDriver implements EntrySearchInterface
         $this->assembler = $assembler ?? new ResultAssembler();
     }
 
+    /**
+     * A copy of this driver for one request, carrying a snapshot the caller
+     * has just checked against the live schema version.
+     *
+     * {@see self::list()} on the copy reads that snapshot instead of checking
+     * the version a second time, so the pre-flight that resolved the snapshot
+     * and the query that follows it work from the same one, and the request
+     * sends one version check. The copy shares everything else with this
+     * instance and is meant to be dropped when the request ends.
+     *
+     * `SearchService` is the intended caller. The shared instance keeps
+     * checking the version on every `list()`, as before.
+     */
+    public function withVerifiedSnapshot(SnapshotEntry $snapshot): self
+    {
+        $copy = clone $this;
+        $copy->verified = $snapshot;
+
+        return $copy;
+    }
+
     public function list(SearchRequest $request): SearchResult
     {
-        $snapshot = $this->cache->snapshotForModel(
-            $request->modelId,
-            $request->tenantId,
-            $request->correlationId,
-        );
+        $snapshot = $this->verified !== null && $this->verified->modelId === $request->modelId
+            ? $this->verified
+            : $this->cache->snapshotForModel(
+                $request->modelId,
+                $request->tenantId,
+                $request->correlationId,
+            );
 
         // ADR 0038: the read surfaces go DARK for a model being deleted —
         // an empty page, indistinguishable from a model that never
@@ -129,8 +165,9 @@ final class MysqlNativeDriver implements EntrySearchInterface
         //
         // This belongs here rather than in `SearchService` or the
         // pre-flight, and the reason is structural: `SearchService`
-        // resolves the snapshot only when `filter !== null`, so a
-        // match-all read would sail straight past a check placed there.
+        // resolves the snapshot only when there is a filter, a sort or a
+        // cursor, so a plain match-all read would sail straight past a
+        // check placed there.
         // The driver resolves it unconditionally, so this one site covers
         // filtered and unfiltered alike — and covers `read()`, which is a
         // façade over exactly this call.
@@ -184,8 +221,13 @@ final class MysqlNativeDriver implements EntrySearchInterface
 
     public function get(int $tenantId, int $entryId): ?Entry
     {
+        // The live schema version rides in the same statement as the entry,
+        // as a constant lookup by primary key that is evaluated once, so the
+        // point read sends no version check of its own. A missing entry still
+        // costs this one statement and no more.
         $stmt = $this->pdo->prepare(
-            'SELECT id, tenant_id, model_id, created_at, deleted_at, fields'
+            'SELECT id, tenant_id, model_id, created_at, deleted_at, fields,'
+            . ' (SELECT version FROM stardust_schema_version WHERE id = 1) AS schema_version'
             . ' FROM entry_data'
             . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
@@ -211,16 +253,22 @@ final class MysqlNativeDriver implements EntrySearchInterface
         // physically present for the length of the purge. Without the
         // strip, get() would keep serving a field read() denies exists.
         //
-        // This costs a schema-version probe that get() did not
-        // previously pay, which is a deliberate trade: read() pays it on
-        // every call, ADR 0015 designs it to be sub-millisecond, and the
-        // rewrite itself is gated behind precomputed booleans so the
-        // steady state is a no-op.
-        $snapshot = $this->cache->snapshotForModel(
-            $modelId,
-            $tenantId,
-            UuidV4::generate(),
-        );
+        // The version that arrived with the entry is the one ADR 0015 asks
+        // every request to read, so a cached snapshot at that version is a
+        // hit and anything else is loaded and reported as a `cache_miss`,
+        // once. The rewrite itself is gated behind precomputed booleans, so
+        // the steady state is a no-op.
+        //
+        // A NULL version means the singleton row is missing, and falling
+        // back to the ordinary check raises the same error every other read
+        // raises. There is no bounded-staleness fallback on this path,
+        // because a failure of the combined statement leaves no entry to
+        // return.
+        $correlationId = UuidV4::generate();
+        $liveVersion   = $row['schema_version'];
+        $snapshot = $liveVersion === null
+            ? $this->cache->snapshotForModel($modelId, $tenantId, $correlationId)
+            : $this->cache->snapshotForModelAt($modelId, $tenantId, $correlationId, (int) $liveVersion);
         // ADR 0038, and this MUST come before the canonicalisation below
         // rather than being folded into it. A model deletion marks every
         // field, so `pendingDeletionNames` holds all of them and
@@ -256,6 +304,19 @@ final class MysqlNativeDriver implements EntrySearchInterface
 
     public function supportsFilterOn(int $fieldId): bool
     {
+        // On the per-request copy the field is judged from the snapshot the
+        // request has just checked against the live schema version. That is
+        // the same rule as the query below, because the snapshot is loaded
+        // with the same join and `isIndexedNow()` applies the same two
+        // conditions, so a pre-flight over any number of leaves sends no
+        // statement. A field the snapshot does not carry (one being deleted,
+        // one of another model, an unknown id) falls through to the query.
+        // The shared instance has no snapshot and always asks the database.
+        $descriptor = $this->verified?->fieldById($fieldId);
+        if ($descriptor !== null) {
+            return $descriptor->isIndexedNow();
+        }
+
         $stmt = $this->pdo->prepare(
             'SELECT f.is_filterable AS is_filterable, a.status AS slot_status'
             . ' FROM stardust_fields f'
@@ -306,7 +367,10 @@ final class MysqlNativeDriver implements EntrySearchInterface
     /**
      * Exposed for `SearchService::execute()` so the `search_request`
      * event can carry the chosen compile strategy (`joins` or
-     * `exists`). Reset on every `list()` call.
+     * `exists`). Reset on every `list()` call. A filtered, sorted or cursor
+     * read goes through the per-request copy, so the service reads it from
+     * that copy, and the shared instance keeps the strategy of its own last
+     * `list()`.
      */
     public function lastCompileStrategy(): string
     {

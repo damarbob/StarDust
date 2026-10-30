@@ -6,6 +6,7 @@ namespace StarDust\Tests\Smoke\Watcher;
 
 use StarDust\Clock\SystemClock;
 use StarDust\Logging\StdoutNdjsonLogger;
+use StarDust\Support\StringKeyLayout;
 use StarDust\Tests\Smoke\Phase5TestCase;
 
 /**
@@ -57,7 +58,13 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
         return (int) $this->pdo->query('SELECT COUNT(*) FROM stardust_pages')->fetchColumn();
     }
 
-    /** @return list<string> */
+    /**
+     * The columns the page's indexes cover. A string slot is indexed through
+     * its key column, which is reported as the slot it keys, so the assertions
+     * say which slots are indexed whatever shape the page has.
+     *
+     * @return list<string>
+     */
     private function indexedColumnsOf(int $pageId): array
     {
         $table = 'entry_slots_page_' . $pageId;
@@ -65,7 +72,8 @@ final class WatcherDemandDrivenProvisionTest extends Phase5TestCase
 
         $cols = [];
         foreach ($rows as $row) {
-            $cols[] = (string) $row['Column_name'];
+            $column = (string) $row['Column_name'];
+            $cols[] = StringKeyLayout::slotColumn($column) ?? $column;
         }
 
         return array_values(array_unique($cols));
