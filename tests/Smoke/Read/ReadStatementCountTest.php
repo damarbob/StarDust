@@ -256,7 +256,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
         );
     }
 
-    public function testColdPointReadOnAKeyPageLoadsTheSnapshot(): void
+    public function testColdPointReadOnAKeyPageSendsNoDictionaryQuery(): void
     {
         [$modelId] = $this->setupFilterableStringField();
         $entryId = $this->seedEntry(1, $modelId, ['name' => 'a']);
@@ -264,9 +264,53 @@ final class ReadStatementCountTest extends ReadPathTestCase
 
         $engine->get(1, $entryId);
 
+        self::assertSame(['entry', 'snapshot registry'], $this->sent($pdo));
+    }
+
+    public function testColdReadWithNoFilterSendsNoDictionaryQuery(): void
+    {
+        [$modelId] = $this->sortableModelWithEntries();
+        [$engine, $pdo] = $this->engine();
+
+        $engine->read(new EntryQuery(tenantId: 1, modelId: $modelId));
+
+        self::assertSame(['version', 'snapshot registry', 'probe', 'fetch'], $this->sent($pdo));
+    }
+
+    public function testColdRangeOnAnIntegerSendsNoDictionaryQuery(): void
+    {
+        [$modelId] = $this->sortableModelWithEntries();
+        [$engine, $pdo] = $this->engine();
+
+        $engine->read(new EntryQuery(tenantId: 1, modelId: $modelId, filter: LeafNode::local('rank', 'gte', 2)));
+
+        self::assertSame(['version', 'snapshot registry', 'probe', 'fetch'], $this->sent($pdo));
+    }
+
+    public function testColdEqualityOnAnIntegerReadsTheIndexMapOnly(): void
+    {
+        [$modelId] = $this->sortableModelWithEntries();
+        [$engine, $pdo] = $this->engine();
+
+        $engine->read(new EntryQuery(tenantId: 1, modelId: $modelId, filter: LeafNode::local('rank', 'eq', 2)));
+
         self::assertSame(
-            ['entry', 'snapshot registry', 'snapshot indexes', 'snapshot string keys'],
+            ['version', 'snapshot registry', 'snapshot indexes', 'probe', 'fetch'],
             $this->sent($pdo),
         );
+    }
+
+    public function testASecondFilterOnTheSameModelReadsNoDictionaryAgain(): void
+    {
+        [$modelId] = $this->sortableModelWithEntries();
+        [$engine, $pdo] = $this->engine();
+
+        $engine->read(new EntryQuery(tenantId: 1, modelId: $modelId, filter: LeafNode::local('title', 'eq', 'a')));
+        $first = $this->sent($pdo);
+        $engine->read(new EntryQuery(tenantId: 1, modelId: $modelId, filter: LeafNode::local('rank', 'eq', 2)));
+
+        self::assertContains('snapshot indexes', $first);
+        self::assertContains('snapshot string keys', $first);
+        self::assertSame(['version', 'probe', 'fetch'], $this->sent($pdo));
     }
 }

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace StarDust\Read;
 
+use StarDust\Support\StringKeyLayout;
+
 /**
  * Per-model snapshot of registry state, served from {@see SchemaVersionCache}.
  *
@@ -124,9 +126,18 @@ final class SnapshotEntry
      * How `$slotColumn` of `$pageId` is looked up through its generated key,
      * or null when the page does not index it that way. A null means the slot
      * keeps the SQL it had before keys (ADR 0057).
+     *
+     * The compiler asks this for every leaf of a filter, so a column that is
+     * not a string slot is answered here without reading either map. Only a
+     * string slot can have a key, and for any other leaf the data dictionary
+     * would be queried for nothing.
      */
     public function stringKeyFor(int $pageId, string $slotColumn): ?StringKey
     {
+        if (! StringKeyLayout::isStringSlot($slotColumn)) {
+            return null;
+        }
+
         return $this->stringKeyMap()[$pageId][$slotColumn] ?? null;
     }
 

@@ -134,11 +134,6 @@ final class SlotResolver
             );
         }
 
-        $dictionary = new DictionaryMaps($pdo, $pageTableNames);
-        // Read here for now, so the statements a load sends do not move.
-        $dictionary->orderedIndexes();
-        $dictionary->stringKeys();
-
         return new SnapshotEntry(
             modelId: $modelId,
             capturedAtVersion: $atVersion,
@@ -147,7 +142,7 @@ final class SlotResolver
             pageTableNames: $pageTableNames,
             pendingDeletionNames: $pendingDeletionNames,
             modelDeleted: $modelDeleted,
-            dictionary: $dictionary,
+            dictionary: new DictionaryMaps($pdo, $pageTableNames),
         );
     }
 }

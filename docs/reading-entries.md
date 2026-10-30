@@ -85,6 +85,12 @@ How much work the database does to find a page depends on the filter, even thoug
 
 On a page created since text fields began to be indexed through a computed key (see [Slot](../GLOSSARY.md#slot)), a text prefix or range bound narrows the index for its first 16 Latin letters, or about 8 CJK characters. On a column where every value starts with the same longer text, such as the URLs of one site, a longer bound cannot narrow the index, and the read may examine every entry of the tenant. Pages created earlier index the first 766 characters of each value instead, and are not altered.
 
+## The first read in a process
+
+A `StarDust` object that has not read a model yet loads the model's schema first, and keeps it for as long as the object lives. In a long-running process that happens once. In a process that starts for every request, such as PHP-FPM building a `StarDust` object per request, each request pays for it on its first read of each model, because nothing in the engine keeps the schema between processes.
+
+A point read sends two statements, the entry and one for the model's fields, slots and pages. A filtered read sends four, which are the schema version check, that same statement for the model, and the two queries that find and fetch the page. A filter with an equality on an integer, numeric or datetime field, or with any text condition, also reads the table definitions of the model's pages from `information_schema`, one query for their indexes and, for a text condition on a page indexed through a computed key, one for the key columns.
+
 ## Sorting
 
 Reads are ordered by insertion order unless you say otherwise. Pass a `SortSpec` to order by an entry's creation, or by any field that currently has an indexed slot:

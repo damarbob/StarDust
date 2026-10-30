@@ -70,8 +70,9 @@ final class DictionaryMaps
      * fails the read. When several indexes qualify the smallest name wins,
      * so the choice is the same on every refresh.
      *
-     * This is one query per snapshot refresh and nothing on a warm read,
-     * because the snapshot is cached per schema version. `SELECT *` is
+     * This is one query, sent the first time a read asks for an index, and
+     * nothing after that or for a read that never asks, because the map is kept
+     * on the snapshot, which is cached per schema version. `SELECT *` is
      * deliberate: the visibility column has a different name on each engine,
      * and the keys come back in upper case on MySQL 8.
      *
@@ -156,9 +157,8 @@ final class DictionaryMaps
      * name a column that is not there.
      *
      * The query runs only when the index map already holds a key column, so a
-     * model that lives on prefix pages pays nothing, and a warm read pays
-     * nothing either because the snapshot is cached per schema version. A slot
-     * is left out when the index map has no usable index on its key (a hidden
+     * model that lives on prefix pages pays nothing, and a read with no string
+     * leaf never asks for the map at all. A slot is left out when the index map has no usable index on its key (a hidden
      * one included), when the key column is not a `VARBINARY`, or when the
      * dictionary's collation or width cannot be trusted. A slot left out
      * compiles to the SQL it had before keys.

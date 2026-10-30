@@ -52,6 +52,17 @@ final class StringKeyLayoutTest extends TestCase
         }
     }
 
+    public function testOnlyAnIStrColumnWithTwoDigitsIsAStringSlot(): void
+    {
+        foreach (['i_str_01', 'i_str_25'] as $stringSlot) {
+            self::assertTrue(StringKeyLayout::isStringSlot($stringSlot), "'{$stringSlot}'");
+        }
+
+        foreach (['i_int_01', 'i_num_01', 'i_dt_01', 'i_str_1', 'i_str_01_k', 'str_01', 'x_i_str_01', 'i_str_01 ', ''] as $other) {
+            self::assertFalse(StringKeyLayout::isStringSlot($other), "'{$other}'");
+        }
+    }
+
     public function testKeyWidthIsTheHeadPlusTheDigest(): void
     {
         self::assertSame(48, StringKeyLayout::keyWidth());

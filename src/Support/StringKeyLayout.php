@@ -61,10 +61,16 @@ final class StringKeyLayout
     {
     }
 
+    /** True for `i_str_01` and the other string slot columns of a page, false for any other column. */
+    public static function isStringSlot(string $slotColumn): bool
+    {
+        return preg_match('/\Ai_str_\d{2}\z/', $slotColumn) === 1;
+    }
+
     /** `i_str_01` becomes `i_str_01_k`. */
     public static function keyColumn(string $slotColumn): string
     {
-        if (preg_match('/\Ai_str_\d{2}\z/', $slotColumn) !== 1) {
+        if (! self::isStringSlot($slotColumn)) {
             throw new InvalidArgumentException("StringKeyLayout: '{$slotColumn}' is not a string slot column.");
         }
 

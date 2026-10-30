@@ -139,7 +139,8 @@ final class StringKeyResolutionTest extends WritePathTestCase
 
     /**
      * The extra dictionary query is paid for a model on key pages and by nobody
-     * else. A warm read pays nothing, because the snapshot is cached.
+     * else, and only once something asks for the keys. Loading the snapshot
+     * sends none, and neither does a second question.
      */
     public function testOnlyAModelOnKeyPagesPaysForTheExtraDictionaryQuery(): void
     {
@@ -155,10 +156,16 @@ final class StringKeyResolutionTest extends WritePathTestCase
             TestPdo::options(),
         );
 
-        $this->load($prefixModel, $pdo);
+        $this->load($prefixModel, $pdo)->stringKeyMap();
         self::assertSame(0, $pdo->countPreparedContaining('information_schema.COLUMNS'));
 
-        $this->load($keyModel, $pdo);
+        $snapshot = $this->load($keyModel, $pdo);
+        self::assertSame(0, $pdo->countPreparedContaining('information_schema.COLUMNS'));
+
+        $snapshot->stringKeyMap();
+        self::assertSame(1, $pdo->countPreparedContaining('information_schema.COLUMNS'));
+
+        $snapshot->stringKeyMap();
         self::assertSame(1, $pdo->countPreparedContaining('information_schema.COLUMNS'));
     }
 }
