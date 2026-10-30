@@ -65,7 +65,6 @@ final class ReadStatementCountTest extends ReadPathTestCase
             $sql === 'SELECT version FROM stardust_schema_version WHERE id = 1' => 'version',
             str_contains($sql, 'SELECT f.is_filterable AS is_filterable') => 'filterability',
             str_contains($sql, 'FROM stardust_models m') => 'snapshot registry',
-            str_contains($sql, 'FROM stardust_pages') => 'snapshot pages',
             str_contains($sql, 'information_schema.STATISTICS') => 'snapshot indexes',
             str_contains($sql, 'information_schema.COLUMNS') => 'snapshot string keys',
             str_contains($sql, 'WHERE entry_data.id IN') => 'fetch',
@@ -219,7 +218,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
         self::assertSame(['entry'], $sent);
     }
 
-    public function testColdReadOnAPrefixPageLoadsThreeSnapshotStatements(): void
+    public function testColdReadOnAPrefixPageLoadsTheSnapshotAndTheIndexMap(): void
     {
         $this->provisionPrefixPage(['i_str_01']);
         $modelId = $this->createModel(1);
@@ -232,14 +231,14 @@ final class ReadStatementCountTest extends ReadPathTestCase
         self::assertSame(
             [
                 'version',
-                'snapshot registry', 'snapshot pages', 'snapshot indexes',
+                'snapshot registry', 'snapshot indexes',
                 'probe', 'fetch',
             ],
             $this->sent($pdo),
         );
     }
 
-    public function testColdReadOnAKeyPageLoadsFourSnapshotStatements(): void
+    public function testColdReadOnAKeyPageLoadsTheSnapshotTheIndexMapAndTheKeys(): void
     {
         [$modelId] = $this->setupFilterableStringField();
         $this->seedEntry(1, $modelId, ['name' => 'a']);
@@ -250,7 +249,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
         self::assertSame(
             [
                 'version',
-                'snapshot registry', 'snapshot pages', 'snapshot indexes', 'snapshot string keys',
+                'snapshot registry', 'snapshot indexes', 'snapshot string keys',
                 'probe', 'fetch',
             ],
             $this->sent($pdo),
@@ -266,7 +265,7 @@ final class ReadStatementCountTest extends ReadPathTestCase
         $engine->get(1, $entryId);
 
         self::assertSame(
-            ['entry', 'snapshot registry', 'snapshot pages', 'snapshot indexes', 'snapshot string keys'],
+            ['entry', 'snapshot registry', 'snapshot indexes', 'snapshot string keys'],
             $this->sent($pdo),
         );
     }

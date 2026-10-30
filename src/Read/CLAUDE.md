@@ -52,7 +52,7 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 | the probe returns no ids | version check, probe (2), because the fetch is skipped |
 | point read, entry found or missing | the entry statement alone (1), with the version in its select list |
 
-A cold read adds the snapshot load: the model, fields and slots join, the page table names, the ordered indexes from `information_schema.STATISTICS`, and, only when a page has a string key column, the string keys from `information_schema.COLUMNS`. That is three more statements on a prefix page and four on a key page. A point read loads the snapshot only when the entry exists.
+A cold read adds the snapshot load: one join of the model, fields, slots and page table names, the ordered indexes from `information_schema.STATISTICS`, and, only when a page has a string key column, the string keys from `information_schema.COLUMNS`. That is two more statements on a prefix page and three on a key page. A point read loads the snapshot only when the entry exists.
 
 Three things used to add statements to every warm read, and each is gone: a second version check inside the driver, one filterability query per filter leaf, and a separate version check in the point read. `ReadStatementCountTest`, `SnapshotCapabilityTest` and `PointReadVersionTest` are what fail if one comes back.
 
