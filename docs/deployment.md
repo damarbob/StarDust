@@ -7,7 +7,7 @@ StarDust ships two ways to keep its slot machinery healthy: four persistent back
 A supported persistent-process deployment target MUST provide all of the following.
 
 1. **Persistent background processes or long-running containers** — systemd, supervisor, Docker / Kubernetes / ECS, or equivalent.
-2. **MySQL 8.0.13+ or Percona 8.0.13+, or MariaDB 10.11+** (also covered by [Requirements](../README.md#requirements)). MariaDB older than 10.11 and MySQL/Percona older than 8.0.13 are rejected — StarDust detects the server and version at boot and refuses to run below either floor.
+2. **MySQL 8.0.13+ or Percona 8.0.13+, or MariaDB 10.11+** (also covered by [Requirements](../README.md#requirements)). MariaDB older than 10.11 and MySQL/Percona older than 8.0.13 are rejected — StarDust detects the server and version at boot and refuses to run below either floor. It also refuses a server whose InnoDB pages are smaller than 8 KB, and the default is 16 KB.
 3. **PHP 8.x with CLI access** for the `bin/stardust` entry point.
 4. **Local filesystem write access** for the Chronicler's async export artifacts (a mounted volume in container deployments).
 5. **PID-file or orchestrator-level singleton enforcement for the Watcher** — the in-database advisory lock is a safety net, not the primary enforcement mechanism. The Liberator is multi-worker (page-table-granularity `GET_LOCK` exclusion, not a process singleton) — run as many `bin/stardust liberator` processes as you want reclaim throughput.

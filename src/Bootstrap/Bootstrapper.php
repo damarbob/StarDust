@@ -6,6 +6,7 @@ namespace StarDust\Bootstrap;
 
 use PDO;
 use PDOException;
+use StarDust\Exception\UnsupportedServerException;
 use StarDust\Support\Dialect;
 use StarDust\Support\PdoQuery;
 use StarDust\Support\ServerEngine;
@@ -34,6 +35,12 @@ use StarDust\Support\ServerEngine;
  */
 final class Bootstrapper
 {
+    /**
+     * A page with a full set of text slots does not fit a 4 KB InnoDB page
+     * (errno 1118), and 8 KB builds one on every supported engine (ADR 0057).
+     */
+    private const MIN_INNODB_PAGE_SIZE = 8192;
+
     public function __construct(
         private readonly PDO $pdo,
         private readonly ServerEngine $engine,
@@ -42,6 +49,8 @@ final class Bootstrapper
 
     public function run(): void
     {
+        $this->assertInnodbPageSize();
+
         $this->createEntryData();
         $this->createSyncQueue();
         $this->createModels();
@@ -71,6 +80,27 @@ final class Bootstrapper
         $this->ensureExportJobsArtifactBytesColumn();
         $this->seedSchemaVersionSingleton();
         $this->seedAdvisoryScheduleSingleton();
+    }
+
+    /**
+     * Refuses a server whose pages are too small before any table exists.
+     * Without it the refusal comes later and sideways: bootstrap passes, and
+     * the Watcher then fails every poll with errno 1118 once a model needs a
+     * page with enough text slots.
+     */
+    private function assertInnodbPageSize(): void
+    {
+        $value = PdoQuery::run($this->pdo, 'SELECT @@innodb_page_size')->fetchColumn();
+        $bytes = is_numeric($value) ? (int) $value : 0;
+
+        if ($bytes > 0 && $bytes < self::MIN_INNODB_PAGE_SIZE) {
+            throw new UnsupportedServerException(
+                "This server uses InnoDB pages of {$bytes} bytes, and StarDust needs at least "
+                . self::MIN_INNODB_PAGE_SIZE . ' bytes. The page size is fixed when the server\'s data'
+                . ' directory is created, so run StarDust on a server created with 8 KB or 16 KB pages'
+                . ' (16 KB is the default).'
+            );
+        }
     }
 
     private function createEntryData(): void

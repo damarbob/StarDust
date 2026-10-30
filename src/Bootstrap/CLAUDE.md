@@ -12,6 +12,10 @@ It creates the data plane (`entry_data`, `stardust_sync_queue`), the schema regi
 - **A new table also goes in `SchemaFixture::CORE_TABLES`**, or tests leak state between each other. `Conventions/BootstrapperTableAllowlistTest` fails on drift in either direction. See `tests/Smoke/CLAUDE.md`.
 - **Engine-specific DDL text comes from `Support\Dialect`**, never an inline literal (root `CLAUDE.md`, "Support utilities").
 
+## The page-size gate
+
+`run()` starts with `assertInnodbPageSize()`, which throws `UnsupportedServerException` when `@@innodb_page_size` is below 8192, before any DDL. A server fixes the size when its data directory is created, so nothing can work around it. Without the gate, `bootstrap()` passed on a 4 KB server and the failure came later and sideways. A 4 KB page still builds a page with 12 text slots, and one with 25 fails with errno 1118 on every Watcher poll, so the error depended on a model's size. A value the gate cannot read passes, so it never refuses what it cannot see. `BootstrapTest` fakes the one query with `Support/PageSizeFakingPdo`, since a test cannot change a server's page size.
+
 ## `stardust_slot_assignments`
 
 - **`status` is a closed five-state ENUM**: `free | assigned | tombstoned | backfilling | ready`. Out-of-band values are rejected by the database (default `STRICT_TRANS_TABLES`). The live states are `assigned | backfilling | ready`, and the write path materialises into all three.

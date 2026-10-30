@@ -218,8 +218,9 @@ The engine detects which one it's talking to at boot, so there is no configurati
 
 - **MariaDB older than 10.11**, because a JSON-column collation divergence found below the 10.11 floor has no configuration-only fix.
 - **MySQL and Percona older than 8.0.13**, which lack the functional unique indexes the schema registry depends on. This includes the early 8.0 releases (8.0.0 to 8.0.12), not only 5.7.
+- **InnoDB pages smaller than 8 KB.** A server fixes its page size when its data directory is created, and the rows of an extension page with a full set of text slots do not fit a 4 KB page. The default is 16 KB.
 
-Either unsupported engine is detected and refused at boot, not discovered in production.
+Each of these is detected and refused at boot, not discovered in production.
 
 ---
 
