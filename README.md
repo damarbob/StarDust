@@ -57,7 +57,7 @@ Want to tinker? [`docker/seed.php`](docker/seed.php) is the whole flow as readab
 
 Some StarDust behaviour only makes sense as a sequence in time, and [`examples/`](examples/) covers that. These are small scripts that seed their own data, narrate themselves in the terminal, and clean up after. Start with [`examples/01-field-lifecycle.php`](examples/01-field-lifecycle.php), which answers the question that trips up nearly everyone. Why can't a field you just marked filterable be filtered yet, and what has to happen before it can?
 
-> **Heads up, this is an alpha.** `0.3.0-alpha.1` is a ground-up rewrite (**Vertical Schema Partitioning**) of the legacy 0.2.x line, motivated by scalability limits and OOM vulnerabilities in the old Virtual Column design, and it shares no API with it. The public API may still change before 0.3.0. The honest caveats live in [Is StarDust a fit?](#is-stardust-a-fit) and [Status](#status), not buried in the fine print.
+> **Heads up, this is an alpha.** `0.3.0-alpha.2` is part of a ground-up rewrite (**Vertical Schema Partitioning**) of the legacy 0.2.x line, motivated by scalability limits and OOM vulnerabilities in the old Virtual Column design, and it shares no API with it. The public API may still change before 0.3.0. The honest caveats live in [Is StarDust a fit?](#is-stardust-a-fit) and [Status](#status), not buried in the fine print.
 
 StarDust ships as a **framework-neutral Composer library** with zero runtime framework dependencies, only the `psr/log` and `psr/clock` interfaces. Framework adapters (CodeIgniter 4 first) are opt-in companion packages, never core requirements.
 
@@ -177,7 +177,7 @@ Some vocabulary here is specific to StarDust, such as *slot*, *page*, *spread* a
 
 ## Status
 
-**The current release is `0.3.0-alpha.1`.** Everything listed below is implemented and covered by the test suite, but the public API may still change before 0.3.0. [CHANGELOG.md](CHANGELOG.md) lists what each release contains.
+**The current release is `0.3.0-alpha.2`.** Everything listed below is implemented and covered by the test suite, but the public API may still change before 0.3.0. [CHANGELOG.md](CHANGELOG.md) lists what each release contains.
 
 **What works today:**
 

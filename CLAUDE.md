@@ -11,7 +11,7 @@ The first import is the short list of rules that hold in every repository of our
 
 ## Release state
 
-**`0.3.0-alpha.1` was tagged on 2026-09-23 and is the published release.** Work after it ships as the next `0.3.0-alpha.N` (or a later pre-release), decided at release time. The public surface is now really public: a change to an entry point, `Config`'s constructor or `EntrySearchInterface` breaks someone.
+**`0.3.0-alpha.2` was tagged on 2026-10-31 and is the published release.** Work after it ships as the next `0.3.0-alpha.N` (or a later pre-release), decided at release time. The public surface is now really public: a change to an entry point, `Config`'s constructor or `EntrySearchInterface` breaks someone.
 
 The legacy 0.2.x line (CodeIgniter 4 + Virtual Columns) was removed in `02eccd4` and lives on as `^0.2.0-alpha.x` Packagist tags. Do not port code back from it.
 
@@ -237,7 +237,7 @@ They live in [tests/Smoke/CLAUDE.md](tests/Smoke/CLAUDE.md): the `SchemaFixture`
 
 ## Working conventions
 
-- **`StarDust::VERSION` names the last tagged release (`0.3.0-alpha.1`).** It moves only at release time, in the same commit as the matching CHANGELOG heading.
+- **`StarDust::VERSION` names the last tagged release (`0.3.0-alpha.2`).** It moves only at release time, in the same commit as the matching CHANGELOG heading.
 - **Never cite anything a fresh clone doesn't have.** Tracked text (code, comments, docs, tests, commit messages) may point at files in this repo and at SDDPG, and nothing else. That rules out local notes and plan files, and also the labels that only mean something inside them, such as item numbers and stage names. Describe the thing instead, and ask the maintainer before adding any such reference.
 - **Don't commit unprompted.** Implement, run PHPStan and the smoke suite, then hand over a proposed commit message and let the maintainer commit.
 - **Verify database claims against a real server.** MySQL's storage limits are full of traps this design has already hit (errno 1118 on 25 wide VARCHARs, errno 1071 under the wrong `ROW_FORMAT`). If a claim about database behaviour is load-bearing, probe it.

@@ -117,7 +117,7 @@ use StarDust\Write\TenantId;
  */
 final class StarDust
 {
-    public const VERSION = '0.3.0-alpha.1';
+    public const VERSION = '0.3.0-alpha.2';
 
     private ?EntryWriter $entryWriter = null;
     private ?EntryDeleter $entryDeleter = null;

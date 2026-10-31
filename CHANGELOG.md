@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-alpha.2] - 2026-10-31
+
+This release makes reads and bulk writes cheaper, indexes text fields through a key computed from the whole value, and lets a field sort choose where entries with no value go. It also fixes a case where a field being promoted could be filtered before its older entries were copied. It is still an alpha, so the public API may change before 0.3.0. Install it with `composer require damarbob/stardust:^0.3@alpha`.
+
+**Upgrading from 0.3.0-alpha.1.** Replace every process of the old release before the new release's Watcher builds its first page. That means the four daemons in the reference mode, or the scheduled `tick` in the cron mode. A process from alpha.1 cannot claim a text slot on a page built with a key, so its Watcher provisions another page on every poll until it is replaced. Pages that already exist are never altered, no existing table changes, and `bootstrap()` stays safe to re-run. The steps are under "Upgrading a running deployment" in `docs/deployment.md`.
+
+### Added
+
+- **Null placement in field sorts**: `SortSpec::byField()` takes an optional `NullPlacement` (`First` or `Last`) that says where entries with no value for the sort field go. Left out, the placement is the database's own, first when ascending and last when descending, so existing callers, SQL and cursors do not change. A cursor records the placement only when it is not the default, and a cursor issued under one placement is refused under the other with `InvalidCursorException`. `EntrySearchInterface` gains no method, so a custom driver that ignores the placement orders by its own default without an error, as `docs/custom-search-drivers.md` explains (0611a63, 2c602ac, f6f4993).
+
+### Changed
+
+- **Text fields on new pages**:
+  - A page built by this release indexes each text field through a key computed from the whole value, in place of the first 766 characters. A text filter matches exactly at any length, and a row with several long values can be updated and deleted.
+  - An equality on a text field starts a filtered read from that key on a new page, so the read examines about a page of rows however many entries match.
+  - A row on a new page is wider, because each text value carries a key of about 50 bytes. `docs/deployment.md` gives measured costs and what to expect.
+  - Existing pages are not altered, and no command moves a field between page kinds. A field stays on the kind of page it started on, and new text fields take free slots on older pages first.
+  - Building a page with text slots needs the server's SHA-256 function. On a server that returns nothing for it, building the page raises `UnsupportedServerException`.
+- **Filtered reads**: On MySQL, a filtered read in the default order that holds an equality on an integer, numeric or datetime field now starts from that field's index, so it examines about a page of rows however many entries match. When an `and` holds several such equalities, the first one drives the read, so write the most selective one first. Other filters, and any sort on a field or on creation time, keep their earlier SQL. The gain was measured on MySQL, and MariaDB already planned these reads well (d72f696).
+- **Fewer statements per read**:
+  - A read with a filter, a sort or a cursor now checks the schema version once instead of twice, and answers whether a field is filterable from the snapshot it just checked.
+  - A point read sends the version with the entry, so `get()` with a warm cache is one statement.
+  - A first read of a model in a process loads its index and key lookups only when the read needs them.
+- **Bulk writes**: A chunk of entries is written in a constant number of multi-row statements, where the earlier code sent several statements per entry. The copy step of a retype or promotion writes each chunk in one statement as well (9829e06, c7edd57).
+- **Bootstrap**: `bootstrap()` throws `UnsupportedServerException` on a server whose InnoDB pages are smaller than 8 KB (the default is 16 KB), before it creates any table. The earlier code passed bootstrap and failed later, when the Watcher tried to build a page (9d05373).
+- **Filter on a field that is not indexed yet**: The `FieldNotFilterableException` message now says so when a field is declared filterable but has no index yet. The docs and docblocks no longer name `FieldNotIndexedException` for this case, since the built-in engine never raised it (1abefaa, f4beaf2).
+- **Package contents**: The Composer description, keywords and support links are updated. The release archive no longer carries the tests, examples, CI files, agent rules and Docker files, and `bin/stardust --help` no longer mentions design records (e4704fb, 252161b, a5dfa30).
+
+### Fixed
+
+- **Promotion or retype waiting for a slot**: A field whose promotion or retype was waiting for a free slot could be given one that answered filters before its older entries were copied in, so a filter missed them. The background copy could then fail on every later pass. The slot is now reserved in its copying state, and filters on the field are refused until the copy finishes (54bc488, 4f06259).
+- **Emulated prepared statements**: Reads no longer fail with a MySQL syntax error when the `PDO` connection leaves `PDO::ATTR_EMULATE_PREPARES` at PHP's default. Either setting works now, and the full test suite runs both ways (021f155).
+
+### Known limitations
+
+- The limits listed for 0.3.0-alpha.1 still apply, except the one about emulated prepared statements.
+- On an older page, a row that holds several long values in filterable text fields can be written but then not updated, and MySQL raises error 1713. Keep long free text in fields that are not filterable. `docs/deployment.md` describes the limit.
+- On a new page, a text prefix or range bound narrows the index for only its first 16 Latin letters, or about 8 CJK characters. On a column where every value starts with the same longer text, such as the URLs of one site, the read may examine every entry of the tenant.
+
 ## [0.3.0-alpha.1] - 2026-09-23
 
 The first release of the 0.3 line: a ground-up rewrite, not an upgrade of 0.2. StarDust is now a framework-neutral Composer library built on **Vertical Schema Partitioning** — each entry's full payload is stored as JSON, and the fields you mark filterable are mirrored into typed, indexed columns so filters run on real indexes. There is no upgrade path from 0.2.x; see **Removed** below.
@@ -186,6 +225,7 @@ This is an alpha: the public API may still change before 0.3.0. Install it with 
 
 - Initial release (881b73a)
 
+[0.3.0-alpha.2]: https://github.com/damarbob/StarDust/compare/v0.3.0-alpha.1...v0.3.0-alpha.2
 [0.3.0-alpha.1]: https://github.com/damarbob/StarDust/compare/v0.2.0-alpha.3...v0.3.0-alpha.1
 [0.2.0-alpha.3]: https://github.com/damarbob/StarDust/compare/v0.2.0-alpha.2...v0.2.0-alpha.3
 [0.2.0-alpha.2]: https://github.com/damarbob/StarDust/compare/v0.2.0-alpha.1...v0.2.0-alpha.2
