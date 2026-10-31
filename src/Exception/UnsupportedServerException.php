@@ -18,6 +18,11 @@ use RuntimeException;
  * rejects it. What disqualifies 10.6 is the ADR 0013 JSON-fallback read
  * path comparing case-insensitively in a three-byte charset (ADR 0054
  * §1 finding 5), which only a version gate can catch.
+ *
+ * Two other refusals use it. {@see \StarDust\Bootstrap\Bootstrapper::run()}
+ * rejects InnoDB pages smaller than 8 KB, and
+ * {@see \StarDust\Page\PageProvisioner} rejects a server that cannot compute
+ * the SHA-256 digest a text key needs.
  */
 final class UnsupportedServerException extends RuntimeException
 {

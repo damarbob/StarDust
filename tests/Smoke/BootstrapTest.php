@@ -9,9 +9,11 @@ use PDOException;
 use PHPUnit\Framework\TestCase;
 use StarDust\Bootstrap\Bootstrapper;
 use StarDust\Config\Config;
+use StarDust\Exception\UnsupportedServerException;
 use StarDust\StarDust;
 use StarDust\Support\ServerEngine;
 use StarDust\Support\ServerEngineDetector;
+use StarDust\Tests\Smoke\Support\PageSizeFakingPdo;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 use StarDust\Tests\Smoke\Support\TestPdo;
 
@@ -731,6 +733,46 @@ final class BootstrapTest extends TestCase
             1,
             (int) $this->pdo->query('SELECT COUNT(*) FROM stardust_schema_version')->fetchColumn(),
         );
+    }
+
+    /**
+     * A server fixes its InnoDB page size when its data directory is created,
+     * so the connection is real and only the query that reads the size is
+     * answered with 4096.
+     */
+    public function testRefusesInnodbPagesSmallerThanEightKilobytes(): void
+    {
+        $pdo = $this->connectionReportingPageSize(4096);
+
+        try {
+            (new Bootstrapper($pdo, $this->engine))->run();
+            self::fail('Bootstrap should refuse a server with 4096 byte InnoDB pages.');
+        } catch (UnsupportedServerException $e) {
+            self::assertStringContainsString('4096', $e->getMessage());
+            self::assertStringContainsString('8192', $e->getMessage());
+        }
+
+        self::assertFalse($this->tableExists('stardust_models'), 'The refusal must come before any DDL.');
+    }
+
+    public function testAcceptsInnodbPagesOfEightKilobytes(): void
+    {
+        (new Bootstrapper($this->connectionReportingPageSize(8192), $this->engine))->run();
+
+        self::assertTrue($this->tableExists('stardust_models'));
+    }
+
+    private function connectionReportingPageSize(int $bytes): PageSizeFakingPdo
+    {
+        $pdo = new PageSizeFakingPdo(
+            getenv('STARDUST_TEST_DSN') ?: '',
+            getenv('STARDUST_TEST_USER') ?: '',
+            getenv('STARDUST_TEST_PASS') ?: '',
+            TestPdo::options(),
+        );
+        $pdo->reportedPageSize = $bytes;
+
+        return $pdo;
     }
 
     private function tableExists(string $table): bool
