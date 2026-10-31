@@ -213,7 +213,7 @@ final class SqlFilterCompiler
         }
 
         $orderBy = $driving === null
-            ? $this->compileOrderBy($sortExpression, $this->directionOf($sort))
+            ? $this->compileOrderBy($sortExpression, $this->directionOf($sort), $this->nullsOf($sort))
             : $orderColumn . ' ' . $this->directionOf($sort)->sql();
 
         $sql = ($driving === null
@@ -360,7 +360,7 @@ final class SqlFilterCompiler
             . ')';
     }
 
-    private function compileOrderBy(?string $sortExpression, SortDirection $direction): string
+    private function compileOrderBy(?string $sortExpression, SortDirection $direction, NullPlacement $nulls): string
     {
         $dir = $direction->sql();
 
@@ -368,9 +368,18 @@ final class SqlFilterCompiler
         // tiebreak that makes the ordering total, which is what makes the
         // cursor stable — without it two rows sharing a sort value could
         // swap between pages and be returned twice or never.
-        return $sortExpression === null
-            ? "entry_data.id {$dir}"
-            : "{$sortExpression} {$dir}, entry_data.id {$dir}";
+        if ($sortExpression === null) {
+            return "entry_data.id {$dir}";
+        }
+
+        // The database's own placement needs no help, so that SQL stays as it
+        // was. The other one is asked for with an IS NULL key ahead of the
+        // sort key, where 1 sorts after 0.
+        $nullKey = $nulls === NullPlacement::nativeFor($direction)
+            ? ''
+            : $sortExpression . ' IS NULL ' . ($nulls === NullPlacement::First ? 'DESC' : 'ASC') . ', ';
+
+        return "{$nullKey}{$sortExpression} {$dir}, entry_data.id {$dir}";
     }
 
     private function directionOf(?SortSpec $sort): SortDirection
@@ -380,7 +389,7 @@ final class SqlFilterCompiler
 
     private function nullsOf(?SortSpec $sort): NullPlacement
     {
-        return NullPlacement::nativeFor($this->directionOf($sort));
+        return $sort === null ? NullPlacement::First : $sort->effectiveNulls();
     }
 
     /**

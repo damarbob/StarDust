@@ -30,6 +30,13 @@ namespace StarDust\Read;
  *
  * `null` sort on a query means `SortTarget::Id` ascending — the ordering
  * every read had before sorting existed.
+ *
+ * **Entries with no value for a sorted field.** Their slot column is NULL,
+ * and the database puts NULL first in an ascending sort and last in a
+ * descending one. `byField()` takes a {@see NullPlacement} to choose the
+ * other end, and leaving it out keeps that default. The two intrinsic
+ * targets take no placement, because `entry_data.id` and `created_at` are
+ * never NULL.
  */
 final class SortSpec
 {
@@ -37,6 +44,7 @@ final class SortSpec
         public readonly SortTarget $target,
         public readonly ?string $fieldName,
         public readonly SortDirection $direction,
+        public readonly ?NullPlacement $nulls = null,
     ) {
     }
 
@@ -50,9 +58,25 @@ final class SortSpec
         return new self(SortTarget::CreatedAt, null, $direction);
     }
 
-    public static function byField(string $fieldName, SortDirection $direction = SortDirection::Asc): self
+    public static function byField(
+        string $fieldName,
+        SortDirection $direction = SortDirection::Asc,
+        ?NullPlacement $nulls = null,
+    ): self {
+        return new self(SortTarget::Field, $fieldName, $direction, $nulls);
+    }
+
+    /**
+     * Where entries with no value land, with the default filled in.
+     *
+     * Two specs that differ only in whether the default was spelled out
+     * name the same ordering, so anything that compares orderings (the
+     * cursor check, the compiler) goes through this and not through
+     * {@see $nulls}.
+     */
+    public function effectiveNulls(): NullPlacement
     {
-        return new self(SortTarget::Field, $fieldName, $direction);
+        return $this->nulls ?? NullPlacement::nativeFor($this->direction);
     }
 
     /**

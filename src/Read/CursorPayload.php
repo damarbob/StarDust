@@ -25,6 +25,7 @@ final class CursorPayload
         public readonly int $entryId,
         public readonly ?string $sortKeyIdentity,
         public readonly ?SortDirection $direction,
+        public readonly ?NullPlacement $nulls = null,
     ) {
     }
 
@@ -38,7 +39,7 @@ final class CursorPayload
 
     public static function forSort(SortSpec $sort, int $entryId): self
     {
-        return new self($entryId, $sort->keyIdentity(), $sort->direction);
+        return new self($entryId, $sort->keyIdentity(), $sort->direction, $sort->nulls);
     }
 
     /**
@@ -49,9 +50,13 @@ final class CursorPayload
      * {@see SortSpec::byField()}, which would wrap it a second time and
      * make every decoded cursor mismatch its own sort.
      */
-    public static function forIdentity(string $keyIdentity, SortDirection $direction, int $entryId): self
-    {
-        return new self($entryId, $keyIdentity, $direction);
+    public static function forIdentity(
+        string $keyIdentity,
+        SortDirection $direction,
+        int $entryId,
+        ?NullPlacement $nulls = null,
+    ): self {
+        return new self($entryId, $keyIdentity, $direction, $nulls);
     }
 
     /**
@@ -64,13 +69,22 @@ final class CursorPayload
      * A v1 payload carries no ordering, so it matches the default — both
      * `null` and an explicit ascending sort on `entry_data.id`, which
      * name the same ordering and must not be treated as a mismatch.
+     *
+     * Where empty values land is part of the ordering too, and a token
+     * without a placement means the database's default for its direction.
+     * Both sides are compared with the default filled in, so spelling the
+     * default out is not a mismatch either.
      */
     public function matchesSort(?SortSpec $sort): bool
     {
-        $requestedKey = $sort === null ? '$id' : $sort->keyIdentity();
-        $requestedDir = $sort === null ? SortDirection::Asc : $sort->direction;
+        $requestedKey   = $sort === null ? '$id' : $sort->keyIdentity();
+        $requestedDir   = $sort === null ? SortDirection::Asc : $sort->direction;
+        $requestedNulls = $sort === null ? NullPlacement::nativeFor($requestedDir) : $sort->effectiveNulls();
+
+        $issuedDir = $this->direction ?? SortDirection::Asc;
 
         return ($this->sortKeyIdentity ?? '$id') === $requestedKey
-            && ($this->direction ?? SortDirection::Asc) === $requestedDir;
+            && $issuedDir === $requestedDir
+            && ($this->nulls ?? NullPlacement::nativeFor($issuedDir)) === $requestedNulls;
     }
 }
