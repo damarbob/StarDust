@@ -13,6 +13,7 @@ use StarDust\Filter\Ast\OrNode;
 use StarDust\Filter\Operator;
 use StarDust\Read\CursorCodec;
 use StarDust\Read\EntryQuery;
+use StarDust\Read\NullPlacement;
 use StarDust\Read\SnapshotEntry;
 use StarDust\Read\SortDirection;
 use StarDust\Read\SortSpec;
@@ -178,7 +179,11 @@ final class SqlFilterCompiler
             } else {
                 [$anchorJoinSql, $anchorBindings] =
                     $this->compileAnchorJoin($sort, $snapshot, $anchorId, $query->tenantId);
-                $keysetWhere      = $this->compileKeysetPredicate($sortExpression, $this->directionOf($sort));
+                $keysetWhere      = $this->compileKeysetPredicate(
+                    $sortExpression,
+                    $this->directionOf($sort),
+                    $this->nullsOf($sort),
+                );
                 $keysetBindings[] = $anchorId;
             }
         }
@@ -328,12 +333,19 @@ final class SqlFilterCompiler
      *
      * `<=>` is the NULL-safe equality that makes the tiebreak branch work
      * inside the NULL block itself.
+     *
+     * Only the first branch depends on where the NULL block sits, so it
+     * follows the placement. The direction decides the comparison operator
+     * and nothing else.
      */
-    private function compileKeysetPredicate(string $sortExpression, SortDirection $direction): string
-    {
+    private function compileKeysetPredicate(
+        string $sortExpression,
+        SortDirection $direction,
+        NullPlacement $nulls,
+    ): string {
         $op = $direction->keysetOperator();
 
-        if ($direction === SortDirection::Asc) {
+        if ($nulls === NullPlacement::First) {
             // NULLs first: from a NULL anchor, every non-NULL row is still ahead.
             $leadingBlock = "(sort_anchor.av IS NULL AND {$sortExpression} IS NOT NULL)";
         } else {
@@ -364,6 +376,11 @@ final class SqlFilterCompiler
     private function directionOf(?SortSpec $sort): SortDirection
     {
         return $sort === null ? SortDirection::Asc : $sort->direction;
+    }
+
+    private function nullsOf(?SortSpec $sort): NullPlacement
+    {
+        return NullPlacement::nativeFor($this->directionOf($sort));
     }
 
     /**
