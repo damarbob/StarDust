@@ -198,7 +198,7 @@ Some vocabulary here is specific to StarDust, such as *slot*, *page*, *spread* a
 
 **Not yet available:**
 
-- **Sorting accepts one key.** You can order by entry id, creation time, or a single indexed field. Ordering by two fields at once ("by status, then by name") is not supported, because a second key would need a different pagination protocol.
+- **Sorting accepts one key.** You can order by entry id, creation time, or a single indexed field, and for a field you choose whether entries with no value come first or last. Ordering by two fields at once ("by status, then by name") is not supported, because a second key would need a different pagination protocol.
 - **Exports cannot be filtered.** An export always covers every non-deleted entry in the model. A `submitExport()` call carrying a non-empty `filter` is **rejected** with `ExportFilterNotSupportedException` rather than accepted and quietly ignored, so you find out at submission instead of discovering a full extract in the artifact. The argument is kept on the request DTO so filtering can be added later without a breaking signature change.
 - **Keeping an external search index in sync is up to you.** A custom driver can serve reads from a search service such as Meilisearch or Elasticsearch, but drivers are read-only and StarDust does not yet notify you when entries change. Mirroring your own write calls is not enough either: some changes are applied in the background rather than by a write you made. A field rename rewrites every entry, a type change converts stored values, and a deletion removes them. Until a change feed exists, rebuild the external index from a full export rather than by mirroring writes.
 

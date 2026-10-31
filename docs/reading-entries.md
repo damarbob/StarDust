@@ -96,7 +96,7 @@ A point read sends two statements, the entry and one for the model's fields, slo
 Reads are ordered by insertion order unless you say otherwise. Pass a `SortSpec` to order by an entry's creation, or by any field that currently has an indexed slot:
 
 ```php
-use StarDust\Read\{EntryQuery, SortSpec, SortDirection};
+use StarDust\Read\{EntryQuery, NullPlacement, SortSpec, SortDirection};
 
 // Newest first — the common case, and the cheapest: it resolves to a
 // backward index scan, no sorting work at all.
@@ -110,6 +110,11 @@ $page = $engine->read(new EntryQuery(
 SortSpec::byCreatedAt(SortDirection::Desc);
 SortSpec::byField('title');                        // ascending
 SortSpec::byField('price', SortDirection::Desc);
+
+// Entries with no value for the field come first when ascending and last
+// when descending. NullPlacement puts them at the other end, here the
+// cheapest first with the unpriced ones after.
+SortSpec::byField('price', SortDirection::Asc, NullPlacement::Last);
 ```
 
 Sorting composes with filters and with cursor pagination — keep passing the `nextCursor` back as usual, together with the same filter and sort.
@@ -117,8 +122,8 @@ Sorting composes with filters and with cursor pagination — keep passing the `n
 Four things worth knowing:
 
 - **Only indexed fields are sortable.** A field must be declared filterable and hold a live slot, the same requirement filtering has. Sorting on anything else raises `FieldNotSortableException`, and on an unregistered name `UnknownFieldException`. `describeModel()` reports which fields qualify right now via `ModelDescription::indexedFields()`.
-- **Entries with no value for the sort field sort first ascending, last descending** — they are not dropped from the page.
-- **A cursor belongs to the ordering that produced it.** Change the sort key or its direction and the old cursor is refused with `InvalidCursorException`; start again from the first page. This is a guard, not a limitation to work around — reusing it would silently walk a different sequence. **The filter gets no such guard:** a cursor records a position and the ordering, never the filter, so a follow-up request that omits or changes the filter is accepted and walks the unfiltered sequence from that point.
+- **Entries with no value for the sort field are never dropped from the page.** They sort first when ascending and last when descending, unless you pass a `NullPlacement` to put them at the other end. Among themselves they follow entry id in the direction of the sort.
+- **A cursor belongs to the ordering that produced it.** Change the sort key, its direction or its null placement and the old cursor is refused with `InvalidCursorException`; start again from the first page. This is a guard, not a limitation to work around — reusing it would silently walk a different sequence. **The filter gets no such guard:** a cursor records a position and the ordering, never the filter, so a follow-up request that omits or changes the filter is accepted and walks the unfiltered sequence from that point.
 - **On MariaDB, a field sort orders supplementary-plane characters** — mostly emoji, well outside everyday text — **at the opposite end from MySQL.** Every other comparison, and ordinary text in any language, sorts identically on both engines.
 
 Sorting by `id` or by creation time costs nothing extra. Sorting by one of your own fields makes the database order the whole matching set on each page, so it is measurably more expensive on large models — prefer the built-in orderings when either will do.

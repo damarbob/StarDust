@@ -81,9 +81,11 @@ Because it returns the payload verbatim, it is the one read surface that would o
 `CursorCodec` encodes the opaque next-page token in one of two formats. **Consumers MUST NOT inspect either.**
 
 - `base64url("v1:" . entryId)` — an unsorted read. Byte-identical to what shipped before sorting existed, so tokens already in flight keep working.
-- `base64url("v2:" . json)` — a sorted read. Carries the anchor id **plus the sort key identity and direction**.
+- `base64url("v2:" . json)` — a sorted read. Carries the anchor id **plus the sort key identity and direction**, and the null placement as `n` (`first` or `last`) when it differs from the database's default for that direction.
 
 `decodePayload()` handles both and returns a `CursorPayload`; `decode()` survives as the entry-id-only wrapper. A v1 token is accepted by an explicitly-default sort, because `null` and `SortSpec::byId()` name the same ordering.
+
+**`n` is written only when the placement is not the default, and placements are compared with the default filled in.** A default sort therefore emits the bytes it always did, and a token without `n` means the default for its direction. Spelling the default out (`NullPlacement::First` ascending, `Last` descending) gives the same token and matches an old one. Compare through `SortSpec::effectiveNulls()` and `CursorPayload::matchesSort()`, never through the raw `$nulls` property, which is `null` for the default. `CursorNullPlacementTest` pins the bytes, key order included.
 
 **A v2 token deliberately does not carry the anchor row's sort value.** A string slot holds 4096 characters, so a self-contained token would reach ~22 KB — past every practical URL and header limit. The value is resolved from the anchor row at query time instead, which keeps tokens constant-size and keeps ADR 0006's "cursor derived from the id of the last record seen" literally true. The cost is that a cursor whose anchor row is removed mid-pagination resumes from the NULL block rather than erroring.
 
@@ -96,6 +98,8 @@ Stamping the ordering is what makes ADR 0006's "a cursor is invalidated if the c
 **The cost split is the thing to know.** The two intrinsic targets stay index-ordered (`id DESC` is a backward index scan; `created_at` rides `(tenant_id, deleted_at, created_at)`). A **field** sort plans as `Using temporary; Using filesort` over the whole filtered set, because ordering by a slot column cannot use its index while the query leads with `entry_data`. ADR 0041 scopes ADR 0005's bounded-discovery guarantee accordingly.
 
 **The keyset predicate has three branches and all of them are load-bearing.** A slot column is nullable — a row awaiting an ADR 0007 exhaustion backfill reads NULL — and `col > NULL` is UNKNOWN, so a two-branch predicate silently drops the entire NULL block. Deleting the first branch makes an ascending walk stop at the end of the NULL block and never reach the valued rows; `SortCursorPaginationTest::testWalksThroughTheNullBlockInBothDirections` pins exactly that and was validated by neutering.
+
+**Null placement (ADR 0041).** `SortSpec::byField()` takes an optional `NullPlacement`, and only a field sort does, because `entry_data.id` and `created_at` are `NOT NULL`. The default is the database's own, first ascending and last descending, so nothing that existed changes. Only the first branch of the keyset predicate depends on where the NULL block sits, so it follows the placement and the direction picks the comparison operator alone. The `ORDER BY` gets an `IS NULL` key ahead of the sort key only for the non-default placement. `SortCursorPaginationTest::testWalksEveryNullPlacementAcrossANullBlockWiderThanAPage` walks all four combinations against an explicit expected order, and the keyset branch, the `IS NULL` key, writing `n` and comparing it were each neutered and turned a named test red.
 
 **String slots sort exactly, on the full value.** ADR 0030 §51 claimed `max_sort_length` truncates an `ORDER BY` on TEXT at 1024 bytes; probed on 8.0.13 it does not, even with the setting forced to 8 and values differing only at byte 36,856. A truncating collation-key design was drafted against that claim and discarded on the evidence — see the dated correction on ADR 0030. **Do not reintroduce a `LEFT(col, N)` sort key**: it would create the inexactness the ADR feared rather than avoid it.
 
