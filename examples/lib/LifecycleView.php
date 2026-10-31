@@ -307,6 +307,6 @@ final class LifecycleView
 
         $wrapped = wordwrap($text, $width, "\n", true);
 
-        return array_values(array_slice(explode("\n", $wrapped), 0, 3));
+        return array_slice(explode("\n", $wrapped), 0, 3);
     }
 }
