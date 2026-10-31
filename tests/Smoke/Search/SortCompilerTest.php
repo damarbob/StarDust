@@ -13,6 +13,7 @@ use StarDust\Filter\Ast\TypedValue;
 use StarDust\Read\CursorCodec;
 use StarDust\Read\EntryQuery;
 use StarDust\Read\FieldDescriptor;
+use StarDust\Read\NullPlacement;
 use StarDust\Read\SnapshotEntry;
 use StarDust\Read\SortDirection;
 use StarDust\Read\SortSpec;
@@ -227,6 +228,126 @@ final class SortCompilerTest extends TestCase
         // NULL block is still ahead.
         self::assertStringContainsString('(sort_anchor.av IS NOT NULL AND sp.i_str_01 IS NULL)', $desc);
         self::assertStringContainsString('sp.i_str_01 <=> sort_anchor.av AND entry_data.id < ?', $desc);
+    }
+
+    public function testTheDatabasesOwnNullPlacementLeavesTheOrderByAsItWas(): void
+    {
+        $compiler = new SqlFilterCompiler();
+        $field    = self::SORT_FIELD;
+
+        $cases = [
+            'ascending, default'           => [SortSpec::byField($field), 'sp.i_str_01 ASC, entry_data.id ASC'],
+            'ascending, first spelled out' => [
+                SortSpec::byField($field, SortDirection::Asc, NullPlacement::First),
+                'sp.i_str_01 ASC, entry_data.id ASC',
+            ],
+            'descending, default'          => [
+                SortSpec::byField($field, SortDirection::Desc),
+                'sp.i_str_01 DESC, entry_data.id DESC',
+            ],
+            'descending, last spelled out' => [
+                SortSpec::byField($field, SortDirection::Desc, NullPlacement::Last),
+                'sp.i_str_01 DESC, entry_data.id DESC',
+            ],
+        ];
+
+        foreach ($cases as $label => [$sort, $orderBy]) {
+            $sql = $compiler->compile(null, $this->query(null, $sort), $this->snapshot())->sql;
+            // The whole clause is matched, so an IS NULL key in front of it fails.
+            self::assertStringContainsString(' ORDER BY ' . $orderBy . ' LIMIT ?', $sql, $label);
+        }
+    }
+
+    public function testTheOtherNullPlacementLeadsTheOrderByWithAnIsNullKey(): void
+    {
+        $compiler = new SqlFilterCompiler();
+
+        $last = $compiler->compile(
+            null,
+            $this->query(null, SortSpec::byField(self::SORT_FIELD, SortDirection::Asc, NullPlacement::Last)),
+            $this->snapshot(),
+        )->sql;
+        // IS NULL is 0 for a value and 1 for NULL, so ascending puts NULL after the values.
+        self::assertStringContainsString(
+            ' ORDER BY sp.i_str_01 IS NULL ASC, sp.i_str_01 ASC, entry_data.id ASC LIMIT ?',
+            $last,
+        );
+
+        $first = $compiler->compile(
+            null,
+            $this->query(null, SortSpec::byField(self::SORT_FIELD, SortDirection::Desc, NullPlacement::First)),
+            $this->snapshot(),
+        )->sql;
+        self::assertStringContainsString(
+            ' ORDER BY sp.i_str_01 IS NULL DESC, sp.i_str_01 DESC, entry_data.id DESC LIMIT ?',
+            $first,
+        );
+    }
+
+    public function testTheNullKeyUsesThePageAliasTheFilterAlreadyJoined(): void
+    {
+        $filter = $this->leafOnPage(1, 'i_str_02');
+        $sql    = (new SqlFilterCompiler())->compile(
+            $filter,
+            $this->query(
+                $filter,
+                SortSpec::byField(self::SORT_FIELD, SortDirection::Asc, NullPlacement::Last),
+            ),
+            $this->snapshot(1),
+        )->sql;
+
+        self::assertStringContainsString(
+            ' ORDER BY p0.i_str_01 IS NULL ASC, p0.i_str_01 ASC, entry_data.id ASC LIMIT ?',
+            $sql,
+        );
+    }
+
+    public function testTheKeysetLeadingBranchFollowsPlacementAndNotDirection(): void
+    {
+        $compiler = new SqlFilterCompiler();
+
+        $ascLast = $compiler->compile(
+            null,
+            $this->query(
+                null,
+                SortSpec::byField(self::SORT_FIELD, SortDirection::Asc, NullPlacement::Last),
+                42,
+            ),
+            $this->snapshot(),
+        );
+        // Ascending but NULLs last: from a value, the NULL block is still ahead.
+        self::assertStringContainsString('(sort_anchor.av IS NOT NULL AND sp.i_str_01 IS NULL)', $ascLast->sql);
+        self::assertStringNotContainsString('(sort_anchor.av IS NULL AND sp.i_str_01 IS NOT NULL)', $ascLast->sql);
+        self::assertStringContainsString('sp.i_str_01 > sort_anchor.av', $ascLast->sql);
+        self::assertStringContainsString('sp.i_str_01 <=> sort_anchor.av AND entry_data.id > ?', $ascLast->sql);
+        self::assertSame([42, 7, 7, 1, 42, 11], $ascLast->bindings);
+
+        $descFirst = $compiler->compile(
+            null,
+            $this->query(
+                null,
+                SortSpec::byField(self::SORT_FIELD, SortDirection::Desc, NullPlacement::First),
+                42,
+            ),
+            $this->snapshot(),
+        );
+        // Descending but NULLs first: from a NULL anchor, every value is still ahead.
+        self::assertStringContainsString('(sort_anchor.av IS NULL AND sp.i_str_01 IS NOT NULL)', $descFirst->sql);
+        self::assertStringNotContainsString('(sort_anchor.av IS NOT NULL AND sp.i_str_01 IS NULL)', $descFirst->sql);
+        self::assertStringContainsString('sp.i_str_01 < sort_anchor.av', $descFirst->sql);
+        self::assertStringContainsString('sp.i_str_01 <=> sort_anchor.av AND entry_data.id < ?', $descFirst->sql);
+        self::assertSame([42, 7, 7, 1, 42, 11], $descFirst->bindings);
+    }
+
+    public function testCreatedAtSortsNeverGetAnIsNullKey(): void
+    {
+        $sql = (new SqlFilterCompiler())->compile(
+            null,
+            $this->query(null, SortSpec::byCreatedAt(SortDirection::Desc), 42),
+            $this->snapshot(),
+        )->sql;
+
+        self::assertStringContainsString(' ORDER BY entry_data.created_at DESC, entry_data.id DESC LIMIT ?', $sql);
     }
 
     public function testNoCursorEmitsNoKeysetClauseAndNoAnchor(): void

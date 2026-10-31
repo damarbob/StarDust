@@ -11,6 +11,7 @@ use StarDust\Filter\Ast\OrNode;
 use StarDust\Read\Cursor;
 use StarDust\Read\CursorCodec;
 use StarDust\Read\EntryQuery;
+use StarDust\Read\NullPlacement;
 use StarDust\Read\SortDirection;
 use StarDust\Read\SortSpec;
 
@@ -166,6 +167,148 @@ final class SortCursorPaginationTest extends ReadPathTestCase
         $this->assertWalkMatchesSinglePage(
             SortSpec::byField($names['string'], SortDirection::Desc),
             $modelId,
+        );
+    }
+
+    /**
+     * @return array<string, SortSpec>
+     */
+    private function everyPlacement(string $field): array
+    {
+        return [
+            'ascending, nulls first'  => SortSpec::byField($field, SortDirection::Asc, NullPlacement::First),
+            'ascending, nulls last'   => SortSpec::byField($field, SortDirection::Asc, NullPlacement::Last),
+            'descending, nulls first' => SortSpec::byField($field, SortDirection::Desc, NullPlacement::First),
+            'descending, nulls last'  => SortSpec::byField($field, SortDirection::Desc, NullPlacement::Last),
+        ];
+    }
+
+    /**
+     * Reads the whole ordering in one page and then walks it two rows at a
+     * time. The explicit list is what catches an `ORDER BY` and a keyset
+     * predicate that agree with each other about the wrong ordering.
+     *
+     * @param list<int> $expected
+     */
+    private function assertOrderAndWalk(SortSpec $sort, int $modelId, array $expected, string $label): void
+    {
+        $page = $this->reader()->read(new EntryQuery(
+            tenantId: 1,
+            modelId:  $modelId,
+            pageSize: 100,
+            sort:     $sort,
+        ));
+        self::assertSame(
+            $expected,
+            array_map(static fn ($e): int => $e->id, $page->rows),
+            $label . ' (single page)',
+        );
+        self::assertSame($expected, $this->walkAll($sort, $modelId, 2), $label . ' (walk)');
+    }
+
+    public function testWalksEveryNullPlacementAcrossANullBlockWiderThanAPage(): void
+    {
+        [$modelId, $names] = $this->setupSortableModel();
+        $seed = function (?string $title) use ($modelId, $names): int {
+            // An entry with no title still gets a row on the page, with a
+            // NULL title slot, because its rank is filterable.
+            return $this->seedEntry(
+                1,
+                $modelId,
+                $title === null ? [$names['int'] => 1] : [$names['string'] => $title],
+            );
+        };
+        $bravo  = $seed('bravo');
+        $none1  = $seed(null);
+        $alpha1 = $seed('alpha');
+        $none2  = $seed(null);
+        $alpha2 = $seed('alpha');
+        $none3  = $seed(null);
+        $charlie = $seed('charlie');
+
+        // Three NULLs against a page of two, and two equal values, so a
+        // boundary falls inside the NULL block and inside a run of ties.
+        // Ties and the NULL block both run in the sort's own direction.
+        $expected = [
+            'ascending, nulls first'  => [$none1, $none2, $none3, $alpha1, $alpha2, $bravo, $charlie],
+            'ascending, nulls last'   => [$alpha1, $alpha2, $bravo, $charlie, $none1, $none2, $none3],
+            'descending, nulls first' => [$none3, $none2, $none1, $charlie, $bravo, $alpha2, $alpha1],
+            'descending, nulls last'  => [$charlie, $bravo, $alpha2, $alpha1, $none3, $none2, $none1],
+        ];
+        foreach ($this->everyPlacement($names['string']) as $label => $sort) {
+            $this->assertOrderAndWalk($sort, $modelId, $expected[$label], $label);
+        }
+    }
+
+    public function testWalksEveryNullPlacementOnAnIntegerFieldWithTies(): void
+    {
+        [$modelId, $names] = $this->setupSortableModel();
+        $valued = [];
+        foreach ([5, 5, 5, 5, 5, 1, 9] as $v) {
+            $valued[] = $this->seedEntry(1, $modelId, [$names['int'] => $v]);
+        }
+        $none = [];
+        foreach ([null, null, null] as $_) {
+            $none[] = $this->seedEntry(1, $modelId, [$names['string'] => 'x']);
+        }
+
+        // 1, then the five fives in id order, then 9.
+        $ascending = [$valued[5], $valued[0], $valued[1], $valued[2], $valued[3], $valued[4], $valued[6]];
+        $descending = [$valued[6], $valued[4], $valued[3], $valued[2], $valued[1], $valued[0], $valued[5]];
+        $expected = [
+            'ascending, nulls first'  => [...$none, ...$ascending],
+            'ascending, nulls last'   => [...$ascending, ...$none],
+            'descending, nulls first' => [...array_reverse($none), ...$descending],
+            'descending, nulls last'  => [...$descending, ...array_reverse($none)],
+        ];
+        foreach ($this->everyPlacement($names['int']) as $label => $sort) {
+            $this->assertOrderAndWalk($sort, $modelId, $expected[$label], $label);
+        }
+    }
+
+    public function testWalksEveryNullPlacementUnderJoinAndExistsFilters(): void
+    {
+        [$modelId, $names] = $this->setupSortableModel();
+        $ids = [];
+        foreach ([['a', 1], ['b', 2], ['c', 1], [null, 1], [null, 1], ['e', 3]] as [$title, $rank]) {
+            $fields = [$names['int'] => $rank];
+            if ($title !== null) {
+                $fields[$names['string']] = $title;
+            }
+            $ids[] = $this->seedEntry(1, $modelId, $fields);
+        }
+
+        // The pure AND filter takes the JOIN strategy and shares the sort
+        // field's page, so the sort reuses the filter's alias. The OR
+        // filter takes the EXISTS strategy, which leaves the sort to join
+        // the page itself. The placement has to hold in both.
+        $join   = LeafNode::local($names['int'], 'eq', 1);
+        $exists = new OrNode([
+            LeafNode::local($names['int'], 'eq', 1),
+            LeafNode::local($names['int'], 'eq', 3),
+        ]);
+
+        foreach ($this->everyPlacement($names['string']) as $label => $sort) {
+            foreach ([$join, $exists] as $filter) {
+                self::assertSame(
+                    $this->idsMatching($filter, $modelId, $sort),
+                    $this->walkFiltered($filter, $sort, $modelId),
+                    $label,
+                );
+            }
+        }
+
+        $ascLast  = SortSpec::byField($names['string'], SortDirection::Asc, NullPlacement::Last);
+        $descFirst = SortSpec::byField($names['string'], SortDirection::Desc, NullPlacement::First);
+        self::assertSame([$ids[0], $ids[2], $ids[3], $ids[4]], $this->idsMatching($join, $modelId, $ascLast));
+        self::assertSame([$ids[4], $ids[3], $ids[2], $ids[0]], $this->idsMatching($join, $modelId, $descFirst));
+        self::assertSame(
+            [$ids[0], $ids[2], $ids[5], $ids[3], $ids[4]],
+            $this->idsMatching($exists, $modelId, $ascLast),
+        );
+        self::assertSame(
+            [$ids[4], $ids[3], $ids[5], $ids[2], $ids[0]],
+            $this->idsMatching($exists, $modelId, $descFirst),
         );
     }
 
@@ -376,6 +519,97 @@ final class SortCursorPaginationTest extends ReadPathTestCase
             cursor:   $first->nextCursor,
             sort:     SortSpec::byField($names['string'], SortDirection::Desc),
         ));
+    }
+
+    /**
+     * Reads a first page under `$issuedUnder` and replays its cursor under
+     * `$replayedUnder`, returning the ids of the second page, or null when
+     * the cursor is refused.
+     *
+     * @return ?list<int>
+     */
+    private function replayCursor(SortSpec $issuedUnder, SortSpec $replayedUnder, int $modelId): ?array
+    {
+        $first = $this->reader()->read(new EntryQuery(
+            tenantId: 1,
+            modelId:  $modelId,
+            pageSize: 2,
+            sort:     $issuedUnder,
+        ));
+        self::assertNotNull($first->nextCursor);
+
+        try {
+            $second = $this->reader()->read(new EntryQuery(
+                tenantId: 1,
+                modelId:  $modelId,
+                pageSize: 2,
+                cursor:   $first->nextCursor,
+                sort:     $replayedUnder,
+            ));
+        } catch (InvalidCursorException) {
+            return null;
+        }
+
+        return array_map(static fn ($e): int => $e->id, $second->rows);
+    }
+
+    public function testCursorFromAnotherNullPlacementIsRefused(): void
+    {
+        [$modelId, $names] = $this->setupSortableModel();
+        foreach (['a', 'b', 'c', 'd'] as $v) {
+            $this->seedEntry(1, $modelId, [$names['string'] => $v]);
+        }
+        $field = $names['string'];
+
+        // The same key and direction with the other placement is a different
+        // ordering, so the token is refused rather than walked.
+        self::assertNull($this->replayCursor(
+            SortSpec::byField($field, SortDirection::Asc, NullPlacement::Last),
+            SortSpec::byField($field),
+            $modelId,
+        ));
+        self::assertNull($this->replayCursor(
+            SortSpec::byField($field),
+            SortSpec::byField($field, SortDirection::Asc, NullPlacement::Last),
+            $modelId,
+        ));
+        self::assertNull($this->replayCursor(
+            SortSpec::byField($field, SortDirection::Desc, NullPlacement::First),
+            SortSpec::byField($field, SortDirection::Desc),
+            $modelId,
+        ));
+        self::assertNull($this->replayCursor(
+            SortSpec::byField($field, SortDirection::Desc),
+            SortSpec::byField($field, SortDirection::Desc, NullPlacement::First),
+            $modelId,
+        ));
+    }
+
+    public function testSpellingTheDefaultPlacementOutKeepsACursorValid(): void
+    {
+        [$modelId, $names] = $this->setupSortableModel();
+        $ids = [];
+        foreach (['a', 'b', 'c', 'd'] as $v) {
+            $ids[] = $this->seedEntry(1, $modelId, [$names['string'] => $v]);
+        }
+        $field = $names['string'];
+
+        self::assertSame(
+            [$ids[2], $ids[3]],
+            $this->replayCursor(
+                SortSpec::byField($field),
+                SortSpec::byField($field, SortDirection::Asc, NullPlacement::First),
+                $modelId,
+            ),
+        );
+        self::assertSame(
+            [$ids[1], $ids[0]],
+            $this->replayCursor(
+                SortSpec::byField($field, SortDirection::Desc, NullPlacement::Last),
+                SortSpec::byField($field, SortDirection::Desc),
+                $modelId,
+            ),
+        );
     }
 
     public function testStructurallyMalformedCursorIsRejected(): void

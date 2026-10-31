@@ -9,6 +9,7 @@ use StarDust\Config\Config;
 use StarDust\Exception\FieldNotSortableException;
 use StarDust\Exception\UnknownFieldException;
 use StarDust\Read\EntryQuery;
+use StarDust\Read\NullPlacement;
 use StarDust\Read\SortDirection;
 use StarDust\Read\SortSpec;
 use StarDust\StarDust;
@@ -176,6 +177,60 @@ final class SortOrderTest extends ReadPathTestCase
         self::assertSame(
             [$withValue, $noValue],
             $this->idsInOrder(SortSpec::byField($names['string'], SortDirection::Desc), $modelId),
+        );
+    }
+
+    public function testEntriesWithNoValueCanBePlacedFirstOrLastInEitherDirection(): void
+    {
+        [$modelId, $names] = $this->setupSortableModel();
+        $this->createField($modelId, 'string', false, 'notes');
+
+        $bravo   = $this->seedEntry(1, $modelId, [$names['string'] => 'bravo']);
+        $none1   = $this->seedEntry(1, $modelId, [$names['int'] => 1]);
+        $alpha   = $this->seedEntry(1, $modelId, [$names['string'] => 'alpha']);
+        $none2   = $this->seedEntry(1, $modelId, [$names['int'] => 1]);
+        $charlie = $this->seedEntry(1, $modelId, [$names['string'] => 'charlie']);
+        // No page row at all, which the LEFT join turns into a NULL too.
+        $none3   = $this->seedEntry(1, $modelId, ['notes' => 'no slot anywhere']);
+
+        $field = $names['string'];
+        $asc   = SortDirection::Asc;
+        $desc  = SortDirection::Desc;
+
+        // The NULL block is ordered by id in the sort's own direction.
+        self::assertSame(
+            [$none1, $none2, $none3, $alpha, $bravo, $charlie],
+            $this->idsInOrder(SortSpec::byField($field, $asc, NullPlacement::First), $modelId),
+        );
+        self::assertSame(
+            [$alpha, $bravo, $charlie, $none1, $none2, $none3],
+            $this->idsInOrder(SortSpec::byField($field, $asc, NullPlacement::Last), $modelId),
+        );
+        self::assertSame(
+            [$none3, $none2, $none1, $charlie, $bravo, $alpha],
+            $this->idsInOrder(SortSpec::byField($field, $desc, NullPlacement::First), $modelId),
+        );
+        self::assertSame(
+            [$charlie, $bravo, $alpha, $none3, $none2, $none1],
+            $this->idsInOrder(SortSpec::byField($field, $desc, NullPlacement::Last), $modelId),
+        );
+    }
+
+    public function testNamingTheDatabasesOwnNullPlacementChangesNothing(): void
+    {
+        [$modelId, $names] = $this->setupSortableModel();
+        $this->seedEntry(1, $modelId, [$names['int'] => 20]);
+        $this->seedEntry(1, $modelId, [$names['string'] => 'x']);
+        $this->seedEntry(1, $modelId, [$names['int'] => 10]);
+
+        $field = $names['int'];
+        self::assertSame(
+            $this->idsInOrder(SortSpec::byField($field), $modelId),
+            $this->idsInOrder(SortSpec::byField($field, SortDirection::Asc, NullPlacement::First), $modelId),
+        );
+        self::assertSame(
+            $this->idsInOrder(SortSpec::byField($field, SortDirection::Desc), $modelId),
+            $this->idsInOrder(SortSpec::byField($field, SortDirection::Desc, NullPlacement::Last), $modelId),
         );
     }
 

@@ -18,6 +18,12 @@ use StarDust\Exception\InvalidCursorException;
  *   - `base64url("v2:" . json)` — a sorted read. The JSON carries the
  *     anchor entry id plus the sort key identity and direction.
  *
+ * Where entries with no value land is part of the ordering, so the JSON
+ * also carries it as `n` (`first` or `last`). It is written only when it
+ * differs from the database's default for the direction, which keeps a
+ * default sort's token identical to what it was before placement existed,
+ * and a token without `n` means the default.
+ *
  * A v2 token records the *ordering* but not the anchor row's sort
  * *value*: the compiler resolves that value from the anchor row at query
  * time. That keeps a token constant-size — embedding the value would
@@ -53,11 +59,17 @@ final class CursorCodec
             return self::encode($entryId);
         }
 
-        $json = json_encode([
+        $payload = [
             'k'  => $sort->keyIdentity(),
             'd'  => $sort->direction->value,
             'id' => $entryId,
-        ]);
+        ];
+        $nulls = $sort->effectiveNulls();
+        if ($nulls !== NullPlacement::nativeFor($sort->direction)) {
+            $payload['n'] = $nulls->value;
+        }
+
+        $json = json_encode($payload);
         // json_encode only returns false on unencodable input (resources,
         // NAN, bad UTF-8). Every value here is an int or an engine-owned
         // ASCII string, so this is unreachable — asserted rather than
@@ -126,7 +138,15 @@ final class CursorCodec
             throw new InvalidCursorException('Cursor decode failed: unknown sort direction.');
         }
 
-        return CursorPayload::forIdentity($key, $direction, $id);
+        $nulls = null;
+        if (array_key_exists('n', $data)) {
+            $nulls = is_string($data['n']) ? NullPlacement::tryFrom($data['n']) : null;
+            if ($nulls === null) {
+                throw new InvalidCursorException('Cursor decode failed: unknown null placement.');
+            }
+        }
+
+        return CursorPayload::forIdentity($key, $direction, $id, $nulls);
     }
 
     private static function parseEntryId(string $idPart): int

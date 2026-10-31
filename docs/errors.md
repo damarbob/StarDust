@@ -14,7 +14,7 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `FieldNotIndexedException` | Not thrown by the built-in engine. A filter on a field that is declared filterable but not indexed yet raises `FieldNotFilterableException` instead, so catch that one. |
 | `FieldNotSortableException` | A `SortSpec` names a field that isn't currently indexed — the same requirement filtering has. `describeModel()`'s `indexedFields()` reports which fields qualify right now. |
 | `PageSizeOutOfRangeException` | `pageSize` is outside `[1, 1000]`. |
-| `InvalidCursorException` | An opaque cursor fails its structural decode, or is reused after its sort key or direction changed. |
+| `InvalidCursorException` | An opaque cursor fails its structural decode, or is reused after its sort key, direction or null placement changed. |
 | `QueryFilterValidationException` | A JSON wire-format filter fails decode or pre-flight (see below). |
 | `IncompatibleRetypeException` | A retype crosses a categorically rejected pair (`int ↔ datetime`, `numeric ↔ datetime`). |
 | `RetypeInProgressException` | A retype is initiated for a field that already has one running — or a model is compacted while any of its fields is still being retyped, promoted, demoted or relocated. Wait for the Reconciler and retry. |
