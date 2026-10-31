@@ -38,7 +38,7 @@ if (! $autoloadLoaded) {
 $argv    = $_SERVER['argv'] ?? [];
 $command = $argv[1] ?? '--help';
 
-/** Standard PDO driver options — shared by the primary connection and the reconnect factory. */
+/** Standard PDO driver options, shared by the primary connection and the reconnect factory. */
 $pdoOptions = [
     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_EMULATE_PREPARES   => false,
@@ -111,7 +111,7 @@ switch ($command) {
     case '--help':
     case '-h':
         echo <<<HELP
-        stardust — Vertical Schema Partitioning engine CLI
+        stardust, the Vertical Schema Partitioning engine CLI
 
         Usage:
           bin/stardust <command> [options]
@@ -119,23 +119,23 @@ switch ($command) {
         Current command surface:
           --version, -V    Print the engine version.
           --help, -h       Show this help.
-          bootstrap        Apply the Phase 1 schema (idempotent).
+          bootstrap        Apply the schema (idempotent).
                            Reads STARDUST_DSN, STARDUST_USER, STARDUST_PASS
                            from the process environment.
-          watcher          Singleton page-provisioning daemon (Phase 5).
+          watcher          Singleton page-provisioning daemon.
           reconciler       Multi-worker sync-queue + import-job drain
-                           daemon (Phase 5).
+                           daemon.
           reconciler:dlq:replay --id=N | --reason=X
-                           Operator-initiated DLQ replay (Phase 5).
-          liberator        Multi-worker slot-reclamation daemon (Phase 6a):
+                           Operator-initiated DLQ replay.
+          liberator        Multi-worker slot-reclamation daemon. It
                            sweeps tombstoned slots back to free. Run
                            multiple processes for horizontal scale.
-          chronicler       Multi-worker async export daemon (Phase 7):
-                           claims pending export jobs, paginates entry_data,
+          chronicler       Multi-worker async export daemon. It claims
+                           pending export jobs, paginates entry_data and
                            writes CSV/JSON artifacts under Config::artifactDir.
                            A shutdown request yields at the next chunk
                            boundary rather than blocking until the job
-                           finishes (ADR 0050).
+                           finishes.
           spread:report [--tenant=N] [--model=N]
                            Report how many extension pages each model's
                            filterable slots occupy, and how many of those
@@ -147,7 +147,7 @@ switch ($command) {
                            a low-cardinality index can be found between
                            scheduled advisory runs. Read-only, but it
                            scans every matching extension page rather
-                           than only the registry — run it off-peak.
+                           than only the registry, so run it off-peak.
                            --model narrows which slots are examined; each
                            one's counts still cover the tenant's whole
                            partition on that page.
@@ -160,27 +160,25 @@ switch ($command) {
                            reads keep working. Safe to re-run.
           tick [--budget=N] [--advisories] [--exports]
                            Bounded, single-process pass of the Watcher,
-                           Liberator and Reconciler over one connection —
+                           Liberator and Reconciler over one connection,
                            for a cron line or scheduled URL fetch on a
                            host with no persistent-process capability.
                            Runs until its time budget is spent, a round
                            finds nothing to do, or it is asked to shut
                            down. The cardinality and spread advisories
                            fire from whichever invocation first finds
-                           them due — the schedule is kept in the
+                           them due. The schedule is kept in the
                            database and shared across the deployment, so
-                           it needs no crontab line of its own (ADR
-                           0052). --advisories forces a sample
-                           immediately regardless. --exports opts the
-                           Chronicler into the run (ADR 0050): a large
-                           export yields back to `pending` at a chunk
-                           boundary once this run's own budget deadline
-                           is reached, resuming on a later tick from its
-                           verified byte anchor. Off by default — see
+                           it needs no crontab line of its own.
+                           --advisories forces a sample immediately
+                           regardless. --exports opts the Chronicler
+                           into the run. A large export then yields back
+                           to `pending` at a chunk boundary once this
+                           run's own budget deadline is reached, and
+                           resumes on a later tick from its verified
+                           byte anchor. Off by default. See
                            docs/deployment.md for what the pre-claim
                            disk gate does and does not cover.
-
-        Subsequent phases are tracked in the project's design notes.
         HELP;
         echo "\n";
         exit(0);
@@ -227,7 +225,7 @@ switch ($command) {
             $pdo = $buildPdo();
             $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
             // Reconciler is multi-worker safe (SKIP LOCKED + atomic
-            // claim UPDATE) — no PID guard. Tick the loop continuously
+            // claim UPDATE), so it needs no PID guard. Tick the loop continuously
             // (intervalSeconds = 0); the daemon itself sleeps via
             // capacity_wait when both work sources are idle.
             $stardust->pollLoop()->run(
@@ -247,7 +245,7 @@ switch ($command) {
             $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
             // Liberator is multi-worker safe since ADR 0049
             // (page-table-granularity GET_LOCK exclusion via
-            // SweepPageLock) — no PID guard. Tick the loop continuously
+            // SweepPageLock), so it needs no PID guard. Tick the loop continuously
             // at the configured idle interval, same as before.
             $stardust->pollLoop()->run(
                 $stardust->liberator(),
@@ -270,7 +268,7 @@ switch ($command) {
                 pdoConnector: $buildConnector(),
             ));
             // Chronicler is multi-worker safe (SELECT … FOR UPDATE
-            // SKIP LOCKED on stardust_export_jobs) — no PID guard.
+            // SKIP LOCKED on stardust_export_jobs), so it needs no PID guard.
             // The poll interval is the idle interval; per-job work
             // runs synchronously inside one tick.
             //
@@ -278,7 +276,7 @@ switch ($command) {
             // both chronicler() (wrapped as its cooperative-yield
             // signal, so a shutdown request lands mid-export at the
             // next chunk boundary rather than blocking until the job
-            // finishes) and pollLoop()->run() — shutdownSignal() mints
+            // finishes) and pollLoop()->run(). shutdownSignal() mints
             // a fresh composite per call, so building it once here is
             // load-bearing, not tidiness.
             $shutdown = $stardust->shutdownSignal('chronicler');
@@ -346,7 +344,7 @@ switch ($command) {
             );
 
             if ($plan->isNoop()) {
-                echo "stardust: nothing to relocate — the model is already as compact as the"
+                echo "stardust: nothing to relocate. The model is already as compact as the"
                     . " pages it occupies allow.\n";
                 exit(0);
             }
@@ -368,9 +366,9 @@ switch ($command) {
             }
 
             if ($dryRun) {
-                // Nothing was mutated and no event was emitted — an event
-                // describing an uncommitted plan would be a lie.
-                echo "stardust: dry run — nothing was mutated.\n";
+                // Nothing was mutated and no event was emitted, because an
+                // event describing an uncommitted plan would be a lie.
+                echo "stardust: dry run, nothing was mutated.\n";
                 exit(0);
             }
 
@@ -467,7 +465,7 @@ switch ($command) {
 
             // --exports needs the reconnect factory too, for the same
             // reason the standalone `chronicler` command does (ADR
-            // 0025) — a transient DB disconnect mid-export inside a
+            // 0025). A transient DB disconnect mid-export inside a
             // tick round should recover in-process rather than failing
             // the whole run.
             $pdo = $buildPdo();
@@ -484,12 +482,12 @@ switch ($command) {
                 // cron mail every firing. The Liberator has no pid file
                 // to contend on since ADR 0049 (GET_LOCK exclusion), so
                 // it is never the cause of this.
-                echo "stardust: tick skipped — a watcher process already holds its pid file.\n";
+                echo "stardust: tick skipped. A watcher process already holds its pid file.\n";
                 exit(0);
             }
 
             printf(
-                "stardust: tick complete — %d round(s) in %.1fs (budget %ds), stopped: %s.\n",
+                "stardust: tick complete, %d round(s) in %.1fs (budget %ds), stopped: %s.\n",
                 $report->rounds,
                 $report->elapsedSeconds,
                 $report->budgetSeconds,
