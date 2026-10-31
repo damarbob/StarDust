@@ -1,1 +1,20 @@
 * text=auto eol=lf
+
+# Left out of the archive Composer installs from. A consumer needs the
+# library, its CLI, the docs and the licence, not the project's own tooling.
+/.agent export-ignore
+/.github export-ignore
+/docker export-ignore
+/examples export-ignore
+/tests export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.markdownlint.json export-ignore
+/AGENTS.md export-ignore
+/CONTRIBUTING.md export-ignore
+/TESTING.md export-ignore
+/docker-compose.yml export-ignore
+/phpstan.neon.dist export-ignore
+/phpunit.xml.dist export-ignore
+/release.sh export-ignore
+CLAUDE.md export-ignore
