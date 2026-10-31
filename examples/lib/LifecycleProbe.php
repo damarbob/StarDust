@@ -56,9 +56,9 @@ final class LifecycleProbe
 
         return new LifecycleSnapshot(
             fieldName:        $this->fieldName,
-            declaredType:     $field?->declaredType ?? '?',
-            isFilterable:     $field?->isFilterable ?? false,
-            isIndexed:        $field?->isIndexed ?? false,
+            declaredType:     $field->declaredType ?? '?',
+            isFilterable:     $field->isFilterable ?? false,
+            isIndexed:        $field->isIndexed ?? false,
             slotPageTable:    $slot['table_name'] ?? null,
             slotColumn:       $slot['slot_column'] ?? null,
             slotStatus:       $slot['status'] ?? null,

@@ -53,7 +53,7 @@ final class EventRecorder extends AbstractLogger
         $fresh = \array_slice($this->events, $this->consumed);
         $this->consumed = \count($this->events);
 
-        return array_values($fresh);
+        return $fresh;
     }
 
     /** Total events seen, including already-drained ones. */

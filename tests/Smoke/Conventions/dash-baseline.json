@@ -3,7 +3,6 @@
     "CONTRIBUTING.md": 16,
     "GLOSSARY.md": 59,
     "TESTING.md": 127,
-    "bin/stardust": 16,
     "docker/Dockerfile": 1,
     "docker/seed.php": 5,
     "docs/cli.md": 13,
