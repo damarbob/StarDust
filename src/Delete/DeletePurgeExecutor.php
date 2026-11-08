@@ -48,9 +48,11 @@ use StarDust\Rename\RenameBackfillExecutor;
  * The rename executor's second guard has no analogue here: it exists to
  * stop a stale value clobbering a fresh write under the new key, and a
  * delete has no destination key to protect. A post-delete write cannot
- * reintroduce the key either — `LiveSlotMap` excludes soft-deleted
- * fields, so `PayloadSplitter` drops it as an unknown key before the
- * payload is ever encoded.
+ * reintroduce the key either. `LiveSlotMap` keeps the deleted field's
+ * name aside, and `LiveSlotMap::canonicalise()` strips that key from the
+ * inbound payload before it is encoded. Leaving the field out of the map
+ * would not be enough, because an unregistered key is stored as an
+ * unknown key.
  */
 final class DeletePurgeExecutor
 {

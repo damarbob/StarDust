@@ -70,7 +70,7 @@
     "src/Delete/DeleteCheckpointRepository.php": 3,
     "src/Delete/DeleteFieldInitiator.php": 7,
     "src/Delete/DeleteModelInitiator.php": 11,
-    "src/Delete/DeletePurgeExecutor.php": 5,
+    "src/Delete/DeletePurgeExecutor.php": 4,
     "src/Delete/DeletePurgeWorkSource.php": 7,
     "src/Delete/ModelDeleteCheckpoint.php": 3,
     "src/Delete/ModelDeleteCheckpointRepository.php": 4,
