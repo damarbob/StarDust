@@ -172,7 +172,7 @@
     "src/Search/PreFlight/FieldRefResolver.php": 1,
     "src/Search/PreFlight/PreFlightPipeline.php": 5,
     "src/Search/PreFlight/SortValidator.php": 3,
-    "src/Search/PreFlight/ValueTypeValidator.php": 8,
+    "src/Search/PreFlight/ValueTypeValidator.php": 7,
     "src/Search/SearchRequest.php": 2,
     "src/Search/SearchService.php": 3,
     "src/Slot/IndexedFreeCapacityReader.php": 2,

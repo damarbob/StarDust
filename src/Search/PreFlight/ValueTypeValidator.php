@@ -16,6 +16,7 @@ use StarDust\Filter\Limits\FilterLimits;
 use StarDust\Filter\Operator;
 use StarDust\Filter\QueryFilterValidationException;
 use StarDust\Filter\ValidationErrorCode;
+use StarDust\Support\DatetimeRollover;
 
 /**
  * Pre-flight visitor: enforces the typed-value rules from the
@@ -277,14 +278,15 @@ final class ValueTypeValidator
         if (preg_match($pattern, $v) !== 1) {
             return false;
         }
-        // Syntactic match isn't enough — verify it's a real calendar
-        // instant by round-tripping through DateTimeImmutable.
+        // A syntactic match is not enough. PHP moves an impossible value
+        // forward instead of rejecting it (2026-02-31 becomes March 3), so
+        // check that nothing moved.
         try {
-            new \DateTimeImmutable($v);
+            $parsed = new \DateTimeImmutable($v);
         } catch (\Exception) {
             return false;
         }
-        return true;
+        return ! DatetimeRollover::occurred($v, $parsed);
     }
 
     private function throwTypeMismatch(
