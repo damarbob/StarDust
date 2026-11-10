@@ -6,7 +6,7 @@ ADR 0033 operator-initiated model compaction — the *cure* for a model that is 
 
 ## Thin orchestration over shipped machinery
 
-Compaction relocates a model's live filterable slots onto a minimal page set as a **sequence of same-type retypes**. The ADR 0024 coercion matrix short-circuits its identity diagonal, so a same-type retype is mechanically nothing but a slot move with a data copy — `RetypeBackfillWorkSource` drains the resulting checkpoints **unmodified**, and the chunked backfill, `backfilling → ready` promotion, schema-version bumps, ADR 0019 cardinality sample and ADR 0031 `post_relocation` spread sample all fire per existing spec.
+Compaction relocates a model's live filterable slots onto a minimal page set as a **sequence of same-type retypes**. The ADR 0024 coercion matrix runs its identity diagonal, which re-checks each value against its type, so a same-type retype is a slot move with a data copy. A value written through the engine passes unchanged, and one that does not fit (data from before the write path checked its shape) becomes `NULL` with a `coercion_null` event, which the low-spread runbook lists as an expected signal on dirty legacy models — `RetypeBackfillWorkSource` drains the resulting checkpoints **unmodified**, and the chunked backfill, `backfilling → ready` promotion, schema-version bumps, ADR 0019 cardinality sample and ADR 0031 `post_relocation` spread sample all fire per existing spec.
 
 There is **no compaction daemon, no work source, and no compaction state table.** The retype checkpoints are the durable state. That is what makes resume-is-re-run true.
 

@@ -264,8 +264,9 @@ final class RetypeCoercionEngine
     }
 
     /**
-     * int → numeric — identity (lossless widening; `int` ⊂ `numeric`
-     * representable range).
+     * int → numeric. The numeric slot is a DOUBLE, so the value is exact
+     * only up to 2^53 and a larger integer loses its low digits there.
+     * The JSON payload keeps the exact value.
      */
     private static function coerceIntToNumeric(mixed $value): CoercionOutcome
     {

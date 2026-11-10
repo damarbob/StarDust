@@ -156,7 +156,7 @@
     "src/Retype/RetypeBackfillWorkSource.php": 9,
     "src/Retype/RetypeCheckpoint.php": 3,
     "src/Retype/RetypeCheckpointRepository.php": 9,
-    "src/Retype/RetypeCoercionEngine.php": 17,
+    "src/Retype/RetypeCoercionEngine.php": 16,
     "src/Retype/RetypeInitiator.php": 27,
     "src/Schema/FieldDefinition.php": 1,
     "src/Schema/FieldDescription.php": 2,
