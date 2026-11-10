@@ -158,6 +158,40 @@ final class RetypeCoercionMatrixTest extends TestCase
         self::assertNullCoerced('malformed_datetime', RetypeCoercionEngine::attempt('not-a-date', true, 'string', 'datetime'));
     }
 
+    /** @return iterable<string, array{string}> */
+    public static function impossibleCalendarValues(): iterable
+    {
+        yield 'february 31'            => ['2026-02-31T00:00:00Z'];
+        yield 'february 29, not leap'  => ['2026-02-29T12:00:00Z'];
+        yield 'april 31'               => ['2026-04-31T00:00:00Z'];
+        yield 'february 31 with offset' => ['2026-02-31T00:00:00+05:00'];
+        yield 'hour 24'                => ['2026-01-01T24:00:00Z'];
+        yield 'second 60'              => ['2026-01-01T00:00:60Z'];
+        yield 'month 13'               => ['2026-13-01T00:00:00Z'];
+        yield 'day 00'                 => ['2026-01-00T00:00:00Z'];
+    }
+
+    /** @dataProvider impossibleCalendarValues */
+    public function testStringToDatetimeRejectsImpossibleCalendarValues(string $value): void
+    {
+        self::assertNullCoerced(
+            'malformed_datetime',
+            RetypeCoercionEngine::attempt($value, true, 'string', 'datetime')
+        );
+    }
+
+    public function testStringToDatetimeKeepsRealBoundaryValues(): void
+    {
+        $leapDay = RetypeCoercionEngine::attempt('2024-02-29T12:00:00Z', true, 'string', 'datetime');
+        self::assertCoerced('2024-02-29 12:00:00', $leapDay);
+
+        $yearEnd = RetypeCoercionEngine::attempt('2026-12-31T23:59:59-05:00', true, 'string', 'datetime');
+        self::assertCoerced('2027-01-01 04:59:59', $yearEnd);
+
+        $fraction = RetypeCoercionEngine::attempt('2026-01-15T08:00:00.123456Z', true, 'string', 'datetime');
+        self::assertCoerced('2026-01-15 08:00:00', $fraction);
+    }
+
     // ────────────────────────────────────────────────────────────────
     //  int → string / int → numeric
     // ────────────────────────────────────────────────────────────────

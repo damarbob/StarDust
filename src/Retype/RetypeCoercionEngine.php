@@ -176,6 +176,14 @@ final class RetypeCoercionEngine
         } catch (Throwable) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
+        // PHP rolls an impossible value forward instead of rejecting it:
+        // 2026-02-31 becomes March 3, hour 24 becomes the next day and
+        // second 60 becomes the next minute. Reading the fields back in
+        // the parsed offset shows whether anything moved.
+        $given = substr($value, 0, 10) . 'T' . substr($value, 11, 8);
+        if ($dt->format('Y-m-d\TH:i:s') !== $given) {
+            return CoercionOutcome::nullCoerced('malformed_datetime');
+        }
         return CoercionOutcome::coerced(
             $dt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
         );
