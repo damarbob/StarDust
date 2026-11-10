@@ -220,6 +220,28 @@ final class RetypeCoercionMatrixTest extends TestCase
         self::assertCoerced('1.5', RetypeCoercionEngine::attempt(1.5, true, 'numeric', 'string'));
     }
 
+    /** @return iterable<string, array{float, string}> */
+    public static function numericToStringExact(): iterable
+    {
+        yield 'tiny'                 => [1.0E-20, '0.00000000000000000001'];
+        yield 'smallest denormal'    => [5.0E-324, '0.' . str_repeat('0', 323) . '5'];
+        yield 'negative small'       => [-2.5E-7, '-0.00000025'];
+        yield 'sum of two tenths'    => [0.1 + 0.2, '0.30000000000000004'];
+        yield 'seventeen digits'     => [3.141592653589793, '3.141592653589793'];
+        yield 'plain fraction'       => [1234.5, '1234.5'];
+        yield 'large integer valued' => [1.0E+15, '1000000000000000'];
+        yield 'large with exponent'  => [1.5E+20, '150000000000000000000'];
+    }
+
+    /** @dataProvider numericToStringExact */
+    public function testNumericToStringKeepsEveryDigitAndNeverUsesAnExponent(float $value, string $expected): void
+    {
+        $outcome = RetypeCoercionEngine::attempt($value, true, 'numeric', 'string');
+        self::assertTrue($outcome->isCoerced());
+        self::assertSame($expected, $outcome->value());
+        self::assertSame($value, (float) $outcome->value(), 'The text must parse back to the same double.');
+    }
+
     public function testNumericToIntAcceptsIntegerValuedFloats(): void
     {
         self::assertCoerced(42, RetypeCoercionEngine::attempt(42.0, true, 'numeric', 'int'));

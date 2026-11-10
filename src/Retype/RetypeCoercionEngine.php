@@ -243,9 +243,8 @@ final class RetypeCoercionEngine
         if ($f === 0.0) {
             return CoercionOutcome::coerced('0');
         }
-        // PHP default float→string uses serialize_precision; force a
-        // fixed-notation rendering and trim per ADR 0024 canonical
-        // rules.
+        // An int keeps its own digits. A float is written out in full
+        // without an exponent.
         $s = is_int($value) ? (string) $value : self::floatToCanonicalString($f);
         return CoercionOutcome::coerced($s);
     }
@@ -331,25 +330,38 @@ final class RetypeCoercionEngine
         return null;
     }
 
+    /**
+     * The shortest decimal text that parses back to the same double,
+     * written without an exponent. `(string)` cannot do this: it keeps
+     * 14 significant digits (the `precision` setting), which rounds most
+     * doubles, and it switches to an exponent for very large and very
+     * small values.
+     */
     private static function floatToCanonicalString(float $f): string
     {
-        // `serialize_precision = -1` (PHP 7.1+ default) yields the
-        // shortest round-trip representation. `(string)` honors it.
-        $s = (string) $f;
-
-        // Strip scientific notation by rendering fixed if needed.
-        if (stripos($s, 'e') !== false) {
-            // 14-digit precision is enough for IEEE-754 doubles round-trip.
-            $s = rtrim(rtrim(sprintf('%.14F', $f), '0'), '.');
-            if ($s === '' || $s === '-') {
-                $s = '0';
+        // Fewest significant digits that still parse back to $f. Seventeen
+        // always do, so the loop cannot run off its end.
+        $scientific = '';
+        for ($decimals = 0; $decimals <= 16; $decimals++) {
+            $scientific = sprintf('%.' . $decimals . 'e', $f);
+            if ((float) $scientific === $f) {
+                break;
             }
         }
-
-        // Drop trailing zeros after the decimal; drop a trailing `.`.
-        if (str_contains($s, '.')) {
-            $s = rtrim(rtrim($s, '0'), '.');
+        if (preg_match('/^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/', $scientific, $m) !== 1) {
+            return (string) $f;
         }
-        return $s;
+
+        $digits = $m[2] . $m[3];
+        $point  = 1 + (int) $m[4];
+        $length = strlen($digits);
+        if ($point <= 0) {
+            $text = '0.' . str_repeat('0', -$point) . $digits;
+        } elseif ($point >= $length) {
+            $text = $digits . str_repeat('0', $point - $length);
+        } else {
+            $text = substr($digits, 0, $point) . '.' . substr($digits, $point);
+        }
+        return $m[1] . $text;
     }
 }
