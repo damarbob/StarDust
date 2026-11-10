@@ -242,6 +242,51 @@ final class RetypeCoercionMatrixTest extends TestCase
         self::assertCoerced('2026-01-15 08:00:00', $fraction);
     }
 
+    /** @return iterable<string, array{string}> */
+    public static function storedDatetimesThatAreNotReadBack(): iterable
+    {
+        yield 'date only'                => ['2026-01-15'];
+        yield 'day first with slashes'   => ['12/06/2026'];
+        yield 'relative word'            => ['tomorrow'];
+        yield 'offset without a colon'   => ['2026-01-15 08:00:00+0500'];
+        yield 'impossible date'          => ['2026-02-31 08:00:00'];
+        yield 'impossible date, offset'  => ['2026-02-31T08:00:00Z'];
+        yield 'hour 24'                  => ['2026-01-01 24:00:00'];
+    }
+
+    /** @dataProvider storedDatetimesThatAreNotReadBack */
+    public function testDatetimeSameTypeBackfillReadsOnlyTheShapesAWriteAccepts(string $value): void
+    {
+        self::assertNullCoerced(
+            'malformed_datetime',
+            RetypeCoercionEngine::attempt($value, true, 'datetime', 'datetime')
+        );
+    }
+
+    /** @dataProvider storedDatetimesThatAreNotReadBack */
+    public function testDatetimeToStringReadsOnlyTheShapesAWriteAccepts(string $value): void
+    {
+        self::assertNullCoerced(
+            'malformed_datetime',
+            RetypeCoercionEngine::attempt($value, true, 'datetime', 'string')
+        );
+    }
+
+    public function testStoredDatetimesInTheAcceptedShapesAreStillRead(): void
+    {
+        $naive = RetypeCoercionEngine::attempt('2026-01-15T08:00:00', true, 'datetime', 'datetime');
+        self::assertTrue($naive->isCoerced());
+        self::assertSame('2026-01-15 08:00:00', $naive->value());
+
+        $offset = RetypeCoercionEngine::attempt('2026-01-15T08:00:00+05:00', true, 'datetime', 'datetime');
+        self::assertTrue($offset->isCoerced());
+        self::assertSame('2026-01-15 03:00:00', $offset->value());
+
+        $text = RetypeCoercionEngine::attempt('2026-01-15 08:00:00', true, 'datetime', 'string');
+        self::assertTrue($text->isCoerced());
+        self::assertSame('2026-01-15T08:00:00.000000Z', $text->value());
+    }
+
     // ────────────────────────────────────────────────────────────────
     //  int → string / int → numeric
     // ────────────────────────────────────────────────────────────────

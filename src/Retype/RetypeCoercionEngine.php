@@ -6,6 +6,7 @@ namespace StarDust\Retype;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use StarDust\Support\DatetimeRollover;
 use Throwable;
 
 /**
@@ -48,6 +49,14 @@ final class RetypeCoercionEngine
         'numeric'  => ['datetime'],
         'datetime' => ['int', 'numeric'],
     ];
+
+    /** The shape `string → datetime` accepts: a date, a time and an explicit offset. */
+    private const DATETIME_WITH_OFFSET =
+        '/^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/';
+
+    /** The same shape without an offset, read as UTC. Only stored values may take it. */
+    private const DATETIME_NAIVE =
+        '/^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?$/';
 
     public static function isCategoricallyRejected(string $from, string $to): bool
     {
@@ -186,26 +195,49 @@ final class RetypeCoercionEngine
         // RFC 3339 with explicit offset. The literal `T` separator is
         // canonical; we also accept a single space per RFC 3339 §5.6
         // NOTE.
-        $pattern = '/^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/';
-        if (preg_match($pattern, $value) !== 1) {
+        if (preg_match(self::DATETIME_WITH_OFFSET, $value) !== 1) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
-        try {
-            $dt = new DateTimeImmutable($value);
-        } catch (Throwable) {
-            return CoercionOutcome::nullCoerced('malformed_datetime');
-        }
-        // PHP rolls an impossible value forward instead of rejecting it:
-        // 2026-02-31 becomes March 3, hour 24 becomes the next day and
-        // second 60 becomes the next minute. Reading the fields back in
-        // the parsed offset shows whether anything moved.
-        $given = substr($value, 0, 10) . 'T' . substr($value, 11, 8);
-        if ($dt->format('Y-m-d\TH:i:s') !== $given) {
+        $dt = self::parseWithoutRollover($value);
+        if ($dt === null) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
         return CoercionOutcome::coerced(
             $dt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
         );
+    }
+
+    /**
+     * Parses a text that already matched a datetime shape. Returns null
+     * when PHP rejects it or would move it forward (see
+     * {@see DatetimeRollover}). A text with no offset is read as UTC.
+     */
+    private static function parseWithoutRollover(string $value): ?DateTimeImmutable
+    {
+        try {
+            $dt = new DateTimeImmutable($value, new DateTimeZone('UTC'));
+        } catch (Throwable) {
+            return null;
+        }
+
+        return DatetimeRollover::occurred($value, $dt) ? null : $dt;
+    }
+
+    /**
+     * A datetime string read back from the JSON payload. Only the two
+     * shapes a write accepts are read, a text with an offset or one
+     * without that means UTC. Anything else is null, because PHP would
+     * otherwise guess at `12/06/2026` or `tomorrow`.
+     */
+    private static function parseStoredDatetime(string $value): ?DateTimeImmutable
+    {
+        if (preg_match(self::DATETIME_WITH_OFFSET, $value) !== 1
+            && preg_match(self::DATETIME_NAIVE, $value) !== 1
+        ) {
+            return null;
+        }
+
+        return self::parseWithoutRollover($value);
     }
 
     /**
@@ -304,14 +336,10 @@ final class RetypeCoercionEngine
         if (!is_string($value)) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
-        try {
-            // Datetime values originate from a MySQL DATETIME slot
-            // (`Y-m-d H:i:s` UTC). Treat naive input as UTC.
-            $hasOffset = preg_match('/(Z|[+-]\d{2}:?\d{2})$/', $value) === 1;
-            $dt = $hasOffset
-                ? new DateTimeImmutable($value)
-                : new DateTimeImmutable($value, new DateTimeZone('UTC'));
-        } catch (Throwable) {
+        // Datetime values originate from a MySQL DATETIME slot
+        // (`Y-m-d H:i:s` UTC). Treat naive input as UTC.
+        $dt = self::parseStoredDatetime($value);
+        if ($dt === null) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
         return CoercionOutcome::coerced(
@@ -321,12 +349,8 @@ final class RetypeCoercionEngine
 
     private static function reformatDatetimeForSlot(string $value): CoercionOutcome
     {
-        try {
-            $hasOffset = preg_match('/(Z|[+-]\d{2}:?\d{2})$/', $value) === 1;
-            $dt = $hasOffset
-                ? new DateTimeImmutable($value)
-                : new DateTimeImmutable($value, new DateTimeZone('UTC'));
-        } catch (Throwable) {
+        $dt = self::parseStoredDatetime($value);
+        if ($dt === null) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
         return CoercionOutcome::coerced(
