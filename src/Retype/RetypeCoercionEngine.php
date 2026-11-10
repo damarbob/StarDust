@@ -37,9 +37,9 @@ use Throwable;
  *   - `out_of_range` — value parsed but exceeds the target's range.
  *   - `non_integer` — `numeric → int` with a non-integer source.
  *   - `malformed_datetime` — `string → datetime` that does not parse.
- *   - `malformed_number` — `string → numeric` that does not parse.
+ *   - `malformed_number` — `string → int` or `string → numeric` that does not parse.
  *   - `epoch_coercion_rejected` — categorically rejected datetime pair.
- *   - `unparseable` — any other coercion that the cell rule rejects.
+ *   - `unparseable` — a JSON value of the wrong structure for the source type.
  */
 final class RetypeCoercionEngine
 {
@@ -134,7 +134,7 @@ final class RetypeCoercionEngine
             return CoercionOutcome::nullCoerced('unparseable');
         }
         if (preg_match('/^-?[0-9]+$/', $value) !== 1) {
-            return CoercionOutcome::nullCoerced('unparseable');
+            return CoercionOutcome::nullCoerced('malformed_number');
         }
         $asInt = self::parseInt64($value);
         if ($asInt === null) {

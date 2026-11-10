@@ -68,7 +68,7 @@ final class RetypeBackfillTest extends Phase6bTestCase
 
         $reasons = array_map(static fn ($r) => $r['context']['reason'], $nullEvents);
         sort($reasons);
-        self::assertSame(['unparseable', 'unparseable'], $reasons);
+        self::assertSame(['malformed_number', 'malformed_number'], $reasons);
 
         // After the final chunk: slot promoted, checkpoint completed,
         // promote_to_ready emitted, cardinality_sampled fired with

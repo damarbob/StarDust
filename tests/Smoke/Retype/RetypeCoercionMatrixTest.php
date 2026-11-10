@@ -100,11 +100,17 @@ final class RetypeCoercionMatrixTest extends TestCase
 
     public function testStringToIntRejectsMalformed(): void
     {
-        self::assertNullCoerced('unparseable', RetypeCoercionEngine::attempt('hello', true, 'string', 'int'));
-        self::assertNullCoerced('unparseable', RetypeCoercionEngine::attempt('3.5', true, 'string', 'int'));
-        self::assertNullCoerced('unparseable', RetypeCoercionEngine::attempt('+42', true, 'string', 'int'));
-        self::assertNullCoerced('unparseable', RetypeCoercionEngine::attempt(' 42', true, 'string', 'int'));
-        self::assertNullCoerced('unparseable', RetypeCoercionEngine::attempt('1,234', true, 'string', 'int'));
+        self::assertNullCoerced('malformed_number', RetypeCoercionEngine::attempt('hello', true, 'string', 'int'));
+        self::assertNullCoerced('malformed_number', RetypeCoercionEngine::attempt('3.5', true, 'string', 'int'));
+        self::assertNullCoerced('malformed_number', RetypeCoercionEngine::attempt('+42', true, 'string', 'int'));
+        self::assertNullCoerced('malformed_number', RetypeCoercionEngine::attempt(' 42', true, 'string', 'int'));
+        self::assertNullCoerced('malformed_number', RetypeCoercionEngine::attempt('1,234', true, 'string', 'int'));
+    }
+
+    public function testAJsonValueOfTheWrongStructureIsUnparseable(): void
+    {
+        self::assertNullCoerced('unparseable', RetypeCoercionEngine::attempt(['a'], true, 'string', 'int'));
+        self::assertNullCoerced('unparseable', RetypeCoercionEngine::attempt(true, true, 'string', 'int'));
     }
 
     /** @return iterable<string, array{string, int}> */
