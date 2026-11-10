@@ -107,6 +107,56 @@ final class RetypeCoercionMatrixTest extends TestCase
         self::assertNullCoerced('unparseable', RetypeCoercionEngine::attempt('1,234', true, 'string', 'int'));
     }
 
+    /** @return iterable<string, array{string, int}> */
+    public static function intLiteralsThatFit(): iterable
+    {
+        yield 'leading zeros'       => ['007', 7];
+        yield 'negative zero'       => ['-0', 0];
+        yield 'negative with zeros' => ['-007', -7];
+        yield 'zeros only'          => ['000', 0];
+        yield 'long run of zeros'   => ['00000000000000000000042', 42];
+        yield 'largest'             => ['9223372036854775807', PHP_INT_MAX];
+        yield 'largest with zeros'  => ['009223372036854775807', PHP_INT_MAX];
+        yield 'smallest'            => ['-9223372036854775808', PHP_INT_MIN];
+    }
+
+    /** @dataProvider intLiteralsThatFit */
+    public function testStringToIntAcceptsEveryLiteralTheGrammarAllows(string $literal, int $expected): void
+    {
+        $outcome = RetypeCoercionEngine::attempt($literal, true, 'string', 'int');
+        self::assertTrue($outcome->isCoerced());
+        self::assertSame($expected, $outcome->value());
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function intLiteralsThatOverflow(): iterable
+    {
+        yield 'one past the largest'   => ['9223372036854775808'];
+        yield 'one past the smallest'  => ['-9223372036854775809'];
+        yield 'twenty digits'          => ['99999999999999999999'];
+    }
+
+    /** @dataProvider intLiteralsThatOverflow */
+    public function testStringToIntReportsOverflowAsOutOfRange(string $literal): void
+    {
+        self::assertNullCoerced('out_of_range', RetypeCoercionEngine::attempt($literal, true, 'string', 'int'));
+    }
+
+    public function testNumericStringsInAnIntFieldFollowTheSameGrammar(): void
+    {
+        $toString = RetypeCoercionEngine::attempt('007', true, 'int', 'string');
+        self::assertTrue($toString->isCoerced());
+        self::assertSame('7', $toString->value());
+
+        $toNumeric = RetypeCoercionEngine::attempt('-0', true, 'int', 'numeric');
+        self::assertTrue($toNumeric->isCoerced());
+        self::assertSame(0.0, $toNumeric->value());
+
+        $identity = RetypeCoercionEngine::attempt('007', true, 'int', 'int');
+        self::assertTrue($identity->isCoerced());
+        self::assertSame(7, $identity->value());
+    }
+
     public function testStringToIntRejectsOutOfRange(): void
     {
         // PHP_INT_MAX = 9223372036854775807 (19 digits) — add one digit

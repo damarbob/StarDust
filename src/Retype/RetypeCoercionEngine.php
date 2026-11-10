@@ -123,13 +123,32 @@ final class RetypeCoercionEngine
         if (preg_match('/^-?[0-9]+$/', $value) !== 1) {
             return CoercionOutcome::nullCoerced('unparseable');
         }
-        // PHP_INT_MAX = 9223372036854775807; round-tripping through (int)
-        // overflows silently, so we re-stringify and compare.
-        $asInt = (int) $value;
-        if ((string) $asInt !== ltrim($value, '+')) {
+        $asInt = self::parseInt64($value);
+        if ($asInt === null) {
             return CoercionOutcome::nullCoerced('out_of_range');
         }
         return CoercionOutcome::coerced($asInt);
+    }
+
+    /**
+     * Signed 64-bit value of a base-10 literal, or null when it does not
+     * fit. The caller has already matched `^-?[0-9]+$`. Leading zeros and
+     * `-0` are ordinary digits, so `"007"` is 7 and `"-0"` is 0. Casting
+     * and comparing the text back would reject both, and a plain `(int)`
+     * cast would clamp an overflow instead of reporting it.
+     */
+    private static function parseInt64(string $literal): ?int
+    {
+        $negative = $literal[0] === '-';
+        $digits   = ltrim($negative ? substr($literal, 1) : $literal, '0');
+        if ($digits === '') {
+            return 0;
+        }
+        $limit = $negative ? '9223372036854775808' : '9223372036854775807';
+        if (strlen($digits) > 19 || (strlen($digits) === 19 && strcmp($digits, $limit) > 0)) {
+            return null;
+        }
+        return (int) ($negative ? '-' . $digits : $digits);
     }
 
     /**
@@ -200,8 +219,8 @@ final class RetypeCoercionEngine
         }
         // Defensive: a JSON numeric string for an `int` declared_type.
         if (is_string($value) && preg_match('/^-?[0-9]+$/', $value) === 1) {
-            $asInt = (int) $value;
-            if ((string) $asInt !== ltrim($value, '+')) {
+            $asInt = self::parseInt64($value);
+            if ($asInt === null) {
                 return CoercionOutcome::nullCoerced('out_of_range');
             }
             return CoercionOutcome::coerced((string) $asInt);
@@ -219,8 +238,8 @@ final class RetypeCoercionEngine
             return CoercionOutcome::coerced((float) $value);
         }
         if (is_string($value) && preg_match('/^-?[0-9]+$/', $value) === 1) {
-            $asInt = (int) $value;
-            if ((string) $asInt !== ltrim($value, '+')) {
+            $asInt = self::parseInt64($value);
+            if ($asInt === null) {
                 return CoercionOutcome::nullCoerced('out_of_range');
             }
             return CoercionOutcome::coerced((float) $asInt);
