@@ -12,7 +12,8 @@ namespace StarDust\Retype;
  * §7 pins the required keys: `tenant_id`, `field_id`,
  * `slot_assignment_id`, `entry_id`, `source_type`, `target_type`,
  * `reason`. The work source layers on `level`, `source`, `event`,
- * `correlation_id`, and `chunk_id` at emit time.
+ * and `correlation_id` at emit time. The id is the chunk's own, the same
+ * value `chunk_complete` carries as its `correlation_id`.
  *
  * The `reason` field's value must be one of the closed ADR 0024
  * taxonomy: `out_of_range`, `non_integer`, `malformed_datetime`,
