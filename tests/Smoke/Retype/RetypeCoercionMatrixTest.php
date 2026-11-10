@@ -243,8 +243,30 @@ final class RetypeCoercionMatrixTest extends TestCase
     }
 
     /** @return iterable<string, array{string}> */
+    public static function offsetTextsSpelledDifferentlyFromAWrite(): iterable
+    {
+        yield 'space separator'     => ['2026-01-15 08:00:00Z'];
+        yield 'space with offset'   => ['2026-01-15 08:00:00+05:00'];
+        yield 'lowercase t'         => ['2026-01-15t08:00:00Z'];
+        yield 'lowercase z'         => ['2026-01-15T08:00:00z'];
+    }
+
+    /** @dataProvider offsetTextsSpelledDifferentlyFromAWrite */
+    public function testStringToDatetimeTakesOnlyTheSpellingAWriteAccepts(string $value): void
+    {
+        self::assertNullCoerced(
+            'malformed_datetime',
+            RetypeCoercionEngine::attempt($value, true, 'string', 'datetime')
+        );
+    }
+
+    /** @return iterable<string, array{string}> */
     public static function storedDatetimesThatAreNotReadBack(): iterable
     {
+        yield 'space with offset'        => ['2026-01-15 08:00:00+05:00'];
+        yield 'lowercase t, offset'      => ['2026-01-15t08:00:00Z'];
+        yield 'lowercase z'              => ['2026-01-15T08:00:00z'];
+        yield 'lowercase t, naive'       => ['2026-01-15t08:00:00'];
         yield 'date only'                => ['2026-01-15'];
         yield 'day first with slashes'   => ['12/06/2026'];
         yield 'relative word'            => ['tomorrow'];

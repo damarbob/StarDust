@@ -50,13 +50,17 @@ final class RetypeCoercionEngine
         'datetime' => ['int', 'numeric'],
     ];
 
-    /** The shape `string → datetime` accepts: a date, a time and an explicit offset. */
+    /**
+     * The shape `string → datetime` accepts, spelled as the write path and
+     * the filter check spell it: an uppercase `T`, an explicit offset and
+     * an uppercase `Z` for UTC.
+     */
     private const DATETIME_WITH_OFFSET =
-        '/^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/';
+        '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/';
 
-    /** The same shape without an offset, read as UTC. Only stored values may take it. */
+    /** The shape without an offset, read as UTC. Only stored values may take it. */
     private const DATETIME_NAIVE =
-        '/^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?$/';
+        '/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?$/';
 
     public static function isCategoricallyRejected(string $from, string $to): bool
     {
@@ -192,9 +196,8 @@ final class RetypeCoercionEngine
         if (!is_string($value)) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
-        // RFC 3339 with explicit offset. The literal `T` separator is
-        // canonical; we also accept a single space per RFC 3339 §5.6
-        // NOTE.
+        // The same spelling a write accepts, so a value that a write would
+        // refuse cannot enter a slot through a retype.
         if (preg_match(self::DATETIME_WITH_OFFSET, $value) !== 1) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
