@@ -90,6 +90,22 @@ final class PayloadSplitterDatetimeTest extends WritePathTestCase
         ));
     }
 
+    public function testImpossibleDateIsRejectedRatherThanMovedForward(): void
+    {
+        [$modelId, , , $fieldName] = $this->setupModelWithReservedField(1, 'datetime');
+
+        // `new DateTimeImmutable()` reads 31 February as 3 March, so the
+        // slot would hold a different date from the one the caller sent.
+        $this->expectException(UncoercibleSlotValueException::class);
+        $this->expectExceptionMessage("cannot parse '2026-02-31 00:00:00' as datetime");
+
+        $this->makeEntryWriter()->write(new EntryPayload(
+            tenantId: 1,
+            modelId: $modelId,
+            fields: [$fieldName => '2026-02-31 00:00:00'],
+        ));
+    }
+
     public function testNaiveYmdHisIsAcceptedAndTreatedAsAlreadyUtc(): void
     {
         [$modelId, , $pageId, $fieldName] = $this->setupModelWithReservedField(1, 'datetime');

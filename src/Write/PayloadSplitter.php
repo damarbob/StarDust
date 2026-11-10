@@ -9,6 +9,7 @@ use DateTimeInterface;
 use DateTimeZone;
 use StarDust\Exception\UncoercibleSlotValueException;
 use StarDust\Filter\Limits\FilterLimits;
+use StarDust\Support\DatetimeRollover;
 
 /**
  * Pure value-mapping from `EntryPayload::$fields` to a per-page write
@@ -262,6 +263,14 @@ final class PayloadSplitter
             } catch (\Throwable $e) {
                 throw new UncoercibleSlotValueException(
                     "Field '{$fieldName}': cannot parse '{$value}' as datetime: " . $e->getMessage()
+                );
+            }
+            // The shape check cannot see an impossible value such as
+            // 2026-02-31, which PHP moves forward to March 3 and so stores
+            // a different date from the one the caller sent.
+            if (DatetimeRollover::occurred($value, $dt)) {
+                throw new UncoercibleSlotValueException(
+                    "Field '{$fieldName}': cannot parse '{$value}' as datetime: the date or time does not exist."
                 );
             }
             return $dt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');

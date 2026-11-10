@@ -83,6 +83,8 @@ Encapsulates all SQL against `backfill_checkpoints` rows whose `job_name LIKE 'r
 - `NotAttempted` — JSON key absent OR value is JSON `null`. No event.
 - `NullCoerced(reason)` — attempted but failed, with the closed taxonomy `out_of_range | non_integer | malformed_datetime | malformed_number | epoch_coercion_rejected | unparseable`.
 
+**Datetime values are read in exactly two shapes.** `string → datetime` takes the offset shape only, spelled as a write spells it (an uppercase `T` and `Z`, no space), so a retype cannot admit a value a write would refuse. A stored value read back by the same-type backfill (a promotion) or by `datetime → string` takes the offset shape or a naive one meaning UTC. Anything else is `malformed_datetime`, so `12/06/2026`, `tomorrow` and a date-only value become NULL with an event and are never guessed. A text PHP would move forward (`2026-02-31`) is also rejected, through `Support\DatetimeRollover`. The shapes live in two constants at the top of the class, so a change to what counts as a datetime is one edit.
+
 Covered by the DB-free `tests/Smoke/Retype/RetypeCoercionMatrixTest`.
 
 ## `RetypeBackfillExecutor`

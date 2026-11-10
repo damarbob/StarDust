@@ -167,6 +167,29 @@ final class DatetimeBoundNormalisationTest extends Phase8TestCase
     }
 
     /**
+     * A bound that names a day that does not exist is `value_type_mismatch`.
+     * It used to pass and search for 3 March, because PHP moves 31 February
+     * forward instead of rejecting it.
+     */
+    public function testImpossibleDateBoundIsRejected(): void
+    {
+        [$modelId, $names] = $this->setupSortableModel();
+        $field = $names['datetime'];
+
+        try {
+            $this->makeSearchService()->execute(new SearchRequest(
+                tenantId: 1,
+                modelId:  $modelId,
+                filter:   LeafNode::local($field, 'eq', '2026-02-31T00:00:00Z'),
+                pageSize: 10,
+            ));
+            self::fail('an impossible date bound should not have been accepted');
+        } catch (QueryFilterValidationException $e) {
+            self::assertSame(ValidationErrorCode::VALUE_TYPE_MISMATCH, $e->errorCode);
+        }
+    }
+
+    /**
      * What a driver actually receives.
      *
      * The AST is driver-neutral per ADR 0022, so pre-flight hands on

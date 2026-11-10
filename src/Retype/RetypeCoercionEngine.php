@@ -6,6 +6,7 @@ namespace StarDust\Retype;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use StarDust\Support\DatetimeRollover;
 use Throwable;
 
 /**
@@ -36,9 +37,9 @@ use Throwable;
  *   - `out_of_range` — value parsed but exceeds the target's range.
  *   - `non_integer` — `numeric → int` with a non-integer source.
  *   - `malformed_datetime` — `string → datetime` that does not parse.
- *   - `malformed_number` — `string → numeric` that does not parse.
+ *   - `malformed_number` — `string → int` or `string → numeric` that does not parse.
  *   - `epoch_coercion_rejected` — categorically rejected datetime pair.
- *   - `unparseable` — any other coercion that the cell rule rejects.
+ *   - `unparseable` — a JSON value of the wrong structure for the source type.
  */
 final class RetypeCoercionEngine
 {
@@ -48,6 +49,18 @@ final class RetypeCoercionEngine
         'numeric'  => ['datetime'],
         'datetime' => ['int', 'numeric'],
     ];
+
+    /**
+     * The shape `string → datetime` accepts, spelled as the write path and
+     * the filter check spell it: an uppercase `T`, an explicit offset and
+     * an uppercase `Z` for UTC.
+     */
+    private const DATETIME_WITH_OFFSET =
+        '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/';
+
+    /** The shape without an offset, read as UTC. Only stored values may take it. */
+    private const DATETIME_NAIVE =
+        '/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?$/';
 
     public static function isCategoricallyRejected(string $from, string $to): bool
     {
@@ -121,15 +134,34 @@ final class RetypeCoercionEngine
             return CoercionOutcome::nullCoerced('unparseable');
         }
         if (preg_match('/^-?[0-9]+$/', $value) !== 1) {
-            return CoercionOutcome::nullCoerced('unparseable');
+            return CoercionOutcome::nullCoerced('malformed_number');
         }
-        // PHP_INT_MAX = 9223372036854775807; round-tripping through (int)
-        // overflows silently, so we re-stringify and compare.
-        $asInt = (int) $value;
-        if ((string) $asInt !== ltrim($value, '+')) {
+        $asInt = self::parseInt64($value);
+        if ($asInt === null) {
             return CoercionOutcome::nullCoerced('out_of_range');
         }
         return CoercionOutcome::coerced($asInt);
+    }
+
+    /**
+     * Signed 64-bit value of a base-10 literal, or null when it does not
+     * fit. The caller has already matched `^-?[0-9]+$`. Leading zeros and
+     * `-0` are ordinary digits, so `"007"` is 7 and `"-0"` is 0. Casting
+     * and comparing the text back would reject both, and a plain `(int)`
+     * cast would clamp an overflow instead of reporting it.
+     */
+    private static function parseInt64(string $literal): ?int
+    {
+        $negative = $literal[0] === '-';
+        $digits   = ltrim($negative ? substr($literal, 1) : $literal, '0');
+        if ($digits === '') {
+            return 0;
+        }
+        $limit = $negative ? '9223372036854775808' : '9223372036854775807';
+        if (strlen($digits) > 19 || (strlen($digits) === 19 && strcmp($digits, $limit) > 0)) {
+            return null;
+        }
+        return (int) ($negative ? '-' . $digits : $digits);
     }
 
     /**
@@ -164,21 +196,51 @@ final class RetypeCoercionEngine
         if (!is_string($value)) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
-        // RFC 3339 with explicit offset. The literal `T` separator is
-        // canonical; we also accept a single space per RFC 3339 §5.6
-        // NOTE.
-        $pattern = '/^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/';
-        if (preg_match($pattern, $value) !== 1) {
+        // The same spelling a write accepts, so a value that a write would
+        // refuse cannot enter a slot through a retype.
+        if (preg_match(self::DATETIME_WITH_OFFSET, $value) !== 1) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
-        try {
-            $dt = new DateTimeImmutable($value);
-        } catch (Throwable) {
+        $dt = self::parseWithoutRollover($value);
+        if ($dt === null) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
         return CoercionOutcome::coerced(
             $dt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
         );
+    }
+
+    /**
+     * Parses a text that already matched a datetime shape. Returns null
+     * when PHP rejects it or would move it forward (see
+     * {@see DatetimeRollover}). A text with no offset is read as UTC.
+     */
+    private static function parseWithoutRollover(string $value): ?DateTimeImmutable
+    {
+        try {
+            $dt = new DateTimeImmutable($value, new DateTimeZone('UTC'));
+        } catch (Throwable) {
+            return null;
+        }
+
+        return DatetimeRollover::occurred($value, $dt) ? null : $dt;
+    }
+
+    /**
+     * A datetime string read back from the JSON payload. Only the two
+     * shapes a write accepts are read, a text with an offset or one
+     * without that means UTC. Anything else is null, because PHP would
+     * otherwise guess at `12/06/2026` or `tomorrow`.
+     */
+    private static function parseStoredDatetime(string $value): ?DateTimeImmutable
+    {
+        if (preg_match(self::DATETIME_WITH_OFFSET, $value) !== 1
+            && preg_match(self::DATETIME_NAIVE, $value) !== 1
+        ) {
+            return null;
+        }
+
+        return self::parseWithoutRollover($value);
     }
 
     /**
@@ -192,8 +254,8 @@ final class RetypeCoercionEngine
         }
         // Defensive: a JSON numeric string for an `int` declared_type.
         if (is_string($value) && preg_match('/^-?[0-9]+$/', $value) === 1) {
-            $asInt = (int) $value;
-            if ((string) $asInt !== ltrim($value, '+')) {
+            $asInt = self::parseInt64($value);
+            if ($asInt === null) {
                 return CoercionOutcome::nullCoerced('out_of_range');
             }
             return CoercionOutcome::coerced((string) $asInt);
@@ -202,8 +264,9 @@ final class RetypeCoercionEngine
     }
 
     /**
-     * int → numeric — identity (lossless widening; `int` ⊂ `numeric`
-     * representable range).
+     * int → numeric. The numeric slot is a DOUBLE, so the value is exact
+     * only up to 2^53 and a larger integer loses its low digits there.
+     * The JSON payload keeps the exact value.
      */
     private static function coerceIntToNumeric(mixed $value): CoercionOutcome
     {
@@ -211,8 +274,8 @@ final class RetypeCoercionEngine
             return CoercionOutcome::coerced((float) $value);
         }
         if (is_string($value) && preg_match('/^-?[0-9]+$/', $value) === 1) {
-            $asInt = (int) $value;
-            if ((string) $asInt !== ltrim($value, '+')) {
+            $asInt = self::parseInt64($value);
+            if ($asInt === null) {
                 return CoercionOutcome::nullCoerced('out_of_range');
             }
             return CoercionOutcome::coerced((float) $asInt);
@@ -235,9 +298,8 @@ final class RetypeCoercionEngine
         if ($f === 0.0) {
             return CoercionOutcome::coerced('0');
         }
-        // PHP default float→string uses serialize_precision; force a
-        // fixed-notation rendering and trim per ADR 0024 canonical
-        // rules.
+        // An int keeps its own digits. A float is written out in full
+        // without an exponent.
         $s = is_int($value) ? (string) $value : self::floatToCanonicalString($f);
         return CoercionOutcome::coerced($s);
     }
@@ -278,14 +340,10 @@ final class RetypeCoercionEngine
         if (!is_string($value)) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
-        try {
-            // Datetime values originate from a MySQL DATETIME slot
-            // (`Y-m-d H:i:s` UTC). Treat naive input as UTC.
-            $hasOffset = preg_match('/(Z|[+-]\d{2}:?\d{2})$/', $value) === 1;
-            $dt = $hasOffset
-                ? new DateTimeImmutable($value)
-                : new DateTimeImmutable($value, new DateTimeZone('UTC'));
-        } catch (Throwable) {
+        // Datetime values originate from a MySQL DATETIME slot
+        // (`Y-m-d H:i:s` UTC). Treat naive input as UTC.
+        $dt = self::parseStoredDatetime($value);
+        if ($dt === null) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
         return CoercionOutcome::coerced(
@@ -295,12 +353,8 @@ final class RetypeCoercionEngine
 
     private static function reformatDatetimeForSlot(string $value): CoercionOutcome
     {
-        try {
-            $hasOffset = preg_match('/(Z|[+-]\d{2}:?\d{2})$/', $value) === 1;
-            $dt = $hasOffset
-                ? new DateTimeImmutable($value)
-                : new DateTimeImmutable($value, new DateTimeZone('UTC'));
-        } catch (Throwable) {
+        $dt = self::parseStoredDatetime($value);
+        if ($dt === null) {
             return CoercionOutcome::nullCoerced('malformed_datetime');
         }
         return CoercionOutcome::coerced(
@@ -323,25 +377,38 @@ final class RetypeCoercionEngine
         return null;
     }
 
+    /**
+     * The shortest decimal text that parses back to the same double,
+     * written without an exponent. `(string)` cannot do this: it keeps
+     * 14 significant digits (the `precision` setting), which rounds most
+     * doubles, and it switches to an exponent for very large and very
+     * small values.
+     */
     private static function floatToCanonicalString(float $f): string
     {
-        // `serialize_precision = -1` (PHP 7.1+ default) yields the
-        // shortest round-trip representation. `(string)` honors it.
-        $s = (string) $f;
-
-        // Strip scientific notation by rendering fixed if needed.
-        if (stripos($s, 'e') !== false) {
-            // 14-digit precision is enough for IEEE-754 doubles round-trip.
-            $s = rtrim(rtrim(sprintf('%.14F', $f), '0'), '.');
-            if ($s === '' || $s === '-') {
-                $s = '0';
+        // Fewest significant digits that still parse back to $f. Seventeen
+        // always do, so the loop cannot run off its end.
+        $scientific = '';
+        for ($decimals = 0; $decimals <= 16; $decimals++) {
+            $scientific = sprintf('%.' . $decimals . 'e', $f);
+            if ((float) $scientific === $f) {
+                break;
             }
         }
-
-        // Drop trailing zeros after the decimal; drop a trailing `.`.
-        if (str_contains($s, '.')) {
-            $s = rtrim(rtrim($s, '0'), '.');
+        if (preg_match('/^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/', $scientific, $m) !== 1) {
+            return (string) $f;
         }
-        return $s;
+
+        $digits = $m[2] . $m[3];
+        $point  = 1 + (int) $m[4];
+        $length = strlen($digits);
+        if ($point <= 0) {
+            $text = '0.' . str_repeat('0', -$point) . $digits;
+        } elseif ($point >= $length) {
+            $text = $digits . str_repeat('0', $point - $length);
+        } else {
+            $text = substr($digits, 0, $point) . '.' . substr($digits, $point);
+        }
+        return $m[1] . $text;
     }
 }
