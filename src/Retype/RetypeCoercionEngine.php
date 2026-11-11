@@ -52,15 +52,18 @@ final class RetypeCoercionEngine
 
     /**
      * The shape `string → datetime` accepts, spelled as the write path and
-     * the filter check spell it: an uppercase `T`, an explicit offset and
-     * an uppercase `Z` for UTC.
+     * the filter check spell it: an uppercase `T`, an explicit offset, an
+     * uppercase `Z` for UTC and at most six fractional digits.
      */
     private const DATETIME_WITH_OFFSET =
-        '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/';
+        '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/';
 
-    /** The shape without an offset, read as UTC. Only stored values may take it. */
+    /**
+     * The shape without an offset, read as UTC, with the same fraction width
+     * a write takes. Only stored values may take it.
+     */
     private const DATETIME_NAIVE =
-        '/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?$/';
+        '/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d{1,6})?$/';
 
     public static function isCategoricallyRejected(string $from, string $to): bool
     {
@@ -186,7 +189,8 @@ final class RetypeCoercionEngine
 
     /**
      * string → datetime — strict RFC 3339 with explicit UTC offset
-     * (`Z` or `±HH:MM`); naive datetimes → NULL. Result normalised to
+     * (`Z` or `±HH:MM`) and at most six fractional digits; naive
+     * datetimes → NULL. Result normalised to
      * UTC and formatted for the slot column (MySQL `DATETIME`,
      * `Y-m-d H:i:s`; the underlying column does not store sub-second
      * precision so fractional seconds are truncated).

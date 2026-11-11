@@ -19,7 +19,8 @@ use StarDust\Retype\RetypeCoercionEngine;
  *   - `string → numeric`: JSON-number grammar (RFC 8259 §6); no
  *     whitespace, no `NaN`/`Infinity`; else NULL.
  *   - `string → datetime`: strict RFC 3339 with explicit UTC offset
- *     (`Z` or `±HH:MM`); naive datetimes → NULL.
+ *     (`Z` or `±HH:MM`), at most six fractional digits; naive datetimes
+ *     → NULL.
  *   - `numeric → int`: only if integer-valued AND in signed 64-bit
  *     range; otherwise NULL.
  *   - `int↔datetime`, `numeric↔datetime`: categorically rejected.
@@ -255,6 +256,8 @@ final class RetypeCoercionMatrixTest extends TestCase
         yield 'space with offset'   => ['2026-01-15 08:00:00+05:00'];
         yield 'lowercase t'         => ['2026-01-15t08:00:00Z'];
         yield 'lowercase z'         => ['2026-01-15T08:00:00z'];
+        yield 'seven fractional digits' => ['2026-01-15T08:00:00.1234567Z'];
+        yield 'nine fractional digits'  => ['2026-01-15T08:00:00.123456789+05:00'];
     }
 
     /** @dataProvider offsetTextsSpelledDifferentlyFromAWrite */
@@ -280,6 +283,8 @@ final class RetypeCoercionMatrixTest extends TestCase
         yield 'impossible date'          => ['2026-02-31 08:00:00'];
         yield 'impossible date, offset'  => ['2026-02-31T08:00:00Z'];
         yield 'hour 24'                  => ['2026-01-01 24:00:00'];
+        yield 'seven digits, offset'     => ['2026-01-15T08:00:00.1234567Z'];
+        yield 'seven digits, naive'      => ['2026-01-15 08:00:00.1234567'];
     }
 
     /** @dataProvider storedDatetimesThatAreNotReadBack */
@@ -313,6 +318,10 @@ final class RetypeCoercionMatrixTest extends TestCase
         $text = RetypeCoercionEngine::attempt('2026-01-15 08:00:00', true, 'datetime', 'string');
         self::assertTrue($text->isCoerced());
         self::assertSame('2026-01-15T08:00:00.000000Z', $text->value());
+
+        $sixDigits = RetypeCoercionEngine::attempt('2026-01-15 08:00:00.123456', true, 'datetime', 'datetime');
+        self::assertTrue($sixDigits->isCoerced());
+        self::assertSame('2026-01-15 08:00:00', $sixDigits->value());
     }
 
     // ────────────────────────────────────────────────────────────────

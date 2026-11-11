@@ -27,8 +27,7 @@ use StarDust\Write\PayloadSplitter;
  * the engine both accept it they must name the same instant. A text without
  * an offset is the one deliberate difference, covered by its own test.
  *
- * Fraction width is outside this test. The write path and the filter check
- * take at most six fractional digits and the engine takes any number.
+ * The fraction width is one of the things they agree on, at most six digits.
  */
 final class DatetimeSpellingAgreementTest extends TestCase
 {
@@ -41,6 +40,8 @@ final class DatetimeSpellingAgreementTest extends TestCase
         yield 'one fractional digit'      => ['2026-01-15T08:00:00.5Z', true];
         yield 'six fractional digits'     => ['2026-01-15T08:00:00.123456Z', true];
         yield 'leap day'                  => ['2024-02-29T12:00:00Z', true];
+        yield 'seven fractional digits'   => ['2026-01-15T08:00:00.1234567Z', false];
+        yield 'nine fractional digits'    => ['2026-01-15T08:00:00.123456789+05:00', false];
         yield 'space separator'           => ['2026-01-15 08:00:00Z', false];
         yield 'space with offset'         => ['2026-01-15 08:00:00+05:00', false];
         yield 'lowercase t'               => ['2026-01-15t08:00:00Z', false];
