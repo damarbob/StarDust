@@ -283,9 +283,11 @@ $modelId = $company->modelId;
 
 Registering a field records *intent*. The field becomes filterable once its value lands in an indexed slot column.
 
-**In a running deployment this is automatic.** The Watcher notices fields waiting on a slot and provisions pages indexed for them, and the Reconciler then claims a slot for any registered filterable field it finds still unmapped while draining the sync queue. Write an entry touching the field and it becomes queryable a moment later, without you reserving anything. Until that first write has been processed, a filter on the field is rejected with `FieldNotFilterableException`, even on a model with no entries, and `describeModel()` reports the field with `isIndexed = false`. Gate a filter control on `isIndexed` rather than on `isFilterable`.
+**When the model has no entries yet, registration reserves the slot.** `createModel()` and `defineField()` give a new filterable field an indexed slot in the same call, as long as the model has no entries and an indexed free slot exists. `describeModel()` then reports `isIndexed = true`, and a filter on the field is accepted at once and returns nothing until you write. Set `reserveSlotAtRegistration: false` on `Config` to turn this off. A field registered on a model that already has entries, or while no indexed free slot exists, gets its slot as described next.
 
-The manual route below is for one-off setup (a seed script, a test fixture, or a deployment where you want the slot in place before the first write). A page is created with exactly the slot columns you name, and every one of them is indexed, so name the slots your filterable fields will use, then reserve one per field. A text slot is indexed through a second column, a key the database fills in from it on every write, so nothing about writing or reserving changes:
+**In a running deployment the rest is automatic.** The Watcher notices fields waiting on a slot and provisions pages indexed for them, and the Reconciler then claims a slot for any registered filterable field it finds still unmapped while draining the sync queue. Write an entry touching the field and it becomes queryable a moment later, without you reserving anything. Until that first write has been processed, a filter on the field is rejected with `FieldNotFilterableException`, and `describeModel()` reports the field with `isIndexed = false`. Gate a filter control on `isIndexed` rather than on `isFilterable`.
+
+The manual route below is for one-off setup (a seed script, a test fixture, or a deployment where you want the slot in place before the first write). A fresh install has no page when you register the model, so registration reserved nothing and the route applies as written. If an indexed free slot already existed when you registered, the field holds it and reserving again fails with a duplicate key error, so reserve only for a field whose `isIndexed` is false. A page is created with exactly the slot columns you name, and every one of them is indexed, so name the slots your filterable fields will use, then reserve one per field. A text slot is indexed through a second column, a key the database fills in from it on every write, so nothing about writing or reserving changes:
 
 ```php
 use StarDust\Page\PageProvisioner;
@@ -404,7 +406,7 @@ echo $entry?->fields['name']; // Acme Corp
 
 ## Construction & schema bootstrap
 
-Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the 46 optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
+Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the 47 optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
 
 ## Writing entries
 

@@ -174,6 +174,36 @@ final class SlotReserver
         return $this->reserveCore($fieldId, $field, 'backfilling', true, $pageId);
     }
 
+    /**
+     * ADR 0058: reserves an `assigned` slot for a filterable field that
+     * `SchemaBuilder` has just registered on a model with no entries, inside
+     * the registration's own transaction.
+     *
+     * Three differences from the other entry points, each load-bearing:
+     *
+     *   - `requireIndexed` is hardcoded `true`, for the reason
+     *     {@see self::reserveForExhaustionBackfill()} gives: the slot is
+     *     queryable at once, so it must be an indexed column (ADR 0004).
+     *   - The slot goes live as `assigned`, not `backfilling`. There is no
+     *     backfill, because the caller has just proved the model has no
+     *     entries, so nothing can be missing from the slot.
+     *   - **It does not bump `stardust_schema_version`.** `SchemaBuilder`
+     *     bumps once per call however many fields it inserts, and that rule
+     *     predates this method. The caller's bump covers the reservation
+     *     because both commit in the same transaction.
+     *
+     * Returns `null` when no indexed free slot of the family exists. The
+     * caller treats that as "register without a slot", never as a failure.
+     * The caller emits `slot_reserved` after its own commit via
+     * {@see self::emitSlotReservedEvent()}.
+     */
+    public function reserveForRegistrationWithinTransaction(int $fieldId): ?SlotAssignment
+    {
+        $field = $this->resolveReservableField($fieldId);
+
+        return $this->reserveCore($fieldId, $field, 'assigned', true, null, false);
+    }
+
     private function reserveInOwnTransaction(
         int $fieldId,
         string $targetStatus,
@@ -222,6 +252,7 @@ final class SlotReserver
         string $targetStatus,
         bool $requireIndexed,
         ?int $pinnedPageId = null,
+        bool $bumpSchemaVersion = true,
     ): ?SlotAssignment {
         $slotType = $field['slotType'];
 
@@ -312,12 +343,14 @@ final class SlotReserver
             return null;
         }
 
-        $bumpVersion = $this->pdo->prepare(
-            'UPDATE stardust_schema_version'
-            . ' SET version = version + 1, updated_at = ?'
-            . ' WHERE id = 1'
-        );
-        $bumpVersion->execute([$now]);
+        if ($bumpSchemaVersion) {
+            $bumpVersion = $this->pdo->prepare(
+                'UPDATE stardust_schema_version'
+                . ' SET version = version + 1, updated_at = ?'
+                . ' WHERE id = 1'
+            );
+            $bumpVersion->execute([$now]);
+        }
 
         return new SlotAssignment(
             pageId: $pageId,

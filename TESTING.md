@@ -58,6 +58,7 @@ GitHub Actions runs the same suite on every push against MySQL and against Maria
 ## Helpers
 
 - **`SchemaBuilder`** (`tests/Smoke/Schema/SchemaBuilderTest`) — the model/field registration helper is get-or-create and bumps `stardust_schema_version` exactly once per inserting call. Re-running with the same names returns the existing ids and does not duplicate rows or bump the version again; unknown declared types and non-positive tenants are rejected before any SQL.
+- **Eager slot at registration** (`tests/Smoke/Schema/EagerSlotRegistrationTest`) pins when registration reserves a slot and when it must not. A filterable field on a model with no entries gets an `assigned` indexed slot in the same transaction, with one schema-version bump for the whole call, and its first write fills the slot with no sync-queue row. A model that has entries (soft-deleted ones included), an existing field, a family with no free indexed slot, a builder with no reserver and `Config::$reserveSlotAtRegistration = false` all leave the field without one. A lock failure in the reservation rolls the whole registration back and the retry succeeds, and the reservation costs exactly four statements per field.
 
 ## Test conventions
 

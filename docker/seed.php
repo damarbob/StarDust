@@ -64,11 +64,16 @@ if (! $alreadySeeded) {
     (new PageProvisioner($pdo, $engine->config()->clock, $engine->logger(), $engine->serverEngine()))
         ->provision(filterableSlots: ['i_str_01', 'i_str_02', 'i_int_01', 'i_dt_01']);
 
-    $reserver = new SlotReserver($pdo, $engine->config()->clock, $engine->logger());
-    $reserver->reserve($company->fieldId('name'));
-    $reserver->reserve($company->fieldId('industry'));
-    $reserver->reserve($company->fieldId('employees'));
-    $reserver->reserve($company->fieldId('founded'));
+    // Registering a filterable field on an empty model already reserves its
+    // slot when an indexed free slot exists, so only a field that is not
+    // queryable yet needs reserving here. Reserving one twice would fail.
+    $reserver  = new SlotReserver($pdo, $engine->config()->clock, $engine->logger());
+    $described = $engine->describeModel($tenantId, $modelId);
+    foreach (['name', 'industry', 'employees', 'founded'] as $fieldName) {
+        if ($described?->field($fieldName)?->isIndexed !== true) {
+            $reserver->reserve($company->fieldId($fieldName));
+        }
+    }
 
     // 3) Write a handful of entries — straight from a raw JSON array, the
     //    way a CMS or HTTP layer would hand them over. The envelope is
