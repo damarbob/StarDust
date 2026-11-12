@@ -4,11 +4,12 @@
 
 Phase 2 atomic `free → assigned` transition. `reserve(int $fieldId): ?SlotAssignment` maps the field's `declared_type` to the slot family (`string→str`, `int→int`, `numeric→num`, `datetime→dt`), selects the oldest matching free row `FOR UPDATE`, updates `status` + `field_id`, bumps `stardust_schema_version.version`, and commits — or rolls back and returns `null` if no free slot of that family exists. The partial unique `ux_slot_assignments_field_live` enforces "at most one live slot per field" at the database level. Emits a `slot_reserved` NDJSON event on success.
 
-Two more entry points:
+More entry points:
 
 - `reserveForBackfillWithinTransaction(int $fieldId, bool $requireIndexed = false)` (Phase 6b) — the `free → backfilling` variant, caller owns the surrounding tx. Used by `RetypeInitiator` to compose the slot reservation into its atomic registry tuple and by `RetypeBackfillWorkSource` for a deferred reservation; the caller emits the `slot_reserved` event post-commit via `emitSlotReservedEvent()`. When `$requireIndexed=true`, restricts candidates via `IndexedSlotPredicate::existsSql()`.
 - `reserveForExhaustionBackfill(int $fieldId): ?SlotAssignment` — the ADR 0007 path, called by `SyncQueueWorkSource` when a backfill finds a registered filterable field still unmapped. `free → assigned` in its own transaction, with `requireIndexed` **hardcoded true**. `asBackfilling: true` makes it `free → backfilling`, which `UnmappedFieldReserver` passes for a field with a running retype checkpoint (see `src/Reconciler/CLAUDE.md`).
 - `reserveForBackfillOnPageWithinTransaction(int $fieldId, int $pageId): ?SlotAssignment` (ADR 0033) — the page-pinned variant compaction needs. **No affinity pass and no global-oldest spill**: exactly the given page or `null`, because a compaction reservation that lands elsewhere produces a compaction that does not compact. `requireIndexed` is hardcoded true. The caller turns `null` into a hard failure (pin-or-fail); see `src/Compaction/CLAUDE.md`.
+- `reserveForRegistrationWithinTransaction(int $fieldId): ?SlotAssignment` (ADR 0058) — `free → assigned` inside the caller's transaction, for a filterable field `SchemaBuilder` has just registered on a model with no entries. `requireIndexed` is hardcoded true, and **it does not bump `stardust_schema_version`**: `reserveCore()` takes a `$bumpSchemaVersion` flag that this entry point passes false, because `createModel()` bumps once per call and its documented "exactly once" has to hold whatever number of slots it reserved. `null` means no indexed free slot, which the caller treats as "register without a slot". The caller emits `slot_reserved` (status `assigned`) after its own commit.
 
 Phase 6b's `reserveForBackfill()` (the own-transaction `free → backfilling` variant) was deleted when the ADR 0007 path landed: it never acquired a production caller.
 
@@ -28,10 +29,11 @@ Behaviour verified against **MySQL 8.0.13** (the project floor): the collision i
 
 ### Which entry points are actually live
 
-Two of the three have production callers:
+These have production callers besides compaction's page-pinned variant:
 
 - `reserveForBackfillWithinTransaction()` — the retype lifecycle (`RetypeInitiator` + `RetypeBackfillWorkSource`).
 - `reserveForExhaustionBackfill()` — the ADR 0007 exhaustion path (`SyncQueueWorkSource`, via `UnmappedFieldReserver`).
+- `reserveForRegistrationWithinTransaction()` — `SchemaBuilder`, for a filterable field on an empty model (ADR 0058).
 
 `reserve()` is reached only from `docker/seed.php` and tests, and keeps its Phase 2 `requireIndexed: false` default for exactly that reason. Under ADR 0034 every slot belongs to a filterable field and ADR 0004 implies filterable ⇒ indexed, so flipping that default is defensible — but it has a wide test blast radius and needs its own change.
 
