@@ -170,6 +170,9 @@ final class GetManyTest extends ReadPathTestCase
     {
         $recording = $this->recording();
         $engine    = $this->engine($recording);
+        // The first call builds the driver, and on MariaDB that sends one
+        // `SET SESSION`. Count only what the refused call itself sends.
+        $engine->getMany(1, [987_654]);
         $recording->statements = [];
 
         try {
