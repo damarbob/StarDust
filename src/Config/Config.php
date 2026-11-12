@@ -75,6 +75,13 @@ final class Config
     public readonly array $chroniclerDbDisconnectBackoffSeconds;
     /** ADR 0053 — see the constructor; NULL derives it from `DATABASE()`. */
     public readonly ?string $lockNamespace;
+    /**
+     * ADR 0058, whether `schemaBuilder()` reserves an indexed slot at once
+     * for a filterable field registered on a model with no entries. The
+     * default is `true`. With `false` the slot comes after the field's first
+     * write, as it did before.
+     */
+    public readonly bool $reserveSlotAtRegistration;
     public readonly ?EntrySearchInterface $searchDriver;
     public readonly FilterLimits $queryFilterLimits;
     public readonly ?PdoConnector $pdoConnector;
@@ -131,6 +138,7 @@ final class Config
         ?int $tickBudgetMarginSeconds = null,
         ?int $chroniclerDiskProbeBytes = null,
         ?string $lockNamespace = null,
+        ?bool $reserveSlotAtRegistration = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -291,5 +299,9 @@ final class Config
         // mid-round by the timeout it is trying to respect.
         $this->tickBudgetSeconds       = $tickBudgetSeconds       ?? 50;
         $this->tickBudgetMarginSeconds = $tickBudgetMarginSeconds ?? 5;
+
+        // ADR 0058. On by default. Off keeps the slot lazy, reserved after
+        // the field's first write.
+        $this->reserveSlotAtRegistration = $reserveSlotAtRegistration ?? true;
     }
 }
