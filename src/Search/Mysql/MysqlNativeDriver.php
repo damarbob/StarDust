@@ -18,12 +18,14 @@ use StarDust\Read\PaginatedProbe;
 use StarDust\Read\ResultAssembler;
 use StarDust\Read\SchemaVersionCache;
 use StarDust\Read\SnapshotEntry;
+use StarDust\Search\BatchPointReadInterface;
 use StarDust\Search\ConsistencyModel;
 use StarDust\Search\EntrySearchInterface;
 use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchResult;
 use StarDust\Support\ServerEngine;
 use StarDust\Support\ServerEngineDetector;
+use StarDust\Support\TypedBinding;
 use StarDust\Support\UuidV4;
 
 /**
@@ -48,10 +50,13 @@ use StarDust\Support\UuidV4;
  * `supportsFilterOn()` and `supportsSortOn()` from that snapshot and sends no
  * statement for them. The shared instance always asks the database.
  *
+ * {@see self::getMany()} is the optional {@see BatchPointReadInterface}: several
+ * point reads in one statement, with the answers `get()` gives for each id.
+ *
  * Strong consistency: every read sees every committed write
  * ({@see ConsistencyModel::STRONG}).
  */
-final class MysqlNativeDriver implements EntrySearchInterface
+final class MysqlNativeDriver implements EntrySearchInterface, BatchPointReadInterface
 {
     private string $lastCompileStrategy = 'joins';
 
@@ -259,6 +264,80 @@ final class MysqlNativeDriver implements EntrySearchInterface
         }
 
         return $this->entryFromRow($row, $snapshot);
+    }
+
+    /**
+     * Several point reads in one statement.
+     *
+     * The statement is `get()`'s with `id = ?` widened to `id IN (...)`, and
+     * it keeps the schema version in its select list, so a batch pays no
+     * version check of its own. Rows are then grouped by model: each model's
+     * snapshot is resolved once, a model being deleted contributes nothing,
+     * and the rename and field-deletion rewrites run per row through the same
+     * private methods `get()` uses, so the two cannot disagree.
+     *
+     * Every value is bound through {@see TypedBinding}, so emulated prepares
+     * inline the integers bare instead of quoted.
+     *
+     * The statement returns rows in primary-key order and the result is put
+     * back in the order the ids were given, in PHP, which costs no database
+     * sort.
+     */
+    public function getMany(int $tenantId, array $entryIds): array
+    {
+        if ($entryIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($entryIds), '?'));
+        $stmt = $this->pdo->prepare(
+            'SELECT id, tenant_id, model_id, created_at, deleted_at, fields,'
+            . ' (SELECT version FROM stardust_schema_version WHERE id = 1) AS schema_version'
+            . ' FROM entry_data'
+            . " WHERE tenant_id = ? AND deleted_at IS NULL AND id IN ({$placeholders})"
+        );
+        TypedBinding::bind($stmt, [$tenantId, ...$entryIds]);
+        $stmt->execute();
+
+        /** @var list<array<string, mixed>> $rows */
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if ($rows === []) {
+            return [];
+        }
+
+        // One id for the whole call, so the `cache_miss` events it causes
+        // (at most one per model) read as one operation.
+        $correlationId = UuidV4::generate();
+
+        // Model id to snapshot, or to null when the model is being deleted.
+        // A model deletion marks every field, so its rows are dropped here,
+        // before any canonicalisation could strip their keys and leave an
+        // `Entry` that claims the entry exists with no fields (ADR 0038).
+        $snapshots = [];
+        $found     = [];
+        foreach ($rows as $row) {
+            $modelId = (int) $row['model_id'];
+            if (! array_key_exists($modelId, $snapshots)) {
+                $snapshot = $this->snapshotAt($modelId, $tenantId, $correlationId, $row['schema_version']);
+                $snapshots[$modelId] = $snapshot->isModelDeleting() ? null : $snapshot;
+            }
+
+            $snapshot = $snapshots[$modelId];
+            if ($snapshot === null) {
+                continue;
+            }
+
+            $found[(int) $row['id']] = $this->entryFromRow($row, $snapshot);
+        }
+
+        $ordered = [];
+        foreach ($entryIds as $entryId) {
+            if (isset($found[$entryId])) {
+                $ordered[$entryId] = $found[$entryId];
+            }
+        }
+
+        return $ordered;
     }
 
     /**
