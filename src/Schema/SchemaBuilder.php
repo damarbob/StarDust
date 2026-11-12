@@ -12,7 +12,10 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\FieldDeletionInProgressException;
 use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Slot\SlotAssignment;
+use StarDust\Slot\SlotReserver;
 use StarDust\Support\ModelDeletionProbe;
+use StarDust\Support\UuidV4;
 use Throwable;
 
 /**
@@ -22,11 +25,21 @@ use Throwable;
  * This is a deliberate stopgap, not the first-class model/field
  * definition API. It wraps the registry INSERTs the engine otherwise
  * leaves to the caller, so the first-run experience does not require
- * raw SQL. It does NOT provision pages or reserve slots — making a
- * filterable field genuinely queryable still goes through
- * {@see \StarDust\Page\PageProvisioner} and
- * {@see \StarDust\Slot\SlotReserver} (or, in a running deployment, the
- * Watcher daemon).
+ * raw SQL. It does NOT provision pages. Making a filterable field
+ * genuinely queryable still needs an indexed page, from
+ * {@see \StarDust\Page\PageProvisioner} or, in a running deployment, the
+ * Watcher daemon.
+ *
+ * **It reserves a slot in one case (ADR 0058).** When it inserts a new
+ * filterable field on a model with no entries, and it was built with a
+ * {@see SlotReserver}, it reserves an indexed slot for the field in the
+ * same transaction, so the field is queryable at once. The empty-model
+ * probe is what makes that safe: an unknown payload key survives in
+ * `entry_data.fields`, so on a populated model a new field's key may
+ * already be in payloads, and a fresh slot would be empty for them. A
+ * populated model, a model with no free indexed slot and a builder
+ * constructed without a reserver all register the field exactly as
+ * before, and the slot comes after its first write.
  *
  * Every method is get-or-create and therefore idempotent: a model or
  * field whose name already exists is returned unchanged rather than
@@ -52,6 +65,7 @@ final class SchemaBuilder
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
+        private readonly ?SlotReserver $slotReserver = null,
     ) {
     }
 
@@ -75,22 +89,41 @@ final class SchemaBuilder
 
         $now = $this->utcNow();
 
+        // ADR 0058: `null` means "not asked yet". A model inserted by this
+        // very call has no entries by construction, so it never pays the
+        // probe. An existing model pays it once, on the first filterable
+        // field this call inserts.
+        $modelIsEmpty = null;
+        $reserved     = [];
+
         $this->pdo->beginTransaction();
         try {
             $inserted = false;
 
             $modelId = $this->findModelId($tenantId, $name);
             if ($modelId === null) {
-                $modelId  = $this->insertModel($tenantId, $name, $now);
-                $inserted = true;
+                $modelId      = $this->insertModel($tenantId, $name, $now);
+                $inserted     = true;
+                $modelIsEmpty = true;
             }
 
             $fieldIds = [];
             foreach ($fields as $field) {
                 $existing = $this->findFieldId($modelId, $field->name);
                 if ($existing === null) {
-                    $fieldIds[$field->name] = $this->insertField($modelId, $field, $now);
-                    $inserted = true;
+                    $fieldId                = $this->insertField($modelId, $field, $now);
+                    $fieldIds[$field->name] = $fieldId;
+                    $inserted               = true;
+
+                    if ($field->isFilterable && $this->slotReserver !== null) {
+                        $modelIsEmpty ??= ! $this->modelHasEntries($tenantId, $modelId);
+                        if ($modelIsEmpty) {
+                            $assignment = $this->slotReserver->reserveForRegistrationWithinTransaction($fieldId);
+                            if ($assignment !== null) {
+                                $reserved[] = [$fieldId, $assignment];
+                            }
+                        }
+                    }
                 } else {
                     $fieldIds[$field->name] = $existing;
                 }
@@ -107,6 +140,8 @@ final class SchemaBuilder
             }
             throw $e;
         }
+
+        $this->emitSlotsReserved($tenantId, $reserved);
 
         $this->logger->info('schema model defined', [
             'tenant_id'   => $tenantId,
@@ -143,6 +178,9 @@ final class SchemaBuilder
 
         $now = $this->utcNow();
 
+        $reservedTenantId = null;
+        $reserved         = [];
+
         $this->pdo->beginTransaction();
         try {
             $fieldId = $this->findFieldId($modelId, $name);
@@ -153,6 +191,19 @@ final class SchemaBuilder
                     $now,
                 );
                 $this->bumpSchemaVersion($now);
+
+                if ($isFilterable && $this->slotReserver !== null) {
+                    // This method receives a model id only, and both the
+                    // probe and the `slot_reserved` event need the tenant.
+                    $tenantId = $this->tenantIdOfModel($modelId);
+                    if ($tenantId !== null && ! $this->modelHasEntries($tenantId, $modelId)) {
+                        $assignment = $this->slotReserver->reserveForRegistrationWithinTransaction($fieldId);
+                        if ($assignment !== null) {
+                            $reservedTenantId = $tenantId;
+                            $reserved[]       = [$fieldId, $assignment];
+                        }
+                    }
+                }
             }
             $this->pdo->commit();
         } catch (Throwable $e) {
@@ -162,7 +213,60 @@ final class SchemaBuilder
             throw $e;
         }
 
+        if ($reservedTenantId !== null) {
+            $this->emitSlotsReserved($reservedTenantId, $reserved);
+        }
+
         return $fieldId;
+    }
+
+    /**
+     * ADR 0058 emptiness probe. Any `entry_data` row counts, soft-deleted
+     * ones included, because a soft-deleted entry still carries its payload.
+     * A lookup on `ix_entry_data_tenant_model` that stops at the first row.
+     */
+    private function modelHasEntries(int $tenantId, int $modelId): bool
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT 1 FROM entry_data WHERE tenant_id = ? AND model_id = ? LIMIT 1'
+        );
+        $stmt->execute([$tenantId, $modelId]);
+
+        return $stmt->fetchColumn() !== false;
+    }
+
+    private function tenantIdOfModel(int $modelId): ?int
+    {
+        $stmt = $this->pdo->prepare('SELECT tenant_id FROM stardust_models WHERE id = ?');
+        $stmt->execute([$modelId]);
+        $tenantId = $stmt->fetchColumn();
+
+        return $tenantId === false ? null : (int) $tenantId;
+    }
+
+    /**
+     * Post-commit `slot_reserved` events, one id for the whole registration.
+     * The event name is the existing ADR 0020 one, with the status the
+     * reservation actually took.
+     *
+     * @param list<array{int, SlotAssignment}> $reserved field id and its slot
+     */
+    private function emitSlotsReserved(int $tenantId, array $reserved): void
+    {
+        if ($reserved === [] || $this->slotReserver === null) {
+            return;
+        }
+
+        $correlationId = UuidV4::generate();
+        foreach ($reserved as [$fieldId, $assignment]) {
+            $this->slotReserver->emitSlotReservedEvent(
+                $fieldId,
+                $assignment,
+                'assigned',
+                $tenantId,
+                $correlationId,
+            );
+        }
     }
 
     /**

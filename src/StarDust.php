@@ -200,11 +200,18 @@ final class StarDust
      * hand-writing `stardust_models` / `stardust_fields` SQL.
      *
      * This is a stopgap for ergonomic setup, not the first-class
-     * definition API (still unbuilt). It registers registry
-     * rows only — making a filterable field genuinely queryable still
-     * requires a provisioned page and a reserved slot (the Watcher
+     * definition API (still unbuilt). It registers registry rows, and it
+     * provisions no page. Making a filterable field genuinely queryable
+     * still requires an indexed page and a reserved slot (the Watcher
      * daemon, or {@see \StarDust\Page\PageProvisioner} +
      * {@see \StarDust\Slot\SlotReserver} for one-off setup).
+     *
+     * **One exception (ADR 0058).** A new filterable field on a model with
+     * no entries is given an indexed slot in the same transaction, when an
+     * indexed free slot exists, so it is queryable as soon as the call
+     * returns. A field registered on a model that has entries, or with no
+     * free indexed slot, gets its slot after its first write as before.
+     * `Config::$reserveSlotAtRegistration = false` turns the exception off.
      */
     public function schemaBuilder(): SchemaBuilder
     {
@@ -212,6 +219,7 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
+            slotReserver: $this->config->reserveSlotAtRegistration ? $this->slotReserver() : null,
         );
     }
 

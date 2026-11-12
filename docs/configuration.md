@@ -45,6 +45,8 @@ The page provisioner and slot reserver remain internal classes (`StarDust\Page\P
 >
 > This is a stopgap, not the first-class definition API. Registering a field isn't enough to filter on it — its value has to reach an indexed slot column. The Watcher daemon provisions that capacity in a running deployment; for one-off setup, call `PageProvisioner` + `SlotReserver` (see the [Complete example](../README.md#complete-example)). Until a field has a reserved indexed slot it's still stored and point-readable from the JSON payload — just not on the indexed filter path.
 
+**One case is automatic.** When `createModel()` or `defineField()` registers a new filterable field on a model that has no entries, and an indexed free slot exists, the field is given that slot in the same call. It is queryable as soon as the call returns, and its first write fills the slot directly. A model that already has entries is left alone, because a field's key may already sit in its payloads and a fresh slot would be empty for them, so use `promoteFieldToFilterable()` there to index existing values. Registration never waits for capacity either. With no indexed free slot the field is registered without one and gets it after its first write. Set `reserveSlotAtRegistration` to `false` to turn the behaviour off. If you provision a page and then register fields, the fields already hold their slots, so do not reserve them again by hand.
+
 To read the registry back — for a settings screen, a field picker, or anything else that has to render a tenant's schema — use the introspection pair rather than querying `stardust_fields` yourself:
 
 ```php
@@ -65,7 +67,7 @@ foreach ($company?->fields ?? [] as $field) {
 $company?->indexedFields();
 ```
 
-Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and for a newly registered filterable field until its first write has been processed by a running Reconciler, which is when the field gets its slot. A filter on such a field is rejected with `FieldNotFilterableException` until then, even on a model with no entries. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
+Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and for a newly registered filterable field that did not get a slot at registration (its model already had entries, or no indexed slot was free) until its first write has been processed by a running Reconciler, which is when the field gets its slot. A filter on such a field is rejected with `FieldNotFilterableException` until then. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
 The daemons, exports, model deletion, index headroom, and the combined tick are tuned through 47 optional `Config` parameters:
 
