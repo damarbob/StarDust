@@ -237,42 +237,19 @@ final class MysqlNativeDriver implements EntrySearchInterface
             return null;
         }
 
-        $payload = json_decode((string) $row['fields'], true);
-        $fields  = is_array($payload) ? $payload : [];
         $modelId = (int) $row['model_id'];
 
-        // ADR 0036: the point read returns the payload verbatim, so
-        // without this it would hand back the pre-rename key for rows
-        // behind the backfill cursor and the post-rename key for rows
-        // ahead of it — inconsistent between two entries of the same
-        // model, and inconsistent with read() on the very same entry.
-        //
-        // ADR 0037 adds the mirror case: a field whose deletion has
-        // committed is excluded from the snapshot outright, so read()
-        // has already stopped returning it while the values are still
-        // physically present for the length of the purge. Without the
-        // strip, get() would keep serving a field read() denies exists.
-        //
         // The version that arrived with the entry is the one ADR 0015 asks
         // every request to read, so a cached snapshot at that version is a
         // hit and anything else is loaded and reported as a `cache_miss`,
-        // once. The rewrite itself is gated behind precomputed booleans, so
-        // the steady state is a no-op.
-        //
-        // A NULL version means the singleton row is missing, and falling
-        // back to the ordinary check raises the same error every other read
-        // raises. There is no bounded-staleness fallback on this path,
-        // because a failure of the combined statement leaves no entry to
-        // return.
+        // once.
         $correlationId = UuidV4::generate();
-        $liveVersion   = $row['schema_version'];
-        $snapshot = $liveVersion === null
-            ? $this->cache->snapshotForModel($modelId, $tenantId, $correlationId)
-            : $this->cache->snapshotForModelAt($modelId, $tenantId, $correlationId, (int) $liveVersion);
-        // ADR 0038, and this MUST come before the canonicalisation below
-        // rather than being folded into it. A model deletion marks every
-        // field, so `pendingDeletionNames` holds all of them and
-        // `canonicalisePayloadKeys()` would strip every key — returning a
+        $snapshot      = $this->snapshotAt($modelId, $tenantId, $correlationId, $row['schema_version']);
+
+        // ADR 0038, and this MUST come before the canonicalisation in
+        // `entryFromRow()` rather than being folded into it. A model deletion
+        // marks every field, so `pendingDeletionNames` holds all of them and
+        // `canonicalisePayloadKeys()` would strip every key, returning a
         // real `Entry` with a real id and `fields: []`. That is a positive
         // claim that the entry exists, which is worse than the leak it
         // was meant to prevent. Returning null matches the `$row === false`
@@ -281,6 +258,51 @@ final class MysqlNativeDriver implements EntrySearchInterface
             return null;
         }
 
+        return $this->entryFromRow($row, $snapshot);
+    }
+
+    /**
+     * The snapshot for a model, as of the schema version that arrived in the
+     * entry statement.
+     *
+     * A NULL version means the singleton row is missing, and falling back to
+     * the ordinary check raises the same error every other read raises. There
+     * is no bounded-staleness fallback on this path, because a failure of the
+     * combined statement leaves no entry to return.
+     */
+    private function snapshotAt(int $modelId, int $tenantId, string $correlationId, mixed $liveVersion): SnapshotEntry
+    {
+        return $liveVersion === null
+            ? $this->cache->snapshotForModel($modelId, $tenantId, $correlationId)
+            : $this->cache->snapshotForModelAt($modelId, $tenantId, $correlationId, (int) $liveVersion);
+    }
+
+    /**
+     * Builds the {@see Entry} for one `entry_data` row, with the payload keys
+     * the rest of the engine would report.
+     *
+     * The point read returns the payload verbatim, so without the rewrite it
+     * would hand back the pre-rename key for rows behind a rename backfill's
+     * cursor and the post-rename key for rows ahead of it (ADR 0036),
+     * inconsistent between two entries of the same model and with `read()` on
+     * the very same entry. ADR 0037 adds the mirror case: a field whose
+     * deletion has committed is excluded from the snapshot outright, so
+     * `read()` has already stopped returning it while the values are still
+     * physically present for the length of the purge. Without the strip, the
+     * point read would keep serving a field `read()` denies exists. The
+     * rewrite is gated behind precomputed booleans, so the steady state is a
+     * no-op.
+     *
+     * The caller has already dealt with a model being deleted, and that check
+     * has to come first (see `get()`).
+     *
+     * @param array<string, mixed> $row
+     */
+    private function entryFromRow(array $row, SnapshotEntry $snapshot): Entry
+    {
+        $payload = json_decode((string) $row['fields'], true);
+        $fields  = is_array($payload) ? $payload : [];
+
         if ($snapshot->hasRenamesInFlight() || $snapshot->hasPendingDeletions()) {
             $fields = $snapshot->canonicalisePayloadKeys($fields);
         }
@@ -288,7 +310,7 @@ final class MysqlNativeDriver implements EntrySearchInterface
         return new Entry(
             id:        (int) $row['id'],
             tenantId:  (int) $row['tenant_id'],
-            modelId:   $modelId,
+            modelId:   (int) $row['model_id'],
             fields:    $fields,
             createdAt: new DateTimeImmutable((string) $row['created_at'], new DateTimeZone('UTC')),
             deletedAt: $row['deleted_at'] === null
