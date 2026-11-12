@@ -24,6 +24,7 @@ All typed errors extend `RuntimeException`.
   A sort naming a field with no registry row raises `UnknownFieldException` instead — the identical fact a filter reports, which did not earn a second class.
 - `InvalidCursorException` — opaque cursor failed structural decode, **or (ADR 0041) was issued for a different sort key or direction**. The two share a class because they share a caller response: restart pagination from the first page.
 - `PageSizeOutOfRangeException` — page size outside `[1, 1000]`.
+- `TooManyEntryIdsException` — `StarDust::getMany()` was given more than 1 000 ids, counted on the list as passed so the check is O(1). Raised before any statement is sent. Not a reuse of `PageSizeOutOfRangeException`, which is about a page and whose message names `pageSize`. A non-integer element raises a plain `InvalidArgumentException` instead, because it is a programming error and not a limit.
 
 ## Phase 5 — daemons
 

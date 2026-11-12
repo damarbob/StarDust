@@ -52,12 +52,15 @@ Tenant isolation is enforced at every `WHERE` and `JOIN` per Architecture Bluepr
 | a cursor only | the same three |
 | the probe returns no ids | version check, probe (2), because the fetch is skipped |
 | point read, entry found or missing | the entry statement alone (1), with the version in its select list |
+| batch read by id (`getMany()`), any number of ids and models | the entries statement alone (1), with the version in its select list |
 
 A cold read adds the snapshot load, which is one join of the model, fields, slots and page table names. The two dictionary lookups join it only when the filter needs them. An equality on an integer, numeric or datetime field asks for the ordered indexes from `information_schema.STATISTICS`. Any string leaf asks for them too and, on a page with a string key column, for the string keys from `information_schema.COLUMNS` as well.
 
 | Read, cold | Statements sent |
 | :-- | :-- |
 | point read | the entry, the registry join (2) |
+| batch read of one model | the entries, the registry join (2) |
+| batch read of `k` models | the entries, one registry join per model (1 + k) |
 | no filter, or only ranges on integer, numeric and datetime fields | version check, registry join, probe, fetch (4) |
 | an integer, numeric or datetime equality | those four and the index map (5) |
 | a string equality on a prefix page | the same five |
@@ -75,6 +78,17 @@ Three things used to add statements to every warm read, and each is gone: a seco
 `EntryReader::get(int $tenantId, int $entryId)` — no slot joins; the JSON payload is the system of record per ADR 0013. It is one statement when the snapshot is warm: the schema version is selected in the same statement as the entry and handed to `SchemaVersionCache::snapshotForModelAt()`, so there is no version check of its own (see "`get()` and the ADR 0036 rename window" in `src/Search/CLAUDE.md`).
 
 Because it returns the payload verbatim, it is the one read surface that would otherwise leak a key the registry has already severed. `SnapshotEntry::canonicalisePayloadKeys()` therefore does two jobs: it rewrites an in-flight rename's old key forward, and it strips an in-flight deletion's key outright. **Without the second, `get()` and `read()` would disagree about the same entry for the whole purge window** — the paginated read is driven by `fieldsByName`, which excludes the field, and the point read is not. `DeleteWindowTest::testPointReadAgreesWithPaginatedReadDuringTheWindow` pins it. Both halves are guarded by an eagerly-computed boolean so the steady-state cost stays at one check.
+
+## Batch point read
+
+`StarDust::getMany()` goes through `EntryBatchReader`, which owns the tenant check, the cap (`MAX_IDS`, the page size cap), the integer check, the collapsing of repeats and the empty list, and then calls `MysqlNativeDriver::getMany()` when the driver implements `BatchPointReadInterface`, or `get()` once per distinct id when it does not. The interface is optional and separate from `EntrySearchInterface` because that interface is public (see `src/Search/CLAUDE.md`).
+
+- **It is `get()`'s statement with `id = ?` widened to `id IN (...)`**, the schema version still in the select list, so a warm batch sends one statement. The values are bound through `Support\TypedBinding`, because under emulated prepares an untyped integer would be inlined quoted.
+- **`get()` and `getMany()` share two private methods**, `snapshotAt()` and `entryFromRow()`, and that is the only reason they cannot disagree about a renamed field, a field being deleted or a model being deleted. A change to what a point read returns belongs in `entryFromRow()`.
+- **Rows are grouped by model, and the model deletion check comes before any canonicalisation**, as in `get()` and for the same reason (ADR 0038). Each model's snapshot is resolved once, so one call reports at most one `cache_miss` per model, under one correlation id.
+- **The result is put back in the order the ids were given in PHP.** The statement returns rows in primary-key order, and sorting in SQL would add work for nothing.
+- **Probed on MySQL 8.0.13 and MariaDB 10.11** with 40 000 rows across two tenants and a list of 1000 ids of one tenant. Both read the 1000 entries by primary key and nothing else, with 1001 `Handler_read_key` (the entries and the version subselect) and no `Handler_read_next` or scan. MySQL plans a range on `PRIMARY`, and MariaDB materialises the list and joins it by `eq_ref`, so the plans differ and the cost does not.
+- **`BatchPointReadTest` and `GetManyTest` are the pins.** Neutering the rewrite, the model deletion skip, the tenant predicate, the cap, the collapsing of repeats, the capability check and the integer check each turned a named test red.
 
 ## Cursors
 

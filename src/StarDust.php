@@ -40,6 +40,7 @@ use StarDust\Liberator\SweepPageLock;
 use StarDust\Liberator\TombstonedSlotRepository;
 use StarDust\Page\PageProvisioner;
 use StarDust\Read\Entry;
+use StarDust\Read\EntryBatchReader;
 use StarDust\Read\EntryPage;
 use StarDust\Read\EntryQuery;
 use StarDust\Read\SchemaVersionCache;
@@ -124,6 +125,7 @@ final class StarDust
     private ?BulkIngestor $bulkIngestor = null;
     private ?BulkIngestSubmitter $bulkSubmitter = null;
     private ?SearchService $searchService = null;
+    private ?EntryBatchReader $entryBatchReader = null;
     private ?EntrySearchInterface $resolvedSearchDriver = null;
     private ?SchemaVersionCache $schemaVersionCache = null;
     private ?SlotRowUpserter $slotRowUpserter = null;
@@ -338,6 +340,38 @@ final class StarDust
     {
         TenantId::assertValid($tenantId);
         return $this->searchDriver()->get($tenantId, $entryId);
+    }
+
+    /**
+     * Point reads of several entries by id, for one tenant, in one statement
+     * once the model's schema is loaded.
+     *
+     * Each entry comes back exactly as {@see self::get()} returns it, including
+     * the rename and field-deletion rewrites. An id that does not exist,
+     * belongs to another tenant or is soft-deleted is left out, and a model
+     * being deleted contributes nothing. Ids from several models are allowed,
+     * and a repeated id comes back once. The result is keyed by entry id, in
+     * the order each id first appeared, so a caller can look entries up by id
+     * or walk them in the order it asked.
+     *
+     * The built-in driver reads the whole list in one statement. A custom
+     * driver that does not implement
+     * {@see \StarDust\Search\BatchPointReadInterface} still works: its `get()`
+     * is called once per distinct id.
+     *
+     * `$entryIds` is widened to `array<mixed>` because this is where the list
+     * is validated, and PHP does not enforce `list<int>`.
+     *
+     * @param array<mixed> $entryIds at most {@see EntryBatchReader::MAX_IDS}
+     * @return array<int, Entry>
+     *
+     * @throws \StarDust\Exception\InvalidTenantIdException when `$tenantId` is not a positive id
+     * @throws \StarDust\Exception\TooManyEntryIdsException when the list holds more than 1 000 ids
+     * @throws \InvalidArgumentException                    when an element is not an integer
+     */
+    public function getMany(int $tenantId, array $entryIds): array
+    {
+        return $this->entryBatchReader()->getMany($tenantId, $entryIds);
     }
 
     /**
@@ -1132,6 +1166,11 @@ final class StarDust
             logger:    $this->config->logger,
             clock:     $this->config->clock,
         );
+    }
+
+    private function entryBatchReader(): EntryBatchReader
+    {
+        return $this->entryBatchReader ??= new EntryBatchReader($this->searchDriver());
     }
 
     private function searchDriver(): EntrySearchInterface
