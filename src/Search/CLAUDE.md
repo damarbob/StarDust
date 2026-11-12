@@ -16,6 +16,8 @@ Seven methods:
 
 **`supportsSortOn()` is separate from `supportsFilterOn()` on purpose**, even though `MysqlNativeDriver` implements it by delegating: the two answers coincide only there. An external engine may index a field for matching without keeping it orderable, and ADR 0022 puts that judgement on the driver ("one method per coarse capability") rather than in the shared pipeline. Adding it was a **breaking change to a public interface**, taken deliberately while v0.3.0 is untagged and no third-party driver can exist yet.
 
+**`BatchPointReadInterface` is an optional capability, not an eighth method.** `getMany(int $tenantId, list<int> $entryIds): array<int, Entry>` reads several entries in one round trip. `EntrySearchInterface` has been public since alpha.2, so a new method would break every third-party driver, and the one-capability-per-concern reading of ADR 0022 allows a second interface. `MysqlNativeDriver` implements both. `StarDust::getMany()` checks and cleans the list first (see `EntryBatchReader`), so a driver may assume it is non-empty, integer, free of repeats and within the cap, and a driver without the interface is asked once per id with `get()`. A driver that does offer it owes the same answers `get()` gives, including leaving out a model being deleted, for the reason in the ADR 0038 section below.
+
 `Config::$searchDriver` is the ADR 0026 construction-time injection seam; `StarDust::search()` lazily instantiates a `MysqlNativeDriver` when it is `null`.
 
 ## DTOs
@@ -143,7 +145,7 @@ An earlier version of this section recorded the extra version probe as a deliber
 - **`SearchService` resolves the snapshot only when there is a filter, a sort or a cursor.** A plain match-all read would sail straight past a check placed there. The driver resolves it unconditionally, so one site covers filtered and unfiltered alike.
 - **`get()` bypasses `SearchService` entirely.** Putting the check in the driver is what keeps `get()` and `list()` agreeing, which is the invariant `DeleteWindowTest` already pins for fields.
 
-In `get()` the check must come **before** `canonicalisePayloadKeys()`, not be folded into it: a model deletion marks every field, so the canonicaliser would strip every key and hand back a real `Entry` with a real id and `fields: []` — a positive existence claim, worse than the leak it was meant to prevent.
+`getMany()` does the same once per model, and its rows for a darkened model are dropped before any canonicalisation. In `get()` the check must come **before** `canonicalisePayloadKeys()`, not be folded into it: a model deletion marks every field, so the canonicaliser would strip every key and hand back a real `Entry` with a real id and `fields: []` — a positive existence claim, worse than the leak it was meant to prevent.
 
 **A third-party ADR 0022 driver does not inherit any of this.** That is the same jurisdiction split the interface already draws for `is_filterable` via `supportsFilterOn()`, so it is consistent rather than an oversight — but a custom driver must implement the darkening itself or it will serve entries from a model the rest of the engine reports as gone.
 

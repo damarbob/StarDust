@@ -14,6 +14,7 @@ All typed errors extend `RuntimeException`. They live under `StarDust\Exception\
 | `FieldNotIndexedException` | Not thrown by the built-in engine. A filter on a field that is declared filterable but not indexed yet raises `FieldNotFilterableException` instead, so catch that one. |
 | `FieldNotSortableException` | A `SortSpec` names a field that isn't currently indexed — the same requirement filtering has. `describeModel()`'s `indexedFields()` reports which fields qualify right now. |
 | `PageSizeOutOfRangeException` | `pageSize` is outside `[1, 1000]`. |
+| `TooManyEntryIdsException` | `getMany()` was given more than 1 000 ids, counted on the list as passed. Split the list. |
 | `InvalidCursorException` | An opaque cursor fails its structural decode, or is reused after its sort key, direction or null placement changed. |
 | `QueryFilterValidationException` | A JSON wire-format filter fails decode or pre-flight (see below). |
 | `IncompatibleRetypeException` | A retype crosses a categorically rejected pair (`int ↔ datetime`, `numeric ↔ datetime`). |

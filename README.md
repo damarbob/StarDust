@@ -400,6 +400,10 @@ while ($cursor !== null) {
 $firstId = $page->rows[0]->id;
 $entry   = $engine->get(tenantId: 1, entryId: $firstId);
 echo $entry?->fields['name']; // Acme Corp
+
+// Several entries by id, in one statement, keyed by entry id:
+$ids     = array_map(static fn ($row) => $row->id, $page->rows);
+$entries = $engine->getMany(tenantId: 1, entryIds: $ids);
 ```
 
 ---
@@ -418,7 +422,7 @@ Why `updateEntry()` is a full replace rather than a patch, and why `deleteEntry(
 
 ## Reading entries
 
-Cursor-paginated reads, the AST filter shape, point reads, JSON-payload fallback, and sorting: [docs/reading-entries.md](docs/reading-entries.md).
+Cursor-paginated reads, the AST filter shape, point reads and batch reads by id, JSON-payload fallback, and sorting: [docs/reading-entries.md](docs/reading-entries.md).
 
 ## Searching with the JSON wire format
 
