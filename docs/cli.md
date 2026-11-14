@@ -7,7 +7,9 @@ vendor/bin/stardust --version
 vendor/bin/stardust --help
 
 # Idempotently bootstrap the schema on a configured database.
-# Reads STARDUST_DSN / STARDUST_USER / STARDUST_PASS from the environment.
+# Reads STARDUST_DSN / STARDUST_USER / STARDUST_PASS from the environment,
+# and the optional STARDUST_TABLE_PREFIX (a lowercase prefix for every
+# table name, for a database that other applications share).
 STARDUST_DSN='mysql:host=127.0.0.1;dbname=app' \
 STARDUST_USER=root STARDUST_PASS=root \
 vendor/bin/stardust bootstrap

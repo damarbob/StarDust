@@ -266,6 +266,12 @@ The authoritative copy of your data — in StarDust, always the JSON [payload](#
 
 **See also:** [Payload](#payload), [Slot](#slot).
 
+### Table prefix
+
+Text placed in front of the name of every table StarDust creates, so that `entry_data` becomes `sd_entry_data` under the prefix `sd_`. It lets StarDust share one database with other applications, or with a second installation, without their table names colliding. You set it with `tablePrefix` in `Config` (or `STARDUST_TABLE_PREFIX` on the command line) before the first bootstrap, and it also qualifies the advisory lock names and the daemons' pid and shutdown files. With no prefix the tables keep their bare names.
+
+**See also:** [Schema registry](#schema-registry).
+
 ### Tenant
 
 The top-level isolation boundary. Every query the engine builds carries the tenant ID on every `WHERE` and `JOIN`, so one tenant's data is not merely filtered out of another's results — it is unreachable at the SQL level. All models, fields, and entries live inside exactly one tenant.
