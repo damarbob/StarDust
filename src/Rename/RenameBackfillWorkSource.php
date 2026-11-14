@@ -10,6 +10,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Reconciler\ReconcilerWorkSource;
 use StarDust\Reconciler\TickOutcome;
+use StarDust\Support\TableNames;
 use Throwable;
 use Closure;
 use PDOException;
@@ -42,6 +43,7 @@ final class RenameBackfillWorkSource implements ReconcilerWorkSource
         private readonly int $lockRetryBudget = 3,
         private readonly int $retryDelayMicros = 0,
         ?callable $sleepFn = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $this->sleepFn = $sleepFn !== null
             ? Closure::fromCallable($sleepFn)
@@ -199,7 +201,7 @@ final class RenameBackfillWorkSource implements ReconcilerWorkSource
     private function clearPreviousName(int $fieldId, string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_fields SET previous_name = NULL, updated_at = ? WHERE id = ?'
+            'UPDATE ' . $this->tables->fields . ' SET previous_name = NULL, updated_at = ? WHERE id = ?'
         );
         $stmt->execute([$now, $fieldId]);
     }
@@ -207,7 +209,7 @@ final class RenameBackfillWorkSource implements ReconcilerWorkSource
     private function bumpSchemaVersion(string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_schema_version SET version = version + 1, updated_at = ? WHERE id = 1'
+            'UPDATE ' . $this->tables->schemaVersion . ' SET version = version + 1, updated_at = ? WHERE id = 1'
         );
         $stmt->execute([$now]);
     }

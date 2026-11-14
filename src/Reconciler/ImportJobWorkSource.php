@@ -11,6 +11,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\ImportJobArtifactException;
+use StarDust\Support\TableNames;
 use StarDust\Support\WorkerIdentity;
 use StarDust\Write\EntryPayload;
 use StarDust\Write\EntryWriter;
@@ -112,6 +113,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         ?callable $sleepFn = null,
         private readonly int $lockRetryBudget = 3,
         private readonly int $lockRetryDelayMicros = 0,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $this->sleepFn = $sleepFn !== null
             ? Closure::fromCallable($sleepFn)
@@ -242,7 +244,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         $now = $this->utcNow();
 
         $update = $this->pdo->prepare(
-            'UPDATE stardust_import_jobs'
+            'UPDATE ' . $this->tables->importJobs
             . " SET status = 'processing',"
             . '     worker_identity = ?, claimed_at = ?, heartbeat_at = ?'
             . " WHERE status = 'pending'"
@@ -254,7 +256,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         }
 
         $select = $this->pdo->prepare(
-            'SELECT id FROM stardust_import_jobs'
+            'SELECT id FROM ' . $this->tables->importJobs
             . " WHERE status = 'processing' AND worker_identity = ?"
             . ' ORDER BY claimed_at DESC LIMIT 1'
         );
@@ -279,7 +281,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             // in UTC; a session local-time comparison could falsely flag
             // fresh leases as abandoned.
             $select = $this->pdo->prepare(
-                'SELECT id FROM stardust_import_jobs'
+                'SELECT id FROM ' . $this->tables->importJobs
                 . " WHERE status = 'processing'"
                 . '   AND heartbeat_at IS NOT NULL'
                 . '   AND heartbeat_at < (UTC_TIMESTAMP() - INTERVAL ' . $this->leaseTimeoutSeconds . ' SECOND)'
@@ -295,7 +297,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
 
             $jobId = (int) $id;
             $update = $this->pdo->prepare(
-                'UPDATE stardust_import_jobs'
+                'UPDATE ' . $this->tables->importJobs
                 . ' SET worker_identity = ?, heartbeat_at = ?'
                 . ' WHERE id = ?'
             );
@@ -318,7 +320,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
     {
         $stmt = $this->pdo->prepare(
             'SELECT id, tenant_id, artifact_path, manifest, correlation_id'
-            . ' FROM stardust_import_jobs WHERE id = ?'
+            . ' FROM ' . $this->tables->importJobs . ' WHERE id = ?'
         );
         $stmt->execute([$jobId]);
         // fetch() is typed array<string, mixed>|false — precise enough
@@ -552,7 +554,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
         $manifestJson = json_encode($manifest, JSON_THROW_ON_ERROR);
 
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_import_jobs'
+            'UPDATE ' . $this->tables->importJobs
             . " SET status = 'completed', manifest = ?, completed_at = ?, heartbeat_at = ?"
             . ' WHERE id = ?'
         );
@@ -662,7 +664,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
                 JSON_THROW_ON_ERROR,
             );
             $checkpoint = $this->pdo->prepare(
-                'UPDATE stardust_import_jobs'
+                'UPDATE ' . $this->tables->importJobs
                 . ' SET heartbeat_at = ?, manifest = ?'
                 . ' WHERE id = ? AND worker_identity = ?'
             );
@@ -844,7 +846,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
 
         if ($failedRecord === null) {
             $stmt = $this->pdo->prepare(
-                'UPDATE stardust_import_jobs'
+                'UPDATE ' . $this->tables->importJobs
                 . " SET status = 'failed', failed_reason = ?, completed_at = ?, heartbeat_at = ?"
                 . ' WHERE id = ?'
             );
@@ -875,7 +877,7 @@ final class ImportJobWorkSource implements ReconcilerWorkSource
             $manifest = json_encode($payload, JSON_THROW_ON_ERROR);
 
             $stmt = $this->pdo->prepare(
-                'UPDATE stardust_import_jobs'
+                'UPDATE ' . $this->tables->importJobs
                 . " SET status = 'failed', failed_reason = ?, manifest = ?,"
                 . '     completed_at = ?, heartbeat_at = ?'
                 . ' WHERE id = ?'

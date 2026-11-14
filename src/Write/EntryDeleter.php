@@ -8,6 +8,7 @@ use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -52,6 +53,7 @@ final class EntryDeleter
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -87,8 +89,8 @@ final class EntryDeleter
             // model yields NULL, which satisfies `IS NULL` — absent is not
             // deleting.
             $stmt = $this->pdo->prepare(
-                'UPDATE entry_data e'
-                . ' LEFT JOIN stardust_models m ON m.id = e.model_id'
+                'UPDATE ' . $this->tables->entryData . ' e'
+                . ' LEFT JOIN ' . $this->tables->models . ' m ON m.id = e.model_id'
                 . ' SET e.deleted_at = ?, e.updated_at = ?'
                 . ' WHERE e.id = ? AND e.tenant_id = ? AND e.deleted_at IS NULL'
                 . '   AND m.deleted_at IS NULL'

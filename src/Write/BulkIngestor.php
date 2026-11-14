@@ -9,6 +9,7 @@ use Psr\Log\LoggerInterface;
 use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Exception\PayloadTooLargeException;
 use StarDust\Support\ModelDeletionProbe;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -51,6 +52,7 @@ final class BulkIngestor
         private readonly EntryWriter $entryWriter,
         private readonly LoggerInterface $logger,
         ?callable $sleepFn = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $this->sleepFn = $sleepFn ?? static function (int $micros): void {
             if ($micros > 0) {
@@ -105,7 +107,7 @@ final class BulkIngestor
         // report the failure as a per-chunk `failureReason` string rather
         // than raising. One batched query up front instead of one per
         // payload: this path is >1 000 entities by construction.
-        $deleting = ModelDeletionProbe::deletingAmong($this->pdo, $modelIds);
+        $deleting = ModelDeletionProbe::deletingAmong($this->pdo, $modelIds, $this->tables);
         if ($deleting !== []) {
             throw new ModelDeletionInProgressException(
                 'Bulk write rejected: model(s) ' . implode(', ', $deleting)

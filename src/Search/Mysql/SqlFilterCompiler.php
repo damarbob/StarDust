@@ -20,6 +20,7 @@ use StarDust\Read\SortSpec;
 use StarDust\Read\SortTarget;
 use StarDust\Read\StringKey;
 use StarDust\Support\StringKeyLayout;
+use StarDust\Support\TableNames;
 
 /**
  * Phase 8 adaptive SQL compiler for the bounded probe (ADR 0005 Query 1).
@@ -104,6 +105,10 @@ use StarDust\Support\StringKeyLayout;
  */
 final class SqlFilterCompiler
 {
+    public function __construct(private readonly TableNames $tables = new TableNames())
+    {
+    }
+
     public function compile(?FilterNode $filter, EntryQuery $query, SnapshotEntry $snapshot): SqlFragment
     {
         $strategy = $this->chooseStrategy($filter);
@@ -153,7 +158,7 @@ final class SqlFilterCompiler
         // leaf it is the driving page's `entry_id`, which the INNER JOIN holds
         // equal to `entry_data.id`, so the ordering and the cursor are unchanged.
         $orderColumn = $driving === null
-            ? 'entry_data.id'
+            ? $this->tables->entryData . '.id'
             : $aliasByPage[$driving['pageId']] . '.entry_id';
 
         // The sort column must be reachable from the outer query, so a
@@ -189,8 +194,8 @@ final class SqlFilterCompiler
         }
 
         $whereClauses = [
-            'entry_data.tenant_id = ?',
-            'entry_data.model_id = ?',
+            $this->tables->entryData . '.tenant_id = ?',
+            $this->tables->entryData . '.model_id = ?',
         ];
         $outerBindings = [$query->tenantId, $query->modelId];
 
@@ -203,7 +208,7 @@ final class SqlFilterCompiler
             $outerBindings[] = $query->tenantId;
         }
 
-        $whereClauses[] = 'entry_data.deleted_at IS NULL';
+        $whereClauses[] = $this->tables->entryData . '.deleted_at IS NULL';
 
         if ($keysetWhere !== '') {
             $whereClauses[] = $keysetWhere;
@@ -217,7 +222,7 @@ final class SqlFilterCompiler
             : $orderColumn . ' ' . $this->directionOf($sort)->sql();
 
         $sql = ($driving === null
-                ? 'SELECT entry_data.id FROM entry_data'
+                ? 'SELECT ' . $this->tables->entryData . '.id FROM ' . $this->tables->entryData
                 : $this->compileDrivingFrom($driving, $aliasByPage[$driving['pageId']], $snapshot))
             . ($joinsSql === '' ? '' : ' ' . $joinsSql)
             . ($anchorJoinSql === '' ? '' : ' ' . $anchorJoinSql)
@@ -259,7 +264,7 @@ final class SqlFilterCompiler
             return ['', null];
         }
         if ($sort->target === SortTarget::CreatedAt) {
-            return ['', 'entry_data.created_at'];
+            return ['', $this->tables->entryData . '.created_at'];
         }
 
         [$pageId, $slotColumn] = $this->resolvedSortSlot($sort, $snapshot);
@@ -278,8 +283,8 @@ final class SqlFilterCompiler
         // no row on this page — that would silently shrink the result set
         // to "entries that happen to have a value for the sort field".
         $join = "LEFT JOIN {$table} {$alias}"
-            . " ON {$alias}.entry_id = entry_data.id"
-            . " AND {$alias}.tenant_id = entry_data.tenant_id";
+            . " ON {$alias}.entry_id = {$this->tables->entryData}.id"
+            . " AND {$alias}.tenant_id = {$this->tables->entryData}.tenant_id";
 
         return [$join, "{$alias}.{$slotColumn}"];
     }
@@ -307,7 +312,7 @@ final class SqlFilterCompiler
         assert($sort !== null);
 
         if ($sort->target === SortTarget::CreatedAt) {
-            $inner = 'SELECT created_at FROM entry_data WHERE id = ? AND tenant_id = ?';
+            $inner = 'SELECT created_at FROM ' . $this->tables->entryData . ' WHERE id = ? AND tenant_id = ?';
         } else {
             [$pageId, $slotColumn] = $this->resolvedSortSlot($sort, $snapshot);
             $table = $snapshot->pageTableNames[$pageId];
@@ -356,7 +361,7 @@ final class SqlFilterCompiler
         return '('
             . $leadingBlock
             . " OR (sort_anchor.av IS NOT NULL AND {$sortExpression} {$op} sort_anchor.av)"
-            . " OR ({$sortExpression} <=> sort_anchor.av AND entry_data.id {$op} ?)"
+            . " OR ({$sortExpression} <=> sort_anchor.av AND {$this->tables->entryData}.id {$op} ?)"
             . ')';
     }
 
@@ -369,7 +374,7 @@ final class SqlFilterCompiler
         // cursor stable — without it two rows sharing a sort value could
         // swap between pages and be returned twice or never.
         if ($sortExpression === null) {
-            return "entry_data.id {$dir}";
+            return "{$this->tables->entryData}.id {$dir}";
         }
 
         // The database's own placement needs no help, so that SQL stays as it
@@ -379,7 +384,7 @@ final class SqlFilterCompiler
             ? ''
             : $sortExpression . ' IS NULL ' . ($nulls === NullPlacement::First ? 'DESC' : 'ASC') . ', ';
 
-        return "{$nullKey}{$sortExpression} {$dir}, entry_data.id {$dir}";
+        return "{$nullKey}{$sortExpression} {$dir}, {$this->tables->entryData}.id {$dir}";
     }
 
     private function directionOf(?SortSpec $sort): SortDirection
@@ -546,9 +551,9 @@ final class SqlFilterCompiler
         $table = $snapshot->pageTableNames[$driving['pageId']];
         $index = '`' . str_replace('`', '``', $driving['indexName']) . '`';
 
-        return "SELECT STRAIGHT_JOIN entry_data.id FROM {$table} {$alias} FORCE INDEX ({$index})"
-            . " INNER JOIN entry_data ON entry_data.id = {$alias}.entry_id"
-            . " AND entry_data.tenant_id = {$alias}.tenant_id";
+        return "SELECT STRAIGHT_JOIN {$this->tables->entryData}.id FROM {$table} {$alias} FORCE INDEX ({$index})"
+            . " INNER JOIN {$this->tables->entryData} ON {$this->tables->entryData}.id = {$alias}.entry_id"
+            . " AND {$this->tables->entryData}.tenant_id = {$alias}.tenant_id";
     }
 
     /**
@@ -579,8 +584,8 @@ final class SqlFilterCompiler
             }
             $table = $snapshot->pageTableNames[$pageId];
             $joins[] = "INNER JOIN {$table} {$alias}"
-                . " ON {$alias}.entry_id = entry_data.id"
-                . " AND {$alias}.tenant_id = entry_data.tenant_id";
+                . " ON {$alias}.entry_id = {$this->tables->entryData}.id"
+                . " AND {$alias}.tenant_id = {$this->tables->entryData}.tenant_id";
         }
 
         $predicates = [];
@@ -719,8 +724,8 @@ final class SqlFilterCompiler
         $column = "s.{$slotColumn}";
         $predicate = $this->compileLeafPredicate($leaf, $column, $bindings);
         return "EXISTS (SELECT 1 FROM {$table} s"
-            . ' WHERE s.tenant_id = entry_data.tenant_id'
-            . ' AND s.entry_id = entry_data.id'
+            . ' WHERE s.tenant_id = ' . $this->tables->entryData . '.tenant_id'
+            . ' AND s.entry_id = ' . $this->tables->entryData . '.id'
             . " AND {$predicate})";
     }
 

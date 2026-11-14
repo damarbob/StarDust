@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Slot;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Flips a field's live slot to `tombstoned`, handing it to the Phase 6a
@@ -68,8 +69,10 @@ use PDO;
  */
 final class LiveSlotTombstoner
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     /**
@@ -84,7 +87,7 @@ final class LiveSlotTombstoner
     public function tombstone(int $fieldId, string $now): ?int
     {
         $select = $this->pdo->prepare(
-            'SELECT id FROM stardust_slot_assignments'
+            'SELECT id FROM ' . $this->tables->slotAssignments
             . " WHERE field_id = ? AND status IN ('assigned','backfilling','ready')"
             . ' LIMIT 1 FOR UPDATE'
         );
@@ -99,14 +102,14 @@ final class LiveSlotTombstoner
         // what frees both the partial unique index and the RESTRICT
         // foreign key, and it must happen before the status flip.
         $clearField = $this->pdo->prepare(
-            'UPDATE stardust_slot_assignments SET field_id = NULL, updated_at = ? WHERE id = ?'
+            'UPDATE ' . $this->tables->slotAssignments . ' SET field_id = NULL, updated_at = ? WHERE id = ?'
         );
         $clearField->execute([$now, $slotId]);
 
         // Step 2 — hand the slot to the Liberator, with both sweep
         // annotations cleared. See the class docblock, reason 3.
         $tombstone = $this->pdo->prepare(
-            'UPDATE stardust_slot_assignments'
+            'UPDATE ' . $this->tables->slotAssignments
             . " SET status = 'tombstoned', tombstoned_at = ?, updated_at = ?,"
             . '     sweep_cursor_id = NULL, sweep_gap_count = 0'
             . ' WHERE id = ?'

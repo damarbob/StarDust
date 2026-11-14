@@ -14,6 +14,7 @@ use StarDust\Support\Dialect;
 use StarDust\Support\PdoQuery;
 use StarDust\Support\ServerEngine;
 use StarDust\Support\StringKeyLayout;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -118,6 +119,7 @@ final class PageProvisioner
         private readonly LoggerInterface $logger,
         private readonly ServerEngine $engine,
         ?string $provisionerIdentity = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $this->provisionerIdentity = $provisionerIdentity
             ?? ((gethostname() ?: 'unknown') . '/' . (string) getmypid());
@@ -173,9 +175,9 @@ final class PageProvisioner
 
         $pageNumber = (int) PdoQuery::run(
             $this->pdo,
-            'SELECT COALESCE(MAX(id), 0) + 1 FROM stardust_pages',
+            'SELECT COALESCE(MAX(id), 0) + 1 FROM ' . $this->tables->pages,
         )->fetchColumn();
-        $tableName = "entry_slots_page_{$pageNumber}";
+        $tableName = $this->tables->page($pageNumber);
 
         // DDL auto-commits in MySQL. CREATE TABLE IF NOT EXISTS keeps the
         // step safe to retry after a crash between this point and the
@@ -190,7 +192,7 @@ final class PageProvisioner
         $this->pdo->beginTransaction();
         try {
             $insertPage = $this->pdo->prepare(
-                'INSERT INTO stardust_pages (id, table_name, provisioned_at, provisioned_by)'
+                'INSERT INTO ' . $this->tables->pages . ' (id, table_name, provisioned_at, provisioned_by)'
                 . ' VALUES (?, ?, ?, ?)'
             );
             $insertPage->execute([$pageNumber, $tableName, $now, $this->provisionerIdentity]);
@@ -198,7 +200,7 @@ final class PageProvisioner
             $this->insertSlotInventory($pageNumber, $filterableSlots, $now);
 
             $bumpVersion = $this->pdo->prepare(
-                'UPDATE stardust_schema_version'
+                'UPDATE ' . $this->tables->schemaVersion
                 . ' SET version = version + 1, updated_at = ?'
                 . ' WHERE id = 1'
             );
@@ -348,7 +350,7 @@ final class PageProvisioner
         }
 
         $lines[] = sprintf(
-            '    CONSTRAINT fk_%s_entry FOREIGN KEY (entry_id) REFERENCES entry_data (id) ON DELETE CASCADE',
+            '    CONSTRAINT fk_%s_entry FOREIGN KEY (entry_id) REFERENCES ' . $this->tables->entryData . ' (id) ON DELETE CASCADE',
             $tableName
         );
         // ROW_FORMAT=DYNAMIC stays pinned. It keeps long TEXT values off the
@@ -380,7 +382,7 @@ final class PageProvisioner
             }
         }
 
-        $sql = 'INSERT INTO stardust_slot_assignments'
+        $sql = 'INSERT INTO ' . $this->tables->slotAssignments
             . ' (page_id, slot_column, slot_type, status, updated_at)'
             . ' VALUES ' . implode(',', $placeholders);
 

@@ -13,6 +13,7 @@ use StarDust\Exception\ExportFilterNotSupportedException;
 use StarDust\Exception\ExportJobActiveCapExceededException;
 use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Support\ModelDeletionProbe;
+use StarDust\Support\TableNames;
 use StarDust\Write\TenantId;
 use StarDust\Support\UuidV4;
 use Throwable;
@@ -50,6 +51,7 @@ final class ExportJobSubmitter
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
         private readonly int $perTenantActiveCap,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -90,7 +92,7 @@ final class ExportJobSubmitter
         // correct-looking file the consumer keeps and never retries,
         // which is the worst available failure shape and precisely what
         // `ExportFilterNotSupportedException` was added to close.
-        if (ModelDeletionProbe::isDeleting($this->pdo, $request->modelId)) {
+        if (ModelDeletionProbe::isDeleting($this->pdo, $request->modelId, $this->tables)) {
             throw new ModelDeletionInProgressException(sprintf(
                 'Model %d is being deleted; no export can be submitted for it.'
                 . ' Run a reconciler to finish the purge.',
@@ -126,7 +128,7 @@ final class ExportJobSubmitter
             // concurrent INSERT for the same tenant from completing
             // until we commit, closing the TOCTOU window.
             $count = $this->pdo->prepare(
-                'SELECT id FROM stardust_export_jobs'
+                'SELECT id FROM ' . $this->tables->exportJobs
                 . " WHERE tenant_id = ? AND status IN ('pending','processing')"
                 . ' FOR UPDATE'
             );
@@ -142,7 +144,7 @@ final class ExportJobSubmitter
             }
 
             $insert = $this->pdo->prepare(
-                'INSERT INTO stardust_export_jobs'
+                'INSERT INTO ' . $this->tables->exportJobs
                 . ' (tenant_id, status, filter, format, created_at, correlation_id)'
                 . " VALUES (?, 'pending', ?, ?, ?, ?)"
             );
@@ -193,7 +195,7 @@ final class ExportJobSubmitter
             . '       artifact_path, failed_reason, skip_count,'
             . '       worker_identity, claimed_at, heartbeat_at,'
             . '       created_at, completed_at'
-            . '  FROM stardust_export_jobs'
+            . '  FROM ' . $this->tables->exportJobs
             . ' WHERE id = ? AND tenant_id = ?'
         );
         $stmt->execute([$jobId, $tenantId]);

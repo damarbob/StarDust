@@ -6,6 +6,7 @@ namespace StarDust\Rename;
 
 use PDO;
 use StarDust\Support\LikePattern;
+use StarDust\Support\TableNames;
 
 /**
  * All SQL against `backfill_checkpoints` rows whose `job_name` matches
@@ -20,8 +21,10 @@ final class RenameCheckpointRepository
 {
     public const JOB_NAME_PREFIX = 'rename_field_';
 
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     public static function jobNameFor(int $fieldId): string
@@ -50,10 +53,10 @@ final class RenameCheckpointRepository
             'SELECT c.id, c.last_processed_id, c.correlation_id,'
             . ' f.id AS field_id, f.name AS field_name, f.previous_name,'
             . ' f.model_id, m.tenant_id'
-            . ' FROM backfill_checkpoints c'
-            . ' JOIN stardust_fields f'
+            . ' FROM ' . $this->tables->backfillCheckpoints . ' c'
+            . ' JOIN ' . $this->tables->fields . ' f'
             . '   ON f.id = CAST(SUBSTRING(c.job_name, ' . (strlen(self::JOB_NAME_PREFIX) + 1) . ') AS UNSIGNED)'
-            . ' JOIN stardust_models m ON m.id = f.model_id'
+            . ' JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             . " WHERE c.status = 'running' AND c.job_name LIKE ? ESCAPE '\\\\'"
             . '   AND f.previous_name IS NOT NULL'
             . ' ORDER BY c.id'
@@ -80,7 +83,7 @@ final class RenameCheckpointRepository
     public function existsRunningForField(int $fieldId): bool
     {
         $stmt = $this->pdo->prepare(
-            'SELECT 1 FROM backfill_checkpoints'
+            'SELECT 1 FROM ' . $this->tables->backfillCheckpoints
             . " WHERE job_name = ? AND status = 'running'"
             . ' LIMIT 1'
         );
@@ -116,7 +119,7 @@ final class RenameCheckpointRepository
         // this drain's `rename_complete` to a `rename_started` that
         // described a different rename.
         $stmt = $this->pdo->prepare(
-            'INSERT INTO backfill_checkpoints'
+            'INSERT INTO ' . $this->tables->backfillCheckpoints
             . ' (job_name, last_processed_id, status, started_at, updated_at, correlation_id)'
             . " VALUES (?, 0, 'running', ?, ?, ?)"
             . ' ON DUPLICATE KEY UPDATE'
@@ -135,7 +138,7 @@ final class RenameCheckpointRepository
     public function idForField(int $fieldId): int
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM backfill_checkpoints WHERE job_name = ? LIMIT 1'
+            'SELECT id FROM ' . $this->tables->backfillCheckpoints . ' WHERE job_name = ? LIMIT 1'
         );
         $stmt->execute([self::jobNameFor($fieldId)]);
         return (int) $stmt->fetchColumn();
@@ -145,7 +148,7 @@ final class RenameCheckpointRepository
     public function statusForField(int $fieldId): ?string
     {
         $stmt = $this->pdo->prepare(
-            'SELECT status FROM backfill_checkpoints WHERE job_name = ? LIMIT 1'
+            'SELECT status FROM ' . $this->tables->backfillCheckpoints . ' WHERE job_name = ? LIMIT 1'
         );
         $stmt->execute([self::jobNameFor($fieldId)]);
         $status = $stmt->fetchColumn();
@@ -156,7 +159,7 @@ final class RenameCheckpointRepository
     public function advance(int $checkpointId, int $newLastProcessedId, string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE backfill_checkpoints'
+            'UPDATE ' . $this->tables->backfillCheckpoints
             . ' SET last_processed_id = ?, updated_at = ?'
             . ' WHERE id = ?'
         );
@@ -166,7 +169,7 @@ final class RenameCheckpointRepository
     public function markCompleted(int $checkpointId, int $finalCursor, string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE backfill_checkpoints'
+            'UPDATE ' . $this->tables->backfillCheckpoints
             . " SET status = 'completed',"
             . '     last_processed_id = ?,'
             . '     updated_at = ?,'

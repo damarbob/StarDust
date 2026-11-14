@@ -13,6 +13,7 @@ use StarDust\Exception\RetypeInProgressException;
 use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Slot\LiveSlotTombstoner;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -64,6 +65,7 @@ final class DeleteFieldInitiator
         private readonly DeleteCheckpointRepository $deleteCheckpoints,
         private readonly RenameCheckpointRepository $renameCheckpoints,
         private readonly RetypeCheckpointRepository $retypeCheckpoints,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -132,7 +134,7 @@ final class DeleteFieldInitiator
             //    severed immediately; from this commit on, every reader
             //    excludes the row and reads fall back to nothing.
             $update = $this->pdo->prepare(
-                'UPDATE stardust_fields'
+                'UPDATE ' . $this->tables->fields
                 . ' SET deleted_at = ?, is_filterable = 0, updated_at = ?'
                 . ' WHERE id = ? AND deleted_at IS NULL'
             );
@@ -161,7 +163,7 @@ final class DeleteFieldInitiator
             $this->deleteCheckpoints->deleteTerminalLifecycleRowsFor($fieldId);
 
             $bump = $this->pdo->prepare(
-                'UPDATE stardust_schema_version'
+                'UPDATE ' . $this->tables->schemaVersion
                 . ' SET version = version + 1, updated_at = ?'
                 . ' WHERE id = 1'
             );
@@ -203,8 +205,8 @@ final class DeleteFieldInitiator
     {
         $stmt = $this->pdo->prepare(
             'SELECT f.name, f.model_id, f.is_filterable, f.deleted_at, m.tenant_id'
-            . ' FROM stardust_fields f'
-            . ' JOIN stardust_models m ON m.id = f.model_id'
+            . ' FROM ' . $this->tables->fields . ' f'
+            . ' JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             . ' WHERE f.id = ?'
         );
         $stmt->execute([$fieldId]);

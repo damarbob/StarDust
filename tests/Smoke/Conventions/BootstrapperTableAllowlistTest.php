@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Tests\Smoke\Conventions;
 
 use PHPUnit\Framework\TestCase;
+use StarDust\Support\TableNames;
 use StarDust\Tests\Smoke\Support\SchemaFixture;
 
 /**
@@ -63,9 +64,21 @@ final class BootstrapperTableAllowlistTest extends TestCase
     private function bootstrapperTables(): array
     {
         $source = (string) file_get_contents(self::BOOTSTRAPPER);
-        preg_match_all('/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/', $source, $matches);
 
-        $tables = array_values(array_unique($matches[1]));
+        // Each statement names its table through `TableNames`, as
+        // `{$this->tables->models}`, so the property is read back to the
+        // bare name it holds with no prefix.
+        preg_match_all('/CREATE TABLE IF NOT EXISTS\s+\{\$this->tables->(\w+)\}/', $source, $matches);
+
+        $names = new TableNames();
+        $tables = [];
+        foreach (array_unique($matches[1]) as $property) {
+            self::assertTrue(
+                property_exists($names, $property),
+                "Bootstrapper.php creates a table through TableNames::\${$property}, which does not exist.",
+            );
+            $tables[] = (string) $names->{$property};
+        }
         sort($tables);
 
         return $tables;

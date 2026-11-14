@@ -9,6 +9,7 @@ use PDO;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\ModelNameConflictException;
 use StarDust\Exception\ModelNotFoundException;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -70,6 +71,7 @@ final class ModelRenamer
     public function __construct(
         private readonly PDO $pdo,
         private readonly LoggerInterface $logger,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -108,7 +110,7 @@ final class ModelRenamer
             $this->assertNameAvailable($tenantId, $modelId, $newName);
 
             $stmt = $this->pdo->prepare(
-                'UPDATE stardust_models SET name = ? WHERE id = ? AND tenant_id = ?'
+                'UPDATE ' . $this->tables->models . ' SET name = ? WHERE id = ? AND tenant_id = ?'
             );
             $stmt->execute([$newName, $modelId, $tenantId]);
 
@@ -166,7 +168,7 @@ final class ModelRenamer
             // ADR 0038: a deleting model must not be renamable. Its
             // name is held until the purge lands (`ux_models_tenant_name`
             // is unconditional), and moving it would defeat that.
-            'SELECT name FROM stardust_models'
+            'SELECT name FROM ' . $this->tables->models
             . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$modelId, $tenantId]);
@@ -200,7 +202,7 @@ final class ModelRenamer
     private function assertNameAvailable(int $tenantId, int $modelId, string $newName): void
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM stardust_models'
+            'SELECT id FROM ' . $this->tables->models
             . ' WHERE tenant_id = ? AND id <> ? AND name = ?'
             . ' LIMIT 1 FOR UPDATE'
         );

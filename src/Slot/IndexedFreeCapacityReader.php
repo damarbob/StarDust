@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Slot;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Free *indexed* slots, per page per family.
@@ -38,8 +39,10 @@ use PDO;
  */
 final class IndexedFreeCapacityReader
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     /**
@@ -49,8 +52,8 @@ final class IndexedFreeCapacityReader
     {
         $stmt = $this->pdo->query(
             'SELECT sa.page_id, sa.slot_type, COUNT(*) AS free_slots'
-            . ' FROM stardust_slot_assignments sa'
-            . ' JOIN stardust_pages p ON p.id = sa.page_id'
+            . ' FROM ' . $this->tables->slotAssignments . ' sa'
+            . ' JOIN ' . $this->tables->pages . ' p ON p.id = sa.page_id'
             . " WHERE sa.status = 'free'"
             . '   AND ' . IndexedSlotPredicate::existsSql('sa', 'p')
             . ' GROUP BY sa.page_id, sa.slot_type'

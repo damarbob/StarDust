@@ -25,6 +25,7 @@ use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchResult;
 use StarDust\Support\ServerEngine;
 use StarDust\Support\ServerEngineDetector;
+use StarDust\Support\TableNames;
 use StarDust\Support\TypedBinding;
 use StarDust\Support\UuidV4;
 
@@ -96,6 +97,7 @@ final class MysqlNativeDriver implements EntrySearchInterface, BatchPointReadInt
         ?BoundedFetch $fetch = null,
         ?ResultAssembler $assembler = null,
         ?ServerEngine $engine = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $engine ??= ServerEngineDetector::detect($this->pdo);
 
@@ -126,9 +128,9 @@ final class MysqlNativeDriver implements EntrySearchInterface, BatchPointReadInt
             );
         }
 
-        $this->compiler  = $compiler ?? new SqlFilterCompiler();
+        $this->compiler  = $compiler ?? new SqlFilterCompiler(tables: $this->tables);
         $this->probe     = $probe ?? new PaginatedProbe($this->pdo, $this->compiler);
-        $this->fetch     = $fetch ?? new BoundedFetch($this->pdo);
+        $this->fetch     = $fetch ?? new BoundedFetch($this->pdo, tables: $this->tables);
         $this->assembler = $assembler ?? new ResultAssembler();
     }
 
@@ -232,8 +234,8 @@ final class MysqlNativeDriver implements EntrySearchInterface, BatchPointReadInt
         // costs this one statement and no more.
         $stmt = $this->pdo->prepare(
             'SELECT id, tenant_id, model_id, created_at, deleted_at, fields,'
-            . ' (SELECT version FROM stardust_schema_version WHERE id = 1) AS schema_version'
-            . ' FROM entry_data'
+            . ' (SELECT version FROM ' . $this->tables->schemaVersion . ' WHERE id = 1) AS schema_version'
+            . ' FROM ' . $this->tables->entryData
             . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$entryId, $tenantId]);
@@ -292,8 +294,8 @@ final class MysqlNativeDriver implements EntrySearchInterface, BatchPointReadInt
         $placeholders = implode(',', array_fill(0, count($entryIds), '?'));
         $stmt = $this->pdo->prepare(
             'SELECT id, tenant_id, model_id, created_at, deleted_at, fields,'
-            . ' (SELECT version FROM stardust_schema_version WHERE id = 1) AS schema_version'
-            . ' FROM entry_data'
+            . ' (SELECT version FROM ' . $this->tables->schemaVersion . ' WHERE id = 1) AS schema_version'
+            . ' FROM ' . $this->tables->entryData
             . " WHERE tenant_id = ? AND deleted_at IS NULL AND id IN ({$placeholders})"
         );
         TypedBinding::bind($stmt, [$tenantId, ...$entryIds]);
@@ -420,8 +422,8 @@ final class MysqlNativeDriver implements EntrySearchInterface, BatchPointReadInt
 
         $stmt = $this->pdo->prepare(
             'SELECT f.is_filterable AS is_filterable, a.status AS slot_status'
-            . ' FROM stardust_fields f'
-            . ' LEFT JOIN stardust_slot_assignments a'
+            . ' FROM ' . $this->tables->fields . ' f'
+            . ' LEFT JOIN ' . $this->tables->slotAssignments . ' a'
             . "   ON a.field_id = f.id AND a.status IN ('assigned','backfilling','ready','tombstoned')"
             // ADR 0037: redundant today, since the deletion clears
             // `is_filterable` and the check below already returns false.

@@ -116,7 +116,7 @@
     "src/Liberator/Liberator.php": 7,
     "src/Liberator/SlotSweeper.php": 15,
     "src/Liberator/SweepPageLock.php": 2,
-    "src/Liberator/TombstonedSlotRepository.php": 2,
+    "src/Liberator/TombstonedSlotRepository.php": 1,
     "src/Logging/StdoutNdjsonLogger.php": 1,
     "src/Page/PageProvisioner.php": 9,
     "src/Page/PopulatedPageDDLException.php": 1,

@@ -6,6 +6,7 @@ namespace StarDust\Chronicler;
 
 use PDO;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\TableNames;
 
 /**
  * Artifact garbage-collection sweep. Runs on Chronicler idle ticks (no
@@ -46,6 +47,7 @@ final class GcSweeper
          * forced to supply it; null simply skips the probe sweep.
          */
         private readonly ?string $artifactDir = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -132,7 +134,7 @@ final class GcSweeper
      */
     private function loadCandidates(string $whereSql): array
     {
-        $sql = 'SELECT id, artifact_path FROM stardust_export_jobs'
+        $sql = 'SELECT id, artifact_path FROM ' . $this->tables->exportJobs
             . ' WHERE ' . $whereSql
             . ' AND artifact_path IS NOT NULL';
         $stmt = $this->pdo->query($sql);
@@ -159,7 +161,7 @@ final class GcSweeper
         // Always null out the column so we don't repeatedly probe
         // already-reclaimed rows on every idle tick.
         $update = $this->pdo->prepare(
-            'UPDATE stardust_export_jobs SET artifact_path = NULL WHERE id = ?'
+            'UPDATE ' . $this->tables->exportJobs . ' SET artifact_path = NULL WHERE id = ?'
         );
         $update->execute([$jobId]);
 

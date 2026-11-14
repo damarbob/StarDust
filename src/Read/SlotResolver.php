@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Read;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Pure loader for {@see SnapshotEntry} per `(modelId)`.
@@ -39,8 +40,12 @@ final class SlotResolver
      */
     private const SLOT_STATUSES = ['assigned', 'backfilling', 'ready', 'tombstoned'];
 
-    public static function load(PDO $pdo, int $modelId, int $atVersion): SnapshotEntry
-    {
+    public static function load(
+        PDO $pdo,
+        int $modelId,
+        int $atVersion,
+        TableNames $tables = new TableNames(),
+    ): SnapshotEntry {
         $placeholders = implode(',', array_fill(0, count(self::SLOT_STATUSES), '?'));
         // ADR 0038: `stardust_models` is the DRIVING table, joined out to
         // the fields, not the other way round. Driving off
@@ -64,11 +69,11 @@ final class SlotResolver
             . '       a.status        AS slot_status,'
             . '       a.page_id       AS page_id,'
             . '       p.table_name    AS page_table'
-            . ' FROM stardust_models m'
-            . ' LEFT JOIN stardust_fields f ON f.model_id = m.id'
-            . ' LEFT JOIN stardust_slot_assignments a'
+            . ' FROM ' . $tables->models . ' m'
+            . ' LEFT JOIN ' . $tables->fields . ' f ON f.model_id = m.id'
+            . ' LEFT JOIN ' . $tables->slotAssignments . ' a'
             . "   ON a.field_id = f.id AND a.status IN ({$placeholders})"
-            . ' LEFT JOIN stardust_pages p ON p.id = a.page_id'
+            . ' LEFT JOIN ' . $tables->pages . ' p ON p.id = a.page_id'
             . ' WHERE m.id = ?'
         );
         // Binding order is unchanged: statuses first, model id last. If

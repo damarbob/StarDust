@@ -8,6 +8,7 @@ use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\TableNames;
 
 /**
  * Inserts one `stardust_reconciler_dlq` row and emits the matching
@@ -27,6 +28,7 @@ final class DlqWriter
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -37,7 +39,7 @@ final class DlqWriter
             ->format('Y-m-d H:i:s');
 
         $stmt = $this->pdo->prepare(
-            'INSERT INTO stardust_reconciler_dlq'
+            'INSERT INTO ' . $this->tables->reconcilerDlq
             . ' (source, entry_id, tenant_id, model_id, reason,'
             . '  error_message, failed_at, retry_count, chunk_correlation_id,'
             . '  origin_correlation_id)'

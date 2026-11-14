@@ -6,6 +6,7 @@ namespace StarDust\Chronicler;
 
 use JsonException;
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Cursor-paginated bounded read over `entry_data` for the Chronicler.
@@ -41,8 +42,10 @@ use PDO;
  */
 final class EntryDataPager
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     /**
@@ -52,7 +55,7 @@ final class EntryDataPager
     public function fetchChunk(int $tenantId, int $modelId, int $cursor, int $pageSize): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, fields FROM entry_data'
+            'SELECT id, fields FROM ' . $this->tables->entryData
             . ' WHERE tenant_id = ? AND model_id = ? AND deleted_at IS NULL'
             . '   AND id > ?'
             . ' ORDER BY id ASC'

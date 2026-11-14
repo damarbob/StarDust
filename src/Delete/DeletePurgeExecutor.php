@@ -6,6 +6,7 @@ namespace StarDust\Delete;
 
 use PDO;
 use StarDust\Rename\RenameBackfillExecutor;
+use StarDust\Support\TableNames;
 
 /**
  * Removes one bounded chunk of `entry_data.fields` keys belonging to a
@@ -56,8 +57,10 @@ use StarDust\Rename\RenameBackfillExecutor;
  */
 final class DeletePurgeExecutor
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     public function processChunk(DeleteCheckpoint $checkpoint, int $chunkSize): DeleteChunkResult
@@ -86,7 +89,7 @@ final class DeletePurgeExecutor
 
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
         $stmt = $this->pdo->prepare(
-            'UPDATE entry_data'
+            'UPDATE ' . $this->tables->entryData
             . ' SET fields = JSON_REMOVE(fields, ?)'
             . " WHERE id IN ({$placeholders})"
             . "   AND JSON_CONTAINS_PATH(fields, 'one', ?)"
@@ -113,7 +116,7 @@ final class DeletePurgeExecutor
     private function fetchChunkIds(int $tenantId, int $modelId, int $cursor, int $chunkSize): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM entry_data'
+            'SELECT id FROM ' . $this->tables->entryData
             . ' WHERE tenant_id = ? AND model_id = ? AND id > ?'
             . ' ORDER BY id ASC'
             . ' LIMIT ?'

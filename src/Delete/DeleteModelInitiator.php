@@ -15,6 +15,7 @@ use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Support\LikePattern;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -69,6 +70,7 @@ final class DeleteModelInitiator
         private readonly LoggerInterface $logger,
         private readonly LiveSlotTombstoner $tombstoner,
         private readonly ModelDeleteCheckpointRepository $modelCheckpoints,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -129,7 +131,7 @@ final class DeleteModelInitiator
             // 1. The model marker. A zero row count means another caller
             //    won the race between loadModel() and here.
             $mark = $this->pdo->prepare(
-                'UPDATE stardust_models SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL'
+                'UPDATE ' . $this->tables->models . ' SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL'
             );
             $mark->execute([$now, $modelId]);
             if ($mark->rowCount() === 0) {
@@ -145,7 +147,7 @@ final class DeleteModelInitiator
             // 3. Every field, one UPDATE. `is_filterable = 0` is
             //    load-bearing — see the class docblock.
             $severFields = $this->pdo->prepare(
-                'UPDATE stardust_fields'
+                'UPDATE ' . $this->tables->fields
                 . ' SET deleted_at = ?, is_filterable = 0, updated_at = ?'
                 . ' WHERE model_id = ? AND deleted_at IS NULL'
             );
@@ -170,7 +172,7 @@ final class DeleteModelInitiator
             // 6. One version bump for the whole tuple, which is what makes
             //    cached snapshots notice the model went dark.
             $bump = $this->pdo->prepare(
-                'UPDATE stardust_schema_version'
+                'UPDATE ' . $this->tables->schemaVersion
                 . ' SET version = version + 1, updated_at = ?'
                 . ' WHERE id = 1'
             );
@@ -213,7 +215,7 @@ final class DeleteModelInitiator
     private function loadModel(int $tenantId, int $modelId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT name FROM stardust_models'
+            'SELECT name FROM ' . $this->tables->models
             . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$modelId, $tenantId]);
@@ -239,8 +241,8 @@ final class DeleteModelInitiator
     private function anyFieldHasRunning(int $modelId, string $prefix): bool
     {
         $stmt = $this->pdo->prepare(
-            'SELECT 1 FROM backfill_checkpoints c'
-            . ' JOIN stardust_fields f'
+            'SELECT 1 FROM ' . $this->tables->backfillCheckpoints . ' c'
+            . ' JOIN ' . $this->tables->fields . ' f'
             . '   ON f.id = CAST(SUBSTRING(c.job_name, '
                 . (strlen($prefix) + 1) . ') AS UNSIGNED)'
             . " WHERE c.status = 'running'"
@@ -262,7 +264,7 @@ final class DeleteModelInitiator
     private function lockFieldIds(int $modelId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM stardust_fields WHERE model_id = ? ORDER BY id FOR UPDATE'
+            'SELECT id FROM ' . $this->tables->fields . ' WHERE model_id = ? ORDER BY id FOR UPDATE'
         );
         $stmt->execute([$modelId]);
 

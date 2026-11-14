@@ -8,6 +8,7 @@ use PDO;
 use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Support\LikePattern;
+use StarDust\Support\TableNames;
 
 /**
  * Cursor state for ADR 0038 model deletions — the fourth
@@ -41,8 +42,10 @@ final class ModelDeleteCheckpointRepository
 {
     public const JOB_NAME_PREFIX = 'delete_model_';
 
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     public static function jobNameFor(int $modelId): string
@@ -64,8 +67,8 @@ final class ModelDeleteCheckpointRepository
         $stmt = $this->pdo->prepare(
             'SELECT c.id, c.last_processed_id, c.correlation_id,'
             . ' m.id AS model_id, m.tenant_id'
-            . ' FROM backfill_checkpoints c'
-            . ' JOIN stardust_models m'
+            . ' FROM ' . $this->tables->backfillCheckpoints . ' c'
+            . ' JOIN ' . $this->tables->models . ' m'
             . '   ON m.id = CAST(SUBSTRING(c.job_name, '
                 . (strlen(self::JOB_NAME_PREFIX) + 1) . ') AS UNSIGNED)'
             . " WHERE c.status = 'running'"
@@ -93,7 +96,7 @@ final class ModelDeleteCheckpointRepository
     public function existsRunningForModel(int $modelId): bool
     {
         $stmt = $this->pdo->prepare(
-            "SELECT 1 FROM backfill_checkpoints WHERE job_name = ? AND status = 'running' LIMIT 1"
+            "SELECT 1 FROM {$this->tables->backfillCheckpoints} WHERE job_name = ? AND status = 'running' LIMIT 1"
         );
         $stmt->execute([self::jobNameFor($modelId)]);
 
@@ -113,7 +116,7 @@ final class ModelDeleteCheckpointRepository
     public function insertOrReset(int $modelId, string $now, ?string $correlationId = null): int
     {
         $stmt = $this->pdo->prepare(
-            'INSERT INTO backfill_checkpoints'
+            'INSERT INTO ' . $this->tables->backfillCheckpoints
             . ' (job_name, last_processed_id, status, started_at, updated_at, correlation_id)'
             . " VALUES (?, 0, 'running', ?, ?, ?)"
             . ' ON DUPLICATE KEY UPDATE'
@@ -131,7 +134,7 @@ final class ModelDeleteCheckpointRepository
     public function idForModel(int $modelId): int
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM backfill_checkpoints WHERE job_name = ? LIMIT 1'
+            'SELECT id FROM ' . $this->tables->backfillCheckpoints . ' WHERE job_name = ? LIMIT 1'
         );
         $stmt->execute([self::jobNameFor($modelId)]);
 
@@ -142,7 +145,7 @@ final class ModelDeleteCheckpointRepository
     public function statusForModel(int $modelId): ?string
     {
         $stmt = $this->pdo->prepare(
-            'SELECT status FROM backfill_checkpoints WHERE job_name = ? LIMIT 1'
+            'SELECT status FROM ' . $this->tables->backfillCheckpoints . ' WHERE job_name = ? LIMIT 1'
         );
         $stmt->execute([self::jobNameFor($modelId)]);
         $status = $stmt->fetchColumn();
@@ -153,7 +156,7 @@ final class ModelDeleteCheckpointRepository
     public function advance(int $checkpointId, int $newLastProcessedId, string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE backfill_checkpoints'
+            'UPDATE ' . $this->tables->backfillCheckpoints
             . ' SET last_processed_id = ?, updated_at = ?'
             . ' WHERE id = ?'
         );
@@ -171,7 +174,7 @@ final class ModelDeleteCheckpointRepository
      */
     public function delete(int $checkpointId): void
     {
-        $stmt = $this->pdo->prepare('DELETE FROM backfill_checkpoints WHERE id = ?');
+        $stmt = $this->pdo->prepare('DELETE FROM ' . $this->tables->backfillCheckpoints . ' WHERE id = ?');
         $stmt->execute([$checkpointId]);
     }
 
@@ -211,7 +214,7 @@ final class ModelDeleteCheckpointRepository
 
         $placeholders = implode(',', array_fill(0, count($names), '?'));
         $stmt = $this->pdo->prepare(
-            "DELETE FROM backfill_checkpoints WHERE job_name IN ({$placeholders})"
+            "DELETE FROM {$this->tables->backfillCheckpoints} WHERE job_name IN ({$placeholders})"
         );
         $stmt->execute($names);
     }

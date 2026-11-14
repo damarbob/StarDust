@@ -10,6 +10,7 @@ use StarDust\Exception\UnsupportedServerException;
 use StarDust\Support\Dialect;
 use StarDust\Support\PdoQuery;
 use StarDust\Support\ServerEngine;
+use StarDust\Support\TableNames;
 
 /**
  * Phase 1 migration runner.
@@ -44,6 +45,7 @@ final class Bootstrapper
     public function __construct(
         private readonly PDO $pdo,
         private readonly ServerEngine $engine,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -105,8 +107,8 @@ final class Bootstrapper
 
     private function createEntryData(): void
     {
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS entry_data (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->entryData} (
                 id          BIGINT       NOT NULL AUTO_INCREMENT,
                 tenant_id   BIGINT       NOT NULL,
                 model_id    INT          NOT NULL,
@@ -134,8 +136,8 @@ final class Bootstrapper
         // the model purge deletes queue rows by that column. It stays an
         // ALTER rather than moving here, so an existing deployment picks
         // it up on the next bootstrap.
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_sync_queue (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->syncQueue} (
                 id          BIGINT   NOT NULL AUTO_INCREMENT,
                 entry_id    BIGINT   NOT NULL,
                 created_at  DATETIME NOT NULL,
@@ -146,8 +148,8 @@ final class Bootstrapper
 
     private function createModels(): void
     {
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_models (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->models} (
                 id          INT          NOT NULL AUTO_INCREMENT,
                 tenant_id   BIGINT       NOT NULL,
                 name        VARCHAR(128) NOT NULL,
@@ -161,8 +163,8 @@ final class Bootstrapper
 
     private function createFields(): void
     {
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_fields (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->fields} (
                 id              BIGINT       NOT NULL AUTO_INCREMENT,
                 model_id        INT          NOT NULL,
                 name            VARCHAR(128) NOT NULL,
@@ -172,8 +174,8 @@ final class Bootstrapper
                 updated_at      DATETIME     NOT NULL,
                 PRIMARY KEY (id),
                 UNIQUE KEY ux_fields_model_name (model_id, name),
-                CONSTRAINT fk_fields_model
-                    FOREIGN KEY (model_id) REFERENCES stardust_models (id)
+                CONSTRAINT {$this->tables->fkFieldsModel}
+                    FOREIGN KEY (model_id) REFERENCES {$this->tables->models} (id)
                     ON DELETE CASCADE
             )
         SQL . ' ' . Dialect::tableOptionsClause($this->engine));
@@ -181,8 +183,8 @@ final class Bootstrapper
 
     private function createPages(): void
     {
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_pages (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->pages} (
                 id              INT          NOT NULL AUTO_INCREMENT,
                 table_name      VARCHAR(64)  NOT NULL,
                 provisioned_at  DATETIME     NOT NULL,
@@ -199,8 +201,8 @@ final class Bootstrapper
         // separately in ensureSlotAssignmentFieldLiveUniqueIndex(): MySQL has
         // no `CREATE INDEX IF NOT EXISTS`, and functional-index DDL must be
         // gated on an information_schema probe to stay idempotent.
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_slot_assignments (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->slotAssignments} (
                 id                  BIGINT       NOT NULL AUTO_INCREMENT,
                 page_id             INT          NOT NULL,
                 slot_column         VARCHAR(16)  NOT NULL,
@@ -216,10 +218,10 @@ final class Bootstrapper
                 UNIQUE KEY ux_slot_assignments_page_column (page_id, slot_column),
                 KEY ix_slot_assignments_status_type (status, slot_type),
                 KEY ix_slot_assignments_page_status (page_id, status),
-                CONSTRAINT fk_slot_assignments_page
-                    FOREIGN KEY (page_id) REFERENCES stardust_pages (id),
-                CONSTRAINT fk_slot_assignments_field
-                    FOREIGN KEY (field_id) REFERENCES stardust_fields (id)
+                CONSTRAINT {$this->tables->fkSlotAssignmentsPage}
+                    FOREIGN KEY (page_id) REFERENCES {$this->tables->pages} (id),
+                CONSTRAINT {$this->tables->fkSlotAssignmentsField}
+                    FOREIGN KEY (field_id) REFERENCES {$this->tables->fields} (id)
             )
         SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
@@ -234,21 +236,21 @@ final class Bootstrapper
         // PRIMARY KEY (id) + the seed step in
         // seedSchemaVersionSingleton(), with the CHECK acting as an
         // additional defensive layer on 8.0.16+.
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_schema_version (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->schemaVersion} (
                 id          TINYINT          NOT NULL,
                 version     BIGINT UNSIGNED  NOT NULL DEFAULT 0,
                 updated_at  DATETIME         NOT NULL,
                 PRIMARY KEY (id),
-                CONSTRAINT ck_schema_version_singleton CHECK (id = 1)
+                CONSTRAINT {$this->tables->ckSchemaVersionSingleton} CHECK (id = 1)
             )
         SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
 
     private function createExportJobs(): void
     {
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_export_jobs (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->exportJobs} (
                 id               BIGINT        NOT NULL AUTO_INCREMENT,
                 tenant_id        BIGINT        NOT NULL,
                 status           ENUM('pending','processing','completed','failed')
@@ -286,8 +288,8 @@ final class Bootstrapper
      */
     private function createImportJobs(): void
     {
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_import_jobs (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->importJobs} (
                 id               BIGINT        NOT NULL AUTO_INCREMENT,
                 tenant_id        BIGINT        NOT NULL,
                 status           ENUM('pending','processing','completed','failed')
@@ -315,8 +317,8 @@ final class Bootstrapper
     {
         // No FK to entry_data by design — the `missing_entry_data` reason
         // exists precisely so a DLQ row outlives its source row (ADR 0018).
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_reconciler_dlq (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->reconcilerDlq} (
                 id                    BIGINT        NOT NULL AUTO_INCREMENT,
                 source                ENUM('sync_queue','bulk_import') NOT NULL,
                 entry_id              BIGINT            NULL DEFAULT NULL,
@@ -336,8 +338,8 @@ final class Bootstrapper
 
     private function createBackfillCheckpoints(): void
     {
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS backfill_checkpoints (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->backfillCheckpoints} (
                 id                  BIGINT       NOT NULL AUTO_INCREMENT,
                 job_name            VARCHAR(128) NOT NULL,
                 last_processed_id   BIGINT       NOT NULL DEFAULT 0,
@@ -379,14 +381,14 @@ final class Bootstrapper
      */
     private function createAdvisorySchedule(): void
     {
-        $this->pdo->exec(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS stardust_advisory_schedule (
+        $this->pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$this->tables->advisorySchedule} (
                 id              TINYINT  NOT NULL,
                 next_sample_at  DATETIME     NULL DEFAULT NULL,
                 last_sample_at  DATETIME     NULL DEFAULT NULL,
                 updated_at      DATETIME NOT NULL,
                 PRIMARY KEY (id),
-                CONSTRAINT ck_advisory_schedule_singleton CHECK (id = 1)
+                CONSTRAINT {$this->tables->ckAdvisoryScheduleSingleton} CHECK (id = 1)
             )
         SQL . ' ' . Dialect::tableOptionsClause($this->engine));
     }
@@ -420,10 +422,10 @@ final class Bootstrapper
             return;
         }
 
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_slot_assignments'
+              AND table_name = '{$this->tables->slotAssignments}'
               AND column_name = 'live_field_id'
         SQL)->fetchColumn();
 
@@ -432,8 +434,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_slot_assignments
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->slotAssignments}
                     ADD COLUMN live_field_id BIGINT
                         GENERATED ALWAYS AS (
                             CASE WHEN status IN ('assigned', 'backfilling', 'ready')
@@ -468,10 +470,10 @@ final class Bootstrapper
      */
     private function ensureSlotAssignmentFieldLiveUniqueIndex(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.STATISTICS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_slot_assignments'
+              AND table_name = '{$this->tables->slotAssignments}'
               AND index_name = 'ux_slot_assignments_field_live'
         SQL)->fetchColumn();
 
@@ -480,7 +482,7 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(Dialect::liveSlotUniqueIndexDdl($this->engine));
+            $this->pdo->exec(Dialect::liveSlotUniqueIndexDdl($this->engine, $this->tables));
         } catch (PDOException $e) {
             // MySQL ER_DUP_KEYNAME = 1061; MariaDB reports the same code
             // for the plain UNIQUE index branch. We only swallow this one
@@ -517,10 +519,10 @@ final class Bootstrapper
      */
     private function ensureSlotAssignmentSweepGapColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_slot_assignments'
+              AND table_name = '{$this->tables->slotAssignments}'
               AND column_name = 'sweep_gap_count'
         SQL)->fetchColumn();
 
@@ -529,8 +531,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_slot_assignments
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->slotAssignments}
                     ADD COLUMN sweep_gap_count INT NOT NULL DEFAULT 0
             SQL);
         } catch (PDOException $e) {
@@ -553,10 +555,10 @@ final class Bootstrapper
      */
     private function ensureBackfillCheckpointsSourceTypeColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'backfill_checkpoints'
+              AND table_name = '{$this->tables->backfillCheckpoints}'
               AND column_name = 'source_declared_type'
         SQL)->fetchColumn();
 
@@ -565,8 +567,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE backfill_checkpoints
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->backfillCheckpoints}
                     ADD COLUMN source_declared_type VARCHAR(16) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -604,10 +606,10 @@ final class Bootstrapper
      */
     private function ensureBackfillCheckpointsCorrelationIdColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'backfill_checkpoints'
+              AND table_name = '{$this->tables->backfillCheckpoints}'
               AND column_name = 'correlation_id'
         SQL)->fetchColumn();
 
@@ -616,8 +618,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE backfill_checkpoints
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->backfillCheckpoints}
                     ADD COLUMN correlation_id VARCHAR(36) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -655,10 +657,10 @@ final class Bootstrapper
      */
     private function ensureSyncQueueOriginCorrelationIdColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_sync_queue'
+              AND table_name = '{$this->tables->syncQueue}'
               AND column_name = 'origin_correlation_id'
         SQL)->fetchColumn();
 
@@ -667,8 +669,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_sync_queue
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->syncQueue}
                     ADD COLUMN origin_correlation_id VARCHAR(36) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -694,10 +696,10 @@ final class Bootstrapper
      */
     private function ensureDlqOriginCorrelationIdColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_reconciler_dlq'
+              AND table_name = '{$this->tables->reconcilerDlq}'
               AND column_name = 'origin_correlation_id'
         SQL)->fetchColumn();
 
@@ -706,8 +708,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_reconciler_dlq
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->reconcilerDlq}
                     ADD COLUMN origin_correlation_id VARCHAR(36) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -732,10 +734,10 @@ final class Bootstrapper
      */
     private function ensureImportJobsCorrelationIdColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_import_jobs'
+              AND table_name = '{$this->tables->importJobs}'
               AND column_name = 'correlation_id'
         SQL)->fetchColumn();
 
@@ -744,8 +746,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_import_jobs
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->importJobs}
                     ADD COLUMN correlation_id VARCHAR(36) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -766,10 +768,10 @@ final class Bootstrapper
      */
     private function ensureExportJobsCorrelationIdColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_export_jobs'
+              AND table_name = '{$this->tables->exportJobs}'
               AND column_name = 'correlation_id'
         SQL)->fetchColumn();
 
@@ -778,8 +780,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_export_jobs
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->exportJobs}
                     ADD COLUMN correlation_id VARCHAR(36) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -803,10 +805,10 @@ final class Bootstrapper
      */
     private function ensureExportJobsArtifactBytesColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_export_jobs'
+              AND table_name = '{$this->tables->exportJobs}'
               AND column_name = 'artifact_bytes'
         SQL)->fetchColumn();
 
@@ -815,8 +817,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_export_jobs
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->exportJobs}
                     ADD COLUMN artifact_bytes BIGINT NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -850,10 +852,10 @@ final class Bootstrapper
      */
     private function ensureFieldsPreviousNameColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_fields'
+              AND table_name = '{$this->tables->fields}'
               AND column_name = 'previous_name'
         SQL)->fetchColumn();
 
@@ -862,8 +864,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_fields
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->fields}
                     ADD COLUMN previous_name VARCHAR(128) NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -896,10 +898,10 @@ final class Bootstrapper
      */
     private function ensureFieldsDeletedAtColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_fields'
+              AND table_name = '{$this->tables->fields}'
               AND column_name = 'deleted_at'
         SQL)->fetchColumn();
 
@@ -908,8 +910,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_fields
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->fields}
                     ADD COLUMN deleted_at DATETIME NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -955,10 +957,10 @@ final class Bootstrapper
      */
     private function ensureModelsDeletedAtColumn(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_models'
+              AND table_name = '{$this->tables->models}'
               AND column_name = 'deleted_at'
         SQL)->fetchColumn();
 
@@ -967,8 +969,8 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
-                ALTER TABLE stardust_models
+            $this->pdo->exec(<<<SQL
+                ALTER TABLE {$this->tables->models}
                     ADD COLUMN deleted_at DATETIME NULL DEFAULT NULL
             SQL);
         } catch (PDOException $e) {
@@ -1005,10 +1007,10 @@ final class Bootstrapper
      */
     private function ensureSyncQueueEntryIdIndex(): void
     {
-        $exists = (int) PdoQuery::run($this->pdo, <<<'SQL'
+        $exists = (int) PdoQuery::run($this->pdo, <<<SQL
             SELECT COUNT(*) FROM information_schema.STATISTICS
             WHERE table_schema = DATABASE()
-              AND table_name = 'stardust_sync_queue'
+              AND table_name = '{$this->tables->syncQueue}'
               AND index_name = 'ix_sync_queue_entry'
         SQL)->fetchColumn();
 
@@ -1017,9 +1019,9 @@ final class Bootstrapper
         }
 
         try {
-            $this->pdo->exec(<<<'SQL'
+            $this->pdo->exec(<<<SQL
                 CREATE INDEX ix_sync_queue_entry
-                    ON stardust_sync_queue (entry_id)
+                    ON {$this->tables->syncQueue} (entry_id)
             SQL);
         } catch (PDOException $e) {
             if (! $this->isDuplicateKeyName($e)) {
@@ -1030,8 +1032,8 @@ final class Bootstrapper
 
     private function seedSchemaVersionSingleton(): void
     {
-        $stmt = $this->pdo->prepare(<<<'SQL'
-            INSERT INTO stardust_schema_version (id, version, updated_at)
+        $stmt = $this->pdo->prepare(<<<SQL
+            INSERT INTO {$this->tables->schemaVersion} (id, version, updated_at)
             VALUES (1, 0, UTC_TIMESTAMP())
             ON DUPLICATE KEY UPDATE id = id
         SQL);
@@ -1053,8 +1055,8 @@ final class Bootstrapper
      */
     private function seedAdvisoryScheduleSingleton(): void
     {
-        $stmt = $this->pdo->prepare(<<<'SQL'
-            INSERT INTO stardust_advisory_schedule (id, next_sample_at, last_sample_at, updated_at)
+        $stmt = $this->pdo->prepare(<<<SQL
+            INSERT INTO {$this->tables->advisorySchedule} (id, next_sample_at, last_sample_at, updated_at)
             VALUES (1, NULL, NULL, UTC_TIMESTAMP())
             ON DUPLICATE KEY UPDATE id = id
         SQL);

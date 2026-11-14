@@ -12,6 +12,7 @@ use StarDust\Reconciler\ReconcilerWorkSource;
 use StarDust\Reconciler\TickOutcome;
 use StarDust\Slot\SlotAssignment;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\TableNames;
 use StarDust\Watcher\CardinalitySampler;
 use StarDust\Watcher\SpreadSampler;
 use Throwable;
@@ -93,6 +94,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
         private readonly int $lockRetryBudget = 3,
         private readonly int $retryDelayMicros = 0,
         ?callable $sleepFn = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $this->sleepFn = $sleepFn !== null
             ? Closure::fromCallable($sleepFn)
@@ -339,7 +341,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
     {
         $stmt = $this->pdo->prepare(
             'SELECT a.id, a.page_id, a.slot_column, a.slot_type'
-            . ' FROM stardust_slot_assignments a'
+            . ' FROM ' . $this->tables->slotAssignments . ' a'
             . " WHERE a.field_id = ? AND a.status IN ('backfilling','ready')"
             . ' LIMIT 1 FOR UPDATE'
         );
@@ -358,7 +360,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
 
     private function resolvePageTableName(int $pageId): string
     {
-        $stmt = $this->pdo->prepare('SELECT table_name FROM stardust_pages WHERE id = ?');
+        $stmt = $this->pdo->prepare('SELECT table_name FROM ' . $this->tables->pages . ' WHERE id = ?');
         $stmt->execute([$pageId]);
         $name = $stmt->fetchColumn();
         if ($name === false) {
@@ -380,7 +382,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
     private function adoptAssignedSlot(int $fieldId, string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_slot_assignments'
+            'UPDATE ' . $this->tables->slotAssignments
             . " SET status = 'backfilling', updated_at = ?"
             . " WHERE field_id = ? AND status = 'assigned'"
         );
@@ -394,7 +396,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
     private function promoteSlotToReady(int $slotAssignmentId, string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_slot_assignments'
+            'UPDATE ' . $this->tables->slotAssignments
             . " SET status = 'ready', updated_at = ?"
             . " WHERE id = ? AND status = 'backfilling'"
         );
@@ -404,7 +406,7 @@ final class RetypeBackfillWorkSource implements ReconcilerWorkSource
     private function bumpSchemaVersion(string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_schema_version'
+            'UPDATE ' . $this->tables->schemaVersion
             . ' SET version = version + 1, updated_at = ?'
             . ' WHERE id = 1'
         );

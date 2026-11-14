@@ -6,6 +6,7 @@ namespace StarDust\Liberator;
 
 use InvalidArgumentException;
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Reads `stardust_slot_assignments` for rows in `status = 'tombstoned'`
@@ -28,17 +29,10 @@ use PDO;
  */
 final class TombstonedSlotRepository
 {
-    /**
-     * Same whitelist shape as {@see \StarDust\Page\EmptyTableGuard} —
-     * the table name is interpolated into dynamic SQL in
-     * {@see SlotSweeper}, so we validate it here before that ever
-     * happens.
-     */
-    private const PAGE_TABLE_PATTERN = '/^entry_slots_page_[1-9]\d*$/';
-
     public function __construct(
         private readonly PDO $pdo,
         private readonly int $batchSize,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         if ($this->batchSize < 1) {
             throw new InvalidArgumentException('TombstonedSlotRepository batchSize must be >= 1.');
@@ -50,8 +44,8 @@ final class TombstonedSlotRepository
     {
         $stmt = $this->pdo->prepare(
             'SELECT sa.id, sa.page_id, sa.slot_column, sa.sweep_cursor_id, p.table_name'
-            . ' FROM stardust_slot_assignments sa'
-            . ' JOIN stardust_pages p ON p.id = sa.page_id'
+            . ' FROM ' . $this->tables->slotAssignments . ' sa'
+            . ' JOIN ' . $this->tables->pages . ' p ON p.id = sa.page_id'
             . " WHERE sa.status = 'tombstoned'"
             . ' ORDER BY sa.tombstoned_at ASC, sa.page_id ASC, sa.slot_column ASC'
             . ' LIMIT ?'
@@ -63,7 +57,9 @@ final class TombstonedSlotRepository
         $out = [];
         foreach ($rows as $row) {
             $tableName = (string) $row['table_name'];
-            if (preg_match(self::PAGE_TABLE_PATTERN, $tableName) !== 1) {
+            // The same whitelist as EmptyTableGuard. The name is interpolated
+            // into dynamic SQL in SlotSweeper, so it is checked here first.
+            if (!$this->tables->isPageTable($tableName)) {
                 throw new InvalidArgumentException(
                     "TombstonedSlotRepository: '{$tableName}' is not a recognised entry_slots_page_X identifier."
                 );

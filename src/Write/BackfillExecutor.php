@@ -6,6 +6,7 @@ namespace StarDust\Write;
 
 use PDO;
 use StarDust\Exception\EntryDataMissingException;
+use StarDust\Support\TableNames;
 
 /**
  * Backfills slot rows for an `entry_data` row that already exists.
@@ -32,6 +33,7 @@ final class BackfillExecutor
     public function __construct(
         private readonly PDO $pdo,
         private readonly SlotRowUpserter $slotRowUpserter,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -57,7 +59,7 @@ final class BackfillExecutor
             );
         }
 
-        $map = LiveSlotMap::loadFor($this->pdo, (int) $row['model_id']);
+        $map = LiveSlotMap::loadFor($this->pdo, (int) $row['model_id'], $this->tables);
 
         // ADR 0038: a queued entry whose model is being purged. This is
         // a skip, not a guard — nothing is wrong, there is simply no slot
@@ -112,7 +114,7 @@ final class BackfillExecutor
     private function fetchEntryData(int $entryId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT tenant_id, model_id, fields FROM entry_data WHERE id = ?'
+            'SELECT tenant_id, model_id, fields FROM ' . $this->tables->entryData . ' WHERE id = ?'
         );
         $stmt->execute([$entryId]);
         // fetch() is typed array<string, mixed>|false — precise enough
@@ -135,7 +137,7 @@ final class BackfillExecutor
 
         $placeholders = implode(',', array_fill(0, count($pageIds), '?'));
         $stmt = $this->pdo->prepare(
-            "SELECT id, table_name FROM stardust_pages WHERE id IN ({$placeholders})"
+            "SELECT id, table_name FROM {$this->tables->pages} WHERE id IN ({$placeholders})"
         );
         $stmt->execute($pageIds);
 

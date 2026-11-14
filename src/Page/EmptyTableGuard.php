@@ -7,6 +7,7 @@ namespace StarDust\Page;
 use InvalidArgumentException;
 use PDO;
 use StarDust\Support\PdoQuery;
+use StarDust\Support\TableNames;
 
 /**
  * Engine-level guard implementing ADR 0012's Empty-Table-Only DDL rule:
@@ -22,16 +23,15 @@ use StarDust\Support\PdoQuery;
 final class EmptyTableGuard
 {
     /**
-     * Page table names follow `entry_slots_page_{N}` where N is a positive
-     * integer (the matching `stardust_pages.id`). MySQL has no parameterised
-     * identifier substitution, so we whitelist the shape before interpolating
-     * the name into the probe query.
+     * Page table names follow `{prefix}entry_slots_page_{N}` where N is a
+     * positive integer (the matching `stardust_pages.id`). MySQL has no
+     * parameterised identifier substitution, so `TableNames::isPageTable()`
+     * whitelists the shape before the name is interpolated into the probe
+     * query.
      */
-    private const PAGE_TABLE_PATTERN = '/^entry_slots_page_[1-9]\d*$/';
-
-    public static function assertEmpty(PDO $pdo, string $tableName): void
+    public static function assertEmpty(PDO $pdo, string $tableName, TableNames $tables = new TableNames()): void
     {
-        if (preg_match(self::PAGE_TABLE_PATTERN, $tableName) !== 1) {
+        if (!$tables->isPageTable($tableName)) {
             throw new InvalidArgumentException(
                 "EmptyTableGuard: '{$tableName}' is not a recognised entry_slots_page_X identifier."
             );

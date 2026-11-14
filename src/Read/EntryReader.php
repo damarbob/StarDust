@@ -17,6 +17,7 @@ use StarDust\Search\PreFlight\SortValidator;
 use StarDust\Search\PreFlight\ValueTypeValidator;
 use StarDust\Search\SearchRequest;
 use StarDust\Search\SearchService;
+use StarDust\Support\TableNames;
 use StarDust\Write\TenantId;
 
 /**
@@ -47,12 +48,14 @@ final class EntryReader
         private readonly LoggerInterface $logger,
         ?EntrySearchInterface $driver = null,
         ?ClockInterface $clock = null,
+        TableNames $tables = new TableNames(),
     ) {
-        $cache = new SchemaVersionCache($this->pdo, $this->logger);
+        $cache = new SchemaVersionCache($this->pdo, $this->logger, tables: $tables);
         $this->driver = $driver ?? new MysqlNativeDriver(
             pdo:    $this->pdo,
             logger: $this->logger,
             cache:  $cache,
+            tables: $tables,
         );
         $pipeline = new PreFlightPipeline(
             fieldRefResolver:   new FieldRefResolver($this->logger),

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Write;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Snapshot of live slot assignments for one `(tenant_id, model_id)`,
@@ -78,7 +79,7 @@ final class LiveSlotMap
     }
 
     /** Load the live-slot map for a given model from the registry. */
-    public static function loadFor(PDO $pdo, int $modelId): self
+    public static function loadFor(PDO $pdo, int $modelId, TableNames $tables = new TableNames()): self
     {
         $placeholders = implode(',', array_fill(0, count(self::LIVE_STATUSES), '?'));
         // LEFT JOIN so rows with no live slot still appear in the result —
@@ -98,9 +99,9 @@ final class LiveSlotMap
             . ' f.deleted_at AS field_deleted_at,'
             . ' m.deleted_at AS model_deleted_at,'
             . ' a.slot_column, a.page_id, a.status'
-            . ' FROM stardust_models m'
-            . ' LEFT JOIN stardust_fields f ON f.model_id = m.id'
-            . ' LEFT JOIN stardust_slot_assignments a'
+            . ' FROM ' . $tables->models . ' m'
+            . ' LEFT JOIN ' . $tables->fields . ' f ON f.model_id = m.id'
+            . ' LEFT JOIN ' . $tables->slotAssignments . ' a'
             . "   ON a.field_id = f.id AND a.status IN ({$placeholders})"
             . ' WHERE m.id = ?'
         );

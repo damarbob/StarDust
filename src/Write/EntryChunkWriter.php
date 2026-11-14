@@ -11,6 +11,7 @@ use Psr\Clock\ClockInterface;
 use RuntimeException;
 use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Support\MultiRowBatches;
+use StarDust\Support\TableNames;
 
 /**
  * Writes a list of entries inside the caller's transaction in a
@@ -93,6 +94,7 @@ final class EntryChunkWriter
         private readonly SlotRowUpserter $slotRowUpserter,
         private readonly int $maxPlaceholders = self::DEFAULT_MAX_PLACEHOLDERS,
         ?int $maxStatementBytes = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         if ($maxPlaceholders < 1) {
             throw new InvalidArgumentException('EntryChunkWriter: maxPlaceholders must be >= 1.');
@@ -131,7 +133,7 @@ final class EntryChunkWriter
             // canonicalisation must apply to the payload we persist, not
             // just to the slot plan: a client still sending a pre-rename
             // field name would otherwise store the stale key verbatim.
-            $map = $maps[$payload->modelId] ??= LiveSlotMap::loadFor($this->pdo, $payload->modelId);
+            $map = $maps[$payload->modelId] ??= LiveSlotMap::loadFor($this->pdo, $payload->modelId, $this->tables);
 
             // ADR 0038, and note this deliberately INVERTS the ADR 0037
             // rule one line below. A deleted *field's* key is stripped
@@ -250,7 +252,7 @@ final class EntryChunkWriter
             }
 
             $stmt = $this->pdo->prepare(
-                'INSERT INTO entry_data (tenant_id, model_id, created_at, updated_at, fields) VALUES '
+                'INSERT INTO ' . $this->tables->entryData . ' (tenant_id, model_id, created_at, updated_at, fields) VALUES '
                 . implode(',', array_fill(0, $length, '(?, ?, ?, ?, ?)'))
             );
             $stmt->execute($params);
@@ -320,7 +322,7 @@ final class EntryChunkWriter
                 array_push($params, ...$row);
             }
             $stmt = $this->pdo->prepare(
-                'INSERT INTO stardust_sync_queue (entry_id, created_at, origin_correlation_id) VALUES '
+                'INSERT INTO ' . $this->tables->syncQueue . ' (entry_id, created_at, origin_correlation_id) VALUES '
                 . implode(',', array_fill(0, $length, '(?, ?, ?)'))
             );
             $stmt->execute($params);
@@ -390,7 +392,7 @@ final class EntryChunkWriter
 
         $placeholders = implode(',', array_fill(0, count($pageIds), '?'));
         $stmt = $this->pdo->prepare(
-            "SELECT id, table_name FROM stardust_pages WHERE id IN ({$placeholders})"
+            "SELECT id, table_name FROM {$this->tables->pages} WHERE id IN ({$placeholders})"
         );
         $stmt->execute($pageIds);
 

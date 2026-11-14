@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Delete;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Deletes one bounded chunk of a model's entries.
@@ -33,8 +34,10 @@ use PDO;
  */
 final class ModelPurgeExecutor
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     public function processChunk(ModelDeleteCheckpoint $checkpoint, int $chunkSize): ModelDeleteChunkResult
@@ -68,13 +71,13 @@ final class ModelPurgeExecutor
         // the subquery form reverts to a full table scan and defeats
         // `ix_sync_queue_entry` entirely.
         $sync = $this->pdo->prepare(
-            "DELETE FROM stardust_sync_queue WHERE entry_id IN ({$placeholders})"
+            "DELETE FROM {$this->tables->syncQueue} WHERE entry_id IN ({$placeholders})"
         );
         $sync->execute($ids);
         $syncRowsDeleted = $sync->rowCount();
 
         $delete = $this->pdo->prepare(
-            "DELETE FROM entry_data WHERE id IN ({$placeholders})"
+            "DELETE FROM {$this->tables->entryData} WHERE id IN ({$placeholders})"
         );
         $delete->execute($ids);
         $rowsDeleted = $delete->rowCount();
@@ -109,7 +112,7 @@ final class ModelPurgeExecutor
     private function fetchChunkIds(int $tenantId, int $modelId, int $cursor, int $chunkSize): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM entry_data'
+            'SELECT id FROM ' . $this->tables->entryData
             . ' WHERE tenant_id = ? AND model_id = ? AND id > ?'
             . ' ORDER BY id ASC'
             . ' LIMIT ?'

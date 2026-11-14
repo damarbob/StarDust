@@ -10,6 +10,7 @@ use PDO;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\NonFilterableFieldSlotException;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use StarDust\Write\LiveSlotMap;
 use Throwable;
@@ -56,6 +57,7 @@ final class SlotReserver
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -317,7 +319,7 @@ final class SlotReserver
         // under `ERRMODE_EXCEPTION` as a PDOException the caller's catch
         // rolls back and rethrows.
         $update = $this->pdo->prepare(
-            'UPDATE stardust_slot_assignments'
+            'UPDATE ' . $this->tables->slotAssignments
             . ' SET status = ?, field_id = ?, updated_at = ?'
             . ' WHERE id = ? AND status = \'free\''
         );
@@ -345,7 +347,7 @@ final class SlotReserver
 
         if ($bumpSchemaVersion) {
             $bumpVersion = $this->pdo->prepare(
-                'UPDATE stardust_schema_version'
+                'UPDATE ' . $this->tables->schemaVersion
                 . ' SET version = version + 1, updated_at = ?'
                 . ' WHERE id = 1'
             );
@@ -405,7 +407,7 @@ final class SlotReserver
         ?array $affinePageIds,
     ): array|false {
         $sql = 'SELECT a.id, a.page_id, a.slot_column'
-            . ' FROM stardust_slot_assignments a';
+            . ' FROM ' . $this->tables->slotAssignments . ' a';
 
         if ($affinePageIds !== null) {
             $sql .= ' FORCE INDEX (ix_slot_assignments_page_status)';
@@ -419,7 +421,7 @@ final class SlotReserver
         // *eligibility*, so it outranks affinity's *ordering*: an
         // unindexed affine page loses to an indexed non-affine one.
         if ($requireIndexed) {
-            $sql .= ' JOIN stardust_pages p ON p.id = a.page_id'
+            $sql .= ' JOIN ' . $this->tables->pages . ' p ON p.id = a.page_id'
                 . ' WHERE a.status = \'free\' AND a.slot_type = ?'
                 . ' AND ' . IndexedSlotPredicate::existsSql('a', 'p');
         } else {
@@ -484,8 +486,8 @@ final class SlotReserver
 
         $stmt = $this->pdo->prepare(
             'SELECT DISTINCT a.page_id'
-            . ' FROM stardust_slot_assignments a'
-            . ' JOIN stardust_fields f ON f.id = a.field_id'
+            . ' FROM ' . $this->tables->slotAssignments . ' a'
+            . ' JOIN ' . $this->tables->fields . ' f ON f.id = a.field_id'
             . " WHERE f.model_id = ? AND a.status IN ({$placeholders})"
         );
         $stmt->execute(array_merge([$modelId], LiveSlotMap::LIVE_STATUSES));
@@ -579,8 +581,8 @@ final class SlotReserver
         // is a bad enough outcome to be worth defending twice.
         $stmt = $this->pdo->prepare(
             'SELECT f.declared_type, f.is_filterable, f.model_id, m.tenant_id'
-            . ' FROM stardust_fields f'
-            . ' JOIN stardust_models m ON m.id = f.model_id'
+            . ' FROM ' . $this->tables->fields . ' f'
+            . ' JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             . ' WHERE f.id = ? AND f.deleted_at IS NULL'
         );
         $stmt->execute([$fieldId]);

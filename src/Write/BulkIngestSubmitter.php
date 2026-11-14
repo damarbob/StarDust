@@ -14,6 +14,7 @@ use RuntimeException;
 use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Support\ArtifactDirectory;
 use StarDust\Support\ModelDeletionProbe;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -56,6 +57,7 @@ final class BulkIngestSubmitter
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
         private readonly string $artifactDir,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -107,7 +109,7 @@ final class BulkIngestSubmitter
         // multi-megabyte JSON artifact on disk that nothing collects.
         // Note the submission is single-*tenant* by contract but not
         // single-*model*, so the batch really can name several.
-        $deleting = ModelDeletionProbe::deletingAmong($this->pdo, $modelIds);
+        $deleting = ModelDeletionProbe::deletingAmong($this->pdo, $modelIds, $this->tables);
         if ($deleting !== []) {
             throw new ModelDeletionInProgressException(
                 'Bulk submission rejected: model(s) ' . implode(', ', $deleting)
@@ -151,7 +153,7 @@ final class BulkIngestSubmitter
 
         try {
             $insert = $this->pdo->prepare(
-                'INSERT INTO stardust_import_jobs'
+                'INSERT INTO ' . $this->tables->importJobs
                 . ' (tenant_id, status, idempotency_key, artifact_path, entry_count,'
                 . '  created_at, correlation_id)'
                 . " VALUES (?, 'pending', ?, ?, ?, ?, ?)"
@@ -225,7 +227,7 @@ final class BulkIngestSubmitter
             . '       entry_count, manifest, failed_reason,'
             . '       worker_identity, claimed_at, heartbeat_at,'
             . '       created_at, completed_at'
-            . '  FROM stardust_import_jobs'
+            . '  FROM ' . $this->tables->importJobs
             . ' WHERE id = ? AND tenant_id = ?'
         );
         $stmt->execute([$jobId, $tenantId]);
@@ -368,7 +370,7 @@ final class BulkIngestSubmitter
     private function findExistingJobId(int $tenantId, string $idempotencyKey): ?int
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM stardust_import_jobs'
+            'SELECT id FROM ' . $this->tables->importJobs
             . ' WHERE tenant_id = ? AND idempotency_key = ? LIMIT 1'
         );
         $stmt->execute([$tenantId, $idempotencyKey]);

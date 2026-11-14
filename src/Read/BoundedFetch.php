@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Read;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Phase 4 Query 2 of the two-query bounded read of ADR 0005.
@@ -30,6 +31,7 @@ final class BoundedFetch
 {
     public function __construct(
         private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -59,12 +61,12 @@ final class BoundedFetch
         /** @var array<string, string> $aliasByField fieldName → SELECT alias */
         $aliasByField = [];
         $selectColumns = [
-            'entry_data.id            AS id',
-            'entry_data.tenant_id     AS tenant_id',
-            'entry_data.model_id      AS model_id',
-            'entry_data.created_at    AS created_at',
-            'entry_data.deleted_at    AS deleted_at',
-            'entry_data.fields        AS fields_json',
+            $this->tables->entryData . '.id            AS id',
+            $this->tables->entryData . '.tenant_id     AS tenant_id',
+            $this->tables->entryData . '.model_id      AS model_id',
+            $this->tables->entryData . '.created_at    AS created_at',
+            $this->tables->entryData . '.deleted_at    AS deleted_at',
+            $this->tables->entryData . '.fields        AS fields_json',
         ];
 
         foreach ($selectFieldNames as $name) {
@@ -92,16 +94,16 @@ final class BoundedFetch
         foreach ($aliasByPage as $pageId => $alias) {
             $tableName = $snapshot->pageTableNames[$pageId];
             $joins[] = "LEFT JOIN {$tableName} {$alias}"
-                . " ON {$alias}.entry_id = entry_data.id"
-                . " AND {$alias}.tenant_id = entry_data.tenant_id";
+                . " ON {$alias}.entry_id = {$this->tables->entryData}.id"
+                . " AND {$alias}.tenant_id = {$this->tables->entryData}.tenant_id";
         }
 
         $placeholders = implode(',', array_fill(0, count($entryIds), '?'));
         $sql = 'SELECT ' . implode(', ', $selectColumns)
-            . ' FROM entry_data'
+            . ' FROM ' . $this->tables->entryData
             . ($joins === [] ? '' : ' ' . implode(' ', $joins))
-            . " WHERE entry_data.id IN ({$placeholders})"
-            . ' AND entry_data.tenant_id = ?';
+            . " WHERE {$this->tables->entryData}.id IN ({$placeholders})"
+            . ' AND ' . $this->tables->entryData . '.tenant_id = ?';
 
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute([...$entryIds, $query->tenantId]);

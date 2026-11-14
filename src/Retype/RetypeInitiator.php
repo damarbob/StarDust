@@ -17,6 +17,7 @@ use StarDust\Exception\RetypeInProgressException;
 use StarDust\Rename\RenameCheckpointRepository;
 use StarDust\Slot\LiveSlotTombstoner;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -79,6 +80,7 @@ final class RetypeInitiator
         private readonly LiveSlotTombstoner $tombstoner,
         private readonly RetypeCheckpointRepository $checkpointRepository,
         private readonly RenameCheckpointRepository $renameCheckpointRepository,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -247,7 +249,7 @@ final class RetypeInitiator
             // 1. Mutate stardust_fields.
             if ($newDeclaredType !== null || $newIsFilterable !== null) {
                 $update = $this->pdo->prepare(
-                    'UPDATE stardust_fields'
+                    'UPDATE ' . $this->tables->fields
                     . ' SET declared_type = ?, is_filterable = ?, updated_at = ?'
                     . ' WHERE id = ?'
                 );
@@ -306,7 +308,7 @@ final class RetypeInitiator
             //    a schema change. Exactly one bump on every path.
             if ($newSlot === null) {
                 $bump = $this->pdo->prepare(
-                    'UPDATE stardust_schema_version'
+                    'UPDATE ' . $this->tables->schemaVersion
                     . ' SET version = version + 1, updated_at = ?'
                     . ' WHERE id = 1'
                 );
@@ -409,7 +411,7 @@ final class RetypeInitiator
     {
         $stmt = $this->pdo->prepare(
             'SELECT declared_type, is_filterable, model_id, deleted_at'
-            . ' FROM stardust_fields'
+            . ' FROM ' . $this->tables->fields
             . ' WHERE id = ?'
             . ' FOR UPDATE'
         );
@@ -420,7 +422,7 @@ final class RetypeInitiator
             throw new FieldNotFoundException("Field {$fieldId} does not exist.");
         }
 
-        $tenantStmt = $this->pdo->prepare('SELECT tenant_id FROM stardust_models WHERE id = ?');
+        $tenantStmt = $this->pdo->prepare('SELECT tenant_id FROM ' . $this->tables->models . ' WHERE id = ?');
         $tenantStmt->execute([(int) $row['model_id']]);
         $modelTenantId = $tenantStmt->fetchColumn();
 
