@@ -718,6 +718,7 @@ final class StarDust
         return $this->lockNamespace ??= new LockNamespace(
             pdo: $this->config->pdo,
             explicit: $this->config->lockNamespace,
+            tables: $this->tables,
         );
     }
 

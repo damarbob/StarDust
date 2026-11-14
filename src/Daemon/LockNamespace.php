@@ -6,6 +6,7 @@ namespace StarDust\Daemon;
 
 use PDO;
 use StarDust\Support\PdoQuery;
+use StarDust\Support\TableNames;
 
 /**
  * Per-installation qualifier for MySQL advisory lock names (ADR 0053).
@@ -30,14 +31,18 @@ use StarDust\Support\PdoQuery;
  * single out (capacity is never replenished, and filterable writes
  * fall back to the unindexed JSON payload).
  *
- * ## The discriminator is the schema name
+ * ## The discriminator is the schema name and the prefix
  *
- * StarDust has no table-name prefix — `entry_data` and the
- * `stardust_*` registry tables are fixed — so one database holds at
- * most one installation and `DATABASE()` is a sound identity for it.
- * `Config::$lockNamespace` overrides it for the case the default
- * cannot serve: an installation that must keep one lock identity
- * across a database rename, or two that must deliberately share one.
+ * An installation is identified by its database and its table prefix
+ * (ADR 0059). With no prefix that is `DATABASE()` alone, hashed exactly
+ * as before, so every lock name an existing installation holds is
+ * unchanged. With a prefix the hash input is `DATABASE()`, a slash and
+ * the prefix, so two installations in one database take different
+ * names. A slash cannot appear in a database name or in a prefix, so no
+ * two identities give one input. `Config::$lockNamespace` overrides all
+ * of it for the case the default cannot serve: an installation that
+ * must keep one lock identity across a database rename, or two that
+ * must deliberately share one.
  *
  * The name is hashed rather than appended raw because a schema name
  * may be 64 characters and `GET_LOCK` rejects a name over 64. Twelve
@@ -68,6 +73,7 @@ final class LockNamespace
     public function __construct(
         private readonly PDO $pdo,
         private readonly ?string $explicit = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -87,10 +93,18 @@ final class LockNamespace
     private function suffix(): string
     {
         if ($this->suffix === null) {
-            $this->suffix = substr(sha1($this->explicit ?? $this->readDatabaseName()), 0, self::SUFFIX_LENGTH);
+            $this->suffix = substr(sha1($this->explicit ?? $this->identity()), 0, self::SUFFIX_LENGTH);
         }
 
         return $this->suffix;
+    }
+
+    /** The database name and, after a slash, the prefix when there is one. */
+    private function identity(): string
+    {
+        $database = $this->readDatabaseName();
+
+        return $this->tables->prefix === '' ? $database : $database . '/' . $this->tables->prefix;
     }
 
     /**

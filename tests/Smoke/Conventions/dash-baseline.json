@@ -57,7 +57,7 @@
     "src/Daemon/CombinedTick.php": 18,
     "src/Daemon/DeadlineYield.php": 1,
     "src/Daemon/FlagFileShutdownSignal.php": 1,
-    "src/Daemon/LockNamespace.php": 7,
+    "src/Daemon/LockNamespace.php": 5,
     "src/Daemon/PidFileGuard.php": 5,
     "src/Daemon/PollLoop.php": 2,
     "src/Daemon/ShutdownSignal.php": 2,
