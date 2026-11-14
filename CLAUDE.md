@@ -45,7 +45,7 @@ The engine's initial build ran in numbered phases, now frozen ([SDDPG/implementa
 
 **Status semantics.** An ADR's `Status` is a human-review milestone, not a build gate: `Proposed` never blocks implementation. **New ADRs always enter as `Proposed`, and only the maintainer flips one to `Accepted`**; never change a status on your own initiative. Acceptance is need-driven, not linear, so read each ADR's own `Status` line. When new work leans on a still-`Proposed` ADR, say so, because review has changed ADR semantics before.
 
-**Amending an ADR.** A `Proposed` ADR may be edited in place. An `Accepted` one gets only editorial fixes in place; a change that alters what code someone would write needs a **new** ADR plus a dated pointer added to the superseded one.
+**Amending an ADR.** A `Proposed` ADR may be edited in place. An `Accepted` one gets only editorial fixes in place; a change that alters what code someone would write needs a **new** ADR plus a dated pointer added to the superseded one. The seven labels for that pointer (Note, Extended, Narrowed, Clarified, Corrected, Amended, Superseded), how to choose one, and the "proposed" form a `Proposed` ADR uses are in [SDDPG/adrs/README.md](SDDPG/adrs/README.md) under "Notes on an earlier ADR". Only Superseded changes the older ADR's status.
 
 ### Sibling docs and what each owns
 
