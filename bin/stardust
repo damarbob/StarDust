@@ -200,7 +200,7 @@ switch ($command) {
             $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
             $guard = \StarDust\Daemon\PidFileGuard::acquire(
                 $stardust->config()->pidFileDir,
-                'watcher',
+                (new \StarDust\Support\TableNames($stardust->config()->tablePrefix))->daemon('watcher'),
             );
             try {
                 $stardust->pollLoop()->run(

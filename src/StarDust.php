@@ -1057,6 +1057,7 @@ final class StarDust
             clock: $this->config->clock,
             shutdown: $this->shutdownSignal('tick'),
             pidFileDir: $this->config->pidFileDir,
+            tables: $this->tables,
         );
     }
 
@@ -1130,7 +1131,7 @@ final class StarDust
     {
         return new CompositeShutdownSignal(
             new SignalShutdownSignal(),
-            new FlagFileShutdownSignal($this->config->pidFileDir, $daemonName),
+            new FlagFileShutdownSignal($this->config->pidFileDir, $this->tables->daemon($daemonName)),
         );
     }
 
