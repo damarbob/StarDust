@@ -410,7 +410,7 @@ $entries = $engine->getMany(tenantId: 1, entryIds: $ids);
 
 ## Construction & schema bootstrap
 
-Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the 47 optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
+Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the 48 optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
 
 ## Writing entries
 

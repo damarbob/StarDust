@@ -69,7 +69,7 @@ $company?->indexedFields();
 
 Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and for a newly registered filterable field that did not get a slot at registration (its model already had entries, or no indexed slot was free) until its first write has been processed by a running Reconciler, which is when the field gets its slot. A filter on such a field is rejected with `FieldNotFilterableException` until then. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
-The daemons, exports, model deletion, index headroom, and the combined tick are tuned through 47 optional `Config` parameters:
+The daemons, exports, model deletion, index headroom, and the combined tick are tuned through 48 optional `Config` parameters:
 
 ```php
 $engine = new StarDust(new Config(
