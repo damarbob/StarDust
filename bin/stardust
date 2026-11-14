@@ -69,6 +69,16 @@ $readDbEnv = static function (): array {
     return [$dsn, $user, $pass];
 };
 
+/**
+ * Reads the optional STARDUST_TABLE_PREFIX (ADR 0059). Unset or empty means
+ * no prefix, so the tables keep their bare names.
+ */
+$readTablePrefix = static function (): ?string {
+    $prefix = getenv('STARDUST_TABLE_PREFIX');
+
+    return $prefix === false || $prefix === '' ? null : $prefix;
+};
+
 /** Builds a PDO from the standard env vars, exiting non-zero on misconfiguration. */
 $buildPdo = static function () use ($readDbEnv, $pdoOptions): PDO {
     [$dsn, $user, $pass] = $readDbEnv();
@@ -121,7 +131,10 @@ switch ($command) {
           --help, -h       Show this help.
           bootstrap        Apply the schema (idempotent).
                            Reads STARDUST_DSN, STARDUST_USER, STARDUST_PASS
-                           from the process environment.
+                           from the process environment. Every command
+                           also reads the optional STARDUST_TABLE_PREFIX,
+                           a lowercase prefix for every table name, for a
+                           database that other applications share.
           watcher          Singleton page-provisioning daemon.
           reconciler       Multi-worker sync-queue + import-job drain
                            daemon.
@@ -186,7 +199,7 @@ switch ($command) {
     case 'bootstrap':
         try {
             $pdo = $buildPdo();
-            (new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo)))->bootstrap();
+            (new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo, tablePrefix: $readTablePrefix())))->bootstrap();
             echo "stardust: bootstrap complete.\n";
             exit(0);
         } catch (\Throwable $e) {
@@ -197,7 +210,7 @@ switch ($command) {
     case 'watcher':
         try {
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo, tablePrefix: $readTablePrefix()));
             $guard = \StarDust\Daemon\PidFileGuard::acquire(
                 $stardust->config()->pidFileDir,
                 (new \StarDust\Support\TableNames($stardust->config()->tablePrefix))->daemon('watcher'),
@@ -223,7 +236,7 @@ switch ($command) {
     case 'reconciler':
         try {
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo, tablePrefix: $readTablePrefix()));
             // Reconciler is multi-worker safe (SKIP LOCKED + atomic
             // claim UPDATE), so it needs no PID guard. Tick the loop continuously
             // (intervalSeconds = 0); the daemon itself sleeps via
@@ -242,7 +255,7 @@ switch ($command) {
     case 'liberator':
         try {
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo, tablePrefix: $readTablePrefix()));
             // Liberator is multi-worker safe since ADR 0049
             // (page-table-granularity GET_LOCK exclusion via
             // SweepPageLock), so it needs no PID guard. Tick the loop continuously
@@ -265,6 +278,7 @@ switch ($command) {
             // mid-export is recovered in-process (ADR 0025).
             $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(
                 pdo: $pdo,
+                tablePrefix: $readTablePrefix(),
                 pdoConnector: $buildConnector(),
             ));
             // Chronicler is multi-worker safe (SELECT … FOR UPDATE
@@ -303,7 +317,7 @@ switch ($command) {
             }
 
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo, tablePrefix: $readTablePrefix()));
             $manifest = $id !== null
                 ? $stardust->dlqReplayer()->replayById($id)
                 : $stardust->dlqReplayer()->replayByReason($reason);
@@ -332,7 +346,7 @@ switch ($command) {
             }
 
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo, tablePrefix: $readTablePrefix()));
             $plan = $stardust->compactModel($tenantId, $modelId, $dryRun);
 
             printf(
@@ -392,7 +406,7 @@ switch ($command) {
             $modelId  = isset($flags['model'])  && is_string($flags['model'])  ? (int) $flags['model']  : null;
 
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo, tablePrefix: $readTablePrefix()));
             $samples = $stardust->spreadSampler()->report($tenantId, $modelId);
 
             if ($samples === []) {
@@ -427,7 +441,7 @@ switch ($command) {
             $modelId  = isset($flags['model'])  && is_string($flags['model'])  ? (int) $flags['model']  : null;
 
             $pdo = $buildPdo();
-            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo));
+            $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(pdo: $pdo, tablePrefix: $readTablePrefix()));
             $samples = $stardust->cardinalitySampler()->report($tenantId, $modelId);
 
             if ($samples === []) {
@@ -471,6 +485,7 @@ switch ($command) {
             $pdo = $buildPdo();
             $stardust = new \StarDust\StarDust(new \StarDust\Config\Config(
                 pdo: $pdo,
+                tablePrefix: $readTablePrefix(),
                 pdoConnector: $exports ? $buildConnector() : null,
             ));
             $report = $stardust->tick($budget, $advisories, $exports);
