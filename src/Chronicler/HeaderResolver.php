@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Chronicler;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Resolves the field-name list for a model's CSV header (also reused
@@ -21,16 +22,18 @@ use PDO;
  */
 final class HeaderResolver
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     /** @return list<string> */
     public function resolve(int $tenantId, int $modelId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT f.name FROM stardust_fields f'
-            . ' INNER JOIN stardust_models m ON m.id = f.model_id'
+            'SELECT f.name FROM ' . $this->tables->fields . ' f'
+            . ' INNER JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             // ADR 0037: a field being deleted drops out of the header
             // immediately, so a CSV artifact never carries a column for
             // a field the registry has already severed.
@@ -65,8 +68,8 @@ final class HeaderResolver
     public function resolveAliases(int $tenantId, int $modelId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT f.name, f.previous_name FROM stardust_fields f'
-            . ' INNER JOIN stardust_models m ON m.id = f.model_id'
+            'SELECT f.name, f.previous_name FROM ' . $this->tables->fields . ' f'
+            . ' INNER JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             . ' WHERE f.model_id = ? AND m.tenant_id = ?'
             . '   AND f.previous_name IS NOT NULL'
             // Consistency with resolve() above: a field excluded from

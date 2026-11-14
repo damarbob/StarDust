@@ -182,6 +182,7 @@ Some vocabulary here is specific to StarDust, such as *slot*, *page*, *spread* a
 **What works today:**
 
 - **Schema bootstrap** provisions every table the engine needs, idempotently and without touching existing data.
+- **A shared database.** Set `tablePrefix` (or `STARDUST_TABLE_PREFIX` for the CLI) and every table, named constraint, advisory lock and daemon file carries it, so StarDust can live in a database that other applications use, and two installations can share one. With no prefix the tables keep their bare names, and the rest of this README writes them that way.
 - The **slot and page system** allocates `entry_slots_page_N` extension pages automatically, indexes them according to each field's `is_filterable` flag, and reserves free slots atomically. Reservation keeps a model's filterable fields together on as few pages as it can, so filtered queries stay at fewer joins as a model grows.
 - **Writes** come in three forms: single-entry, synchronous chunked bulk (≤ 1 000 per call), and async submission for larger batches. They stay available even when slot capacity is exhausted. The value still lands in the JSON payload and is queued for backfill.
 - **Entry updates and deletes.** `updateEntry()` replaces an entry's fields wholesale, rewriting both the JSON payload and the indexed slot columns, and clearing the slot of any field the new payload omits so a filter can never match a stale value. `deleteEntry()` soft-deletes: one timestamp, after which the entry is gone from reads, filters, point-reads, and exports alike.
@@ -410,7 +411,7 @@ $entries = $engine->getMany(tenantId: 1, entryIds: $ids);
 
 ## Construction & schema bootstrap
 
-Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the 47 optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
+Constructing `StarDust`, `bootstrap()`, `schemaBuilder()`, the `listModels()` / `describeModel()` introspection pair, and the 48 optional `Config` parameters: [docs/configuration.md](docs/configuration.md).
 
 ## Writing entries
 

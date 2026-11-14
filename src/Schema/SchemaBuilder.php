@@ -15,6 +15,7 @@ use StarDust\Exception\ModelDeletionInProgressException;
 use StarDust\Slot\SlotAssignment;
 use StarDust\Slot\SlotReserver;
 use StarDust\Support\ModelDeletionProbe;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -66,6 +67,7 @@ final class SchemaBuilder
         private readonly ClockInterface $clock,
         private readonly LoggerInterface $logger,
         private readonly ?SlotReserver $slotReserver = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -228,7 +230,7 @@ final class SchemaBuilder
     private function modelHasEntries(int $tenantId, int $modelId): bool
     {
         $stmt = $this->pdo->prepare(
-            'SELECT 1 FROM entry_data WHERE tenant_id = ? AND model_id = ? LIMIT 1'
+            'SELECT 1 FROM ' . $this->tables->entryData . ' WHERE tenant_id = ? AND model_id = ? LIMIT 1'
         );
         $stmt->execute([$tenantId, $modelId]);
 
@@ -237,7 +239,7 @@ final class SchemaBuilder
 
     private function tenantIdOfModel(int $modelId): ?int
     {
-        $stmt = $this->pdo->prepare('SELECT tenant_id FROM stardust_models WHERE id = ?');
+        $stmt = $this->pdo->prepare('SELECT tenant_id FROM ' . $this->tables->models . ' WHERE id = ?');
         $stmt->execute([$modelId]);
         $tenantId = $stmt->fetchColumn();
 
@@ -284,7 +286,7 @@ final class SchemaBuilder
     private function findModelId(int $tenantId, string $name): ?int
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM stardust_models'
+            'SELECT id FROM ' . $this->tables->models
             . ' WHERE tenant_id = ? AND name = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$tenantId, $name]);
@@ -300,7 +302,7 @@ final class SchemaBuilder
     private function insertModel(int $tenantId, string $name, string $now): int
     {
         $stmt = $this->pdo->prepare(
-            'INSERT INTO stardust_models (tenant_id, name, created_at) VALUES (?, ?, ?)'
+            'INSERT INTO ' . $this->tables->models . ' (tenant_id, name, created_at) VALUES (?, ?, ?)'
         );
 
         try {
@@ -328,7 +330,7 @@ final class SchemaBuilder
     private function nameHeldByDeletedModel(int $tenantId, string $name): bool
     {
         $stmt = $this->pdo->prepare(
-            'SELECT 1 FROM stardust_models'
+            'SELECT 1 FROM ' . $this->tables->models
             . ' WHERE tenant_id = ? AND name = ? AND deleted_at IS NOT NULL'
             . ' LIMIT 1'
         );
@@ -352,7 +354,7 @@ final class SchemaBuilder
     private function findFieldId(int $modelId, string $name): ?int
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM stardust_fields'
+            'SELECT id FROM ' . $this->tables->fields
             . ' WHERE model_id = ? AND name = ? AND deleted_at IS NULL'
         );
         $stmt->execute([$modelId, $name]);
@@ -397,7 +399,7 @@ final class SchemaBuilder
         }
 
         $stmt = $this->pdo->prepare(
-            'INSERT INTO stardust_fields'
+            'INSERT INTO ' . $this->tables->fields
             . ' (model_id, name, declared_type, is_filterable, created_at, updated_at)'
             . ' VALUES (?, ?, ?, ?, ?, ?)'
         );
@@ -434,13 +436,13 @@ final class SchemaBuilder
 
     private function modelIsDeleting(int $modelId): bool
     {
-        return ModelDeletionProbe::isDeleting($this->pdo, $modelId);
+        return ModelDeletionProbe::isDeleting($this->pdo, $modelId, $this->tables);
     }
 
     private function nameHeldByDeletedField(int $modelId, string $name): bool
     {
         $stmt = $this->pdo->prepare(
-            'SELECT 1 FROM stardust_fields'
+            'SELECT 1 FROM ' . $this->tables->fields
             . ' WHERE model_id = ? AND name = ? AND deleted_at IS NOT NULL'
             . ' LIMIT 1'
         );
@@ -461,7 +463,7 @@ final class SchemaBuilder
     private function bumpSchemaVersion(string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_schema_version SET version = version + 1, updated_at = ? WHERE id = 1'
+            'UPDATE ' . $this->tables->schemaVersion . ' SET version = version + 1, updated_at = ? WHERE id = 1'
         );
         $stmt->execute([$now]);
     }

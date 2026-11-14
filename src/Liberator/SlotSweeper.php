@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use PDO;
 use PDOException;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\TableNames;
 use Throwable;
 use StarDust\Support\RetryableLockFailure;
 
@@ -96,6 +97,7 @@ final class SlotSweeper
         private readonly int $interChunkDelayMicros,
         private readonly int $deadlockRetryBudget,
         ?callable $sleepFn = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         if ($this->chunkSize < 1) {
             throw new InvalidArgumentException('SlotSweeper chunkSize must be >= 1.');
@@ -324,7 +326,7 @@ final class SlotSweeper
                 ? ', sweep_gap_count = sweep_gap_count + ' . $pendingGapCount
                 : '';
             $stmt = $this->pdo->prepare(
-                'UPDATE stardust_slot_assignments SET sweep_cursor_id = ?' . $gapClause
+                'UPDATE ' . $this->tables->slotAssignments . ' SET sweep_cursor_id = ?' . $gapClause
                 . " WHERE id = ? AND status = 'tombstoned'"
             );
             $stmt->execute([$newCursor, $slot->slotAssignmentId]);
@@ -342,13 +344,13 @@ final class SlotSweeper
                 // and a recycled column can no longer resume from its
                 // previous occupant's cursor.
                 $stmt = $this->pdo->prepare(
-                    "UPDATE stardust_slot_assignments SET status = 'free', field_id = NULL"
+                    "UPDATE {$this->tables->slotAssignments} SET status = 'free', field_id = NULL"
                     . " WHERE id = ? AND status = 'tombstoned'"
                 );
                 $stmt->execute([$slot->slotAssignmentId]);
 
                 $this->pdo->exec(
-                    'UPDATE stardust_schema_version SET version = version + 1, updated_at = UTC_TIMESTAMP() WHERE id = 1'
+                    'UPDATE ' . $this->tables->schemaVersion . ' SET version = version + 1, updated_at = UTC_TIMESTAMP() WHERE id = 1'
                 );
             }
 

@@ -35,10 +35,10 @@ use PDO;
 final class ModelDeletionProbe
 {
     /** True iff the model exists AND its deletion is in flight. */
-    public static function isDeleting(PDO $pdo, int $modelId): bool
+    public static function isDeleting(PDO $pdo, int $modelId, TableNames $tables = new TableNames()): bool
     {
         $stmt = $pdo->prepare(
-            'SELECT 1 FROM stardust_models WHERE id = ? AND deleted_at IS NOT NULL LIMIT 1'
+            'SELECT 1 FROM ' . $tables->models . ' WHERE id = ? AND deleted_at IS NOT NULL LIMIT 1'
         );
         $stmt->execute([$modelId]);
 
@@ -55,7 +55,7 @@ final class ModelDeletionProbe
      * @param  list<int> $modelIds
      * @return list<int>
      */
-    public static function deletingAmong(PDO $pdo, array $modelIds): array
+    public static function deletingAmong(PDO $pdo, array $modelIds, TableNames $tables = new TableNames()): array
     {
         $unique = array_values(array_unique($modelIds));
         if ($unique === []) {
@@ -64,7 +64,7 @@ final class ModelDeletionProbe
 
         $placeholders = implode(',', array_fill(0, count($unique), '?'));
         $stmt = $pdo->prepare(
-            "SELECT id FROM stardust_models WHERE id IN ({$placeholders})"
+            "SELECT id FROM {$tables->models} WHERE id IN ({$placeholders})"
             . ' AND deleted_at IS NOT NULL ORDER BY id'
         );
         $stmt->execute($unique);

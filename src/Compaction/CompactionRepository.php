@@ -7,6 +7,7 @@ namespace StarDust\Compaction;
 use PDO;
 use StarDust\Slot\IndexedFreeCapacityReader;
 use StarDust\Support\ModelDeletionProbe;
+use StarDust\Support\TableNames;
 
 /**
  * The two registry reads {@see CompactionPlanner} needs.
@@ -20,8 +21,10 @@ use StarDust\Support\ModelDeletionProbe;
  */
 final class CompactionRepository
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     /**
@@ -40,7 +43,7 @@ final class CompactionRepository
      */
     public function modelIsDeleting(int $modelId): bool
     {
-        return ModelDeletionProbe::isDeleting($this->pdo, $modelId);
+        return ModelDeletionProbe::isDeleting($this->pdo, $modelId, $this->tables);
     }
 
     /**
@@ -69,9 +72,9 @@ final class CompactionRepository
         $stmt = $this->pdo->prepare(
             'SELECT f.id AS field_id, f.name AS field_name,'
             . ' sa.slot_type, sa.page_id, sa.slot_column'
-            . ' FROM stardust_slot_assignments sa'
-            . ' JOIN stardust_fields f ON f.id = sa.field_id'
-            . ' JOIN stardust_models m ON m.id = f.model_id'
+            . ' FROM ' . $this->tables->slotAssignments . ' sa'
+            . ' JOIN ' . $this->tables->fields . ' f ON f.id = sa.field_id'
+            . ' JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             . " WHERE m.tenant_id = ? AND f.model_id = ?"
             . "   AND sa.status IN ('assigned','ready') AND f.is_filterable = 1"
             . ' ORDER BY sa.page_id, sa.id'
@@ -106,6 +109,6 @@ final class CompactionRepository
      */
     public function loadIndexedFreeCapacity(): array
     {
-        return (new IndexedFreeCapacityReader($this->pdo))->load();
+        return (new IndexedFreeCapacityReader($this->pdo, tables: $this->tables))->load();
     }
 }

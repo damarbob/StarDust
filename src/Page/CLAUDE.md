@@ -20,6 +20,6 @@ See `src/Bootstrap/CLAUDE.md` ("Extension pages") for why string slots are `TEXT
 
 ## `EmptyTableGuard` (ADR 0012)
 
-`EmptyTableGuard::assertEmpty(PDO, string $tableName)` whitelists the `entry_slots_page_{N}` name shape, probes `SELECT 1 FROM <table> LIMIT 1`, and throws `PopulatedPageDDLException` if a row exists.
+`EmptyTableGuard::assertEmpty(PDO, string $tableName, TableNames $tables = new TableNames())` whitelists the `{prefix}entry_slots_page_{N}` name shape through `TableNames::isPageTable()` (ADR 0059; the bare shape with no prefix), probes `SELECT 1 FROM <table> LIMIT 1`, and throws `PopulatedPageDDLException` if a row exists.
 
 Phase 2's production path never trips this — it only creates fresh empty pages. The helper is the canonical pre-DDL check later phases must consult **before mutating any extension page**.

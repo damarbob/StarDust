@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
+use StarDust\Support\TableNames;
 
 /**
  * The persisted advisory-sample schedule (ADR 0052).
@@ -66,6 +67,7 @@ final class AdvisoryScheduleRepository
     public function __construct(
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -82,7 +84,7 @@ final class AdvisoryScheduleRepository
     public function read(): ?int
     {
         $stmt = $this->pdo->prepare(
-            'SELECT next_sample_at FROM stardust_advisory_schedule WHERE id = 1'
+            'SELECT next_sample_at FROM ' . $this->tables->advisorySchedule . ' WHERE id = 1'
         );
         $stmt->execute();
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -106,7 +108,7 @@ final class AdvisoryScheduleRepository
         $this->seed();
 
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_advisory_schedule'
+            'UPDATE ' . $this->tables->advisorySchedule
             . ' SET next_sample_at = ?, updated_at = ?'
             . ' WHERE id = 1 AND next_sample_at IS NULL'
         );
@@ -130,7 +132,7 @@ final class AdvisoryScheduleRepository
 
         // Positional, with $now bound three times — see trap 2.
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_advisory_schedule'
+            'UPDATE ' . $this->tables->advisorySchedule
             . ' SET next_sample_at = ?, last_sample_at = ?, updated_at = ?'
             . ' WHERE id = 1 AND next_sample_at IS NOT NULL AND next_sample_at <= ?'
         );
@@ -154,7 +156,7 @@ final class AdvisoryScheduleRepository
         $now = $this->toSql($nowEpoch);
 
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_advisory_schedule'
+            'UPDATE ' . $this->tables->advisorySchedule
             . ' SET next_sample_at = ?, last_sample_at = ?, updated_at = ?'
             . ' WHERE id = 1'
         );
@@ -164,7 +166,7 @@ final class AdvisoryScheduleRepository
     private function seed(): void
     {
         $stmt = $this->pdo->prepare(
-            'INSERT INTO stardust_advisory_schedule (id, next_sample_at, last_sample_at, updated_at)'
+            'INSERT INTO ' . $this->tables->advisorySchedule . ' (id, next_sample_at, last_sample_at, updated_at)'
             . ' VALUES (1, NULL, NULL, ?)'
             . ' ON DUPLICATE KEY UPDATE id = id'
         );

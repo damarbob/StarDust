@@ -7,6 +7,7 @@ namespace StarDust\Watcher;
 use PDO;
 use Psr\Log\LoggerInterface;
 use StarDust\Support\PdoQuery;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 
 /**
@@ -43,6 +44,7 @@ final class CardinalitySampler
         private readonly float $selectivityThreshold,
         private readonly int $rowFloor,
         private readonly int $distinctFloor,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -104,9 +106,9 @@ final class CardinalitySampler
     {
         $sql = 'SELECT a.id AS slot_assignment_id, a.field_id, a.page_id, a.slot_column,'
             . ' p.table_name'
-            . ' FROM stardust_slot_assignments a'
-            . ' JOIN stardust_pages p ON p.id = a.page_id'
-            . ' LEFT JOIN stardust_fields f ON f.id = a.field_id'
+            . ' FROM ' . $this->tables->slotAssignments . ' a'
+            . ' JOIN ' . $this->tables->pages . ' p ON p.id = a.page_id'
+            . ' LEFT JOIN ' . $this->tables->fields . ' f ON f.id = a.field_id'
             . " WHERE a.status IN ('assigned','ready')";
 
         $params = [];
@@ -154,8 +156,8 @@ final class CardinalitySampler
         $stmt = $this->pdo->prepare(
             'SELECT a.id AS slot_assignment_id, a.field_id, a.page_id, a.slot_column,'
             . ' p.table_name'
-            . ' FROM stardust_slot_assignments a'
-            . ' JOIN stardust_pages p ON p.id = a.page_id'
+            . ' FROM ' . $this->tables->slotAssignments . ' a'
+            . ' JOIN ' . $this->tables->pages . ' p ON p.id = a.page_id'
             . " WHERE a.id = ? AND a.status IN ('assigned','ready')"
         );
         $stmt->execute([$slotAssignmentId]);

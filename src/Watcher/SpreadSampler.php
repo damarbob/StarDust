@@ -7,6 +7,7 @@ namespace StarDust\Watcher;
 use PDO;
 use Psr\Log\LoggerInterface;
 use StarDust\Slot\IndexedFreeCapacityReader;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 
 /**
@@ -63,6 +64,7 @@ final class SpreadSampler
         private readonly LoggerInterface $logger,
         private readonly int $excessPageThreshold,
         private readonly IndexedFreeCapacityReader $capacityReader,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -136,9 +138,9 @@ final class SpreadSampler
     private function collect(?int $tenantId, ?int $modelId): array
     {
         $sql = 'SELECT m.tenant_id, f.model_id, sa.page_id, sa.slot_column'
-            . ' FROM stardust_slot_assignments sa'
-            . ' JOIN stardust_fields f ON f.id = sa.field_id'
-            . ' JOIN stardust_models m ON m.id = f.model_id'
+            . ' FROM ' . $this->tables->slotAssignments . ' sa'
+            . ' JOIN ' . $this->tables->fields . ' f ON f.id = sa.field_id'
+            . ' JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             . " WHERE sa.status IN ('assigned','ready') AND f.is_filterable = 1";
 
         $params = [];

@@ -8,6 +8,7 @@ use PDO;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\EntryDataMissingException;
 use StarDust\Exception\UncoercibleSlotValueException;
+use StarDust\Support\TableNames;
 use StarDust\Write\BackfillExecutor;
 use Throwable;
 use Closure;
@@ -86,6 +87,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
         private readonly int $lockRetryBudget = 3,
         private readonly int $retryDelayMicros = 0,
         ?callable $sleepFn = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $this->sleepFn = $sleepFn !== null
             ? Closure::fromCallable($sleepFn)
@@ -314,7 +316,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
     private function claimChunk(): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, entry_id, origin_correlation_id FROM stardust_sync_queue'
+            'SELECT id, entry_id, origin_correlation_id FROM ' . $this->tables->syncQueue
             . ' ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED'
         );
         $stmt->bindValue(1, $this->chunkSize, PDO::PARAM_INT);
@@ -338,7 +340,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
         // is missing the source row is gone, so we record `0/0`; the
         // chunk_correlation_id still ties the row back to the events.
         $stmt = $this->pdo->prepare(
-            'SELECT tenant_id, model_id FROM entry_data WHERE id = ?'
+            'SELECT tenant_id, model_id FROM ' . $this->tables->entryData . ' WHERE id = ?'
         );
         $stmt->execute([$entryId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -371,7 +373,7 @@ final class SyncQueueWorkSource implements ReconcilerWorkSource
 
         $placeholders = implode(',', array_fill(0, count($queueIds), '?'));
         $stmt = $this->pdo->prepare(
-            "DELETE FROM stardust_sync_queue WHERE id IN ({$placeholders})"
+            "DELETE FROM {$this->tables->syncQueue} WHERE id IN ({$placeholders})"
         );
         $stmt->execute($queueIds);
     }

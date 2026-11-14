@@ -8,6 +8,7 @@ Test conventions: fixtures, base classes and the traps they guard against. [TEST
 - **Keep tests strict-clean.** `phpunit.xml.dist` sets `failOnWarning`, `failOnRisky`, `beStrictAboutOutputDuringTests` and `beStrictAboutTestsThatDoNotTestAnything`.
 - **Guard every `tearDown()` with `isset($this->pdo)`.** PHPUnit still calls `tearDown` after a `markTestSkipped()` or `fail()` in `setUp`, leaving the typed property uninitialised.
 - **A test that opens its own PDO takes its options from `Support\TestPdo::options()`**, so it follows whatever prepare mode the CI cell runs.
+- **Tests write the bare table names in their own SQL.** Only `Prefix/TablePrefixInstallationTest` runs under a table prefix (ADR 0059), and it does so in a database it creates and drops, so a query that missed the prefix hits a missing table and not a bare table another test left behind. New SQL in `src/` takes its names from `Support\TableNames`, and `Conventions/TableNamesConventionTest` fails when it does not. A class built by hand in a test needs no `TableNames` argument, because it defaults to the bare names.
 - **`str_getcsv()` in helpers passes `''` as `$escape`** explicitly (PHP 8.4 deprecation, and the RFC 4180-correct choice).
 
 ## The per-test clean slate
@@ -52,7 +53,7 @@ Each base class extends the one above it and adds helpers. Use the lowest one th
 
 ## DB-free tests and special fixtures
 
-- **Pure-PHP tests need no database**: `EventVocabularyTest`, everything under `Conventions/`, `Watcher/ProvisioningPlannerTest`, `Watcher/SpreadFormulaTest`, `Slot/IndexedSlotPredicateTest`, `Retype/RetypeCoercionMatrixTest`, `Retype/DatetimeSpellingAgreementTest`, `Support/DatetimeRolloverTest`, `Daemon/PidFileGuardTest`, `Daemon/PollLoopTest` and `Daemon/TickBudgetTest`.
+- **Pure-PHP tests need no database**: `EventVocabularyTest`, everything under `Conventions/`, `Watcher/ProvisioningPlannerTest`, `Watcher/SpreadFormulaTest`, `Slot/IndexedSlotPredicateTest`, `Retype/RetypeCoercionMatrixTest`, `Retype/DatetimeSpellingAgreementTest`, `Support/DatetimeRolloverTest`, `Daemon/PidFileGuardTest`, `Daemon/PollLoopTest`, `Daemon/TickBudgetTest` and `Support/TableNamesTest`.
 - **Custom drivers.** `Support/DelegatingSearchDriver` implements `EntrySearchInterface` only, and `Support/BatchDelegatingSearchDriver` adds `BatchPointReadInterface`. Both wrap a real driver and record what reaches them, so use them for a test about what the facade hands a driver.
 - **Injected lock failures.** `Support/LockFailureInjectingPdo` (used by `Reconciler/WorkSourceLockRetryTest`) and the private wrappers in `Liberator/LiberatorDeadlockRetryTest` and `Chronicler/ChroniclerDeadlockRetryTest` wrap the test PDO in a subclass created with `ReflectionClass::newInstanceWithoutConstructor()`, because PDO's constructor needs a live DSN and `PDOStatement`'s is private. They delegate every method to the real connection and inject the failure where needed. Reuse the shared one for new tests.
 - **Disk full.** `Support/FailWriteStreamWrapper` registers a `failwrite://` scheme whose every write returns `0`. `Chronicler/ChroniclerDiskFullTest` uses it to trip `ChroniclerArtifactDiskFullException` on both the row path and the header path.

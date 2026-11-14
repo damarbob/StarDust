@@ -69,7 +69,7 @@ $company?->indexedFields();
 
 Each field reports **two** flags, and the difference matters. `isFilterable` is the declared intent recorded in the registry; `isIndexed` is whether a filter against the field will work *right now*. They diverge for the whole of a promotion or retype backfill, and for a newly registered filterable field that did not get a slot at registration (its model already had entries, or no indexed slot was free) until its first write has been processed by a running Reconciler, which is when the field gets its slot. A filter on such a field is rejected with `FieldNotFilterableException` until then. Build your filter UI against `isIndexed` and you will never offer a filter the engine rejects.
 
-The daemons, exports, model deletion, index headroom, and the combined tick are tuned through 47 optional `Config` parameters:
+The daemons, exports, model deletion, index headroom, and the combined tick are tuned through 48 optional `Config` parameters:
 
 ```php
 $engine = new StarDust(new Config(
@@ -118,6 +118,7 @@ $engine = new StarDust(new Config(
     tickBudgetMarginSeconds:             5,         // subtracted from max_execution_time when the SAPI reports one
     lockNamespace:                       null,      // null = derive from the database name — see below
     reserveSlotAtRegistration:           true,      // reserve a slot when a filterable field is registered on a model with no entries
+    tablePrefix:                         null,      // null = no prefix; 'sd_' goes in front of every table name, see below
 ));
 ```
 
@@ -125,8 +126,25 @@ $engine = new StarDust(new Config(
 
 **The pre-claim disk gate is two checks, not one.** `chroniclerLowDiskThresholdPct` is the original free-space-ratio floor; `chroniclerDiskProbeBytes` adds a small write probe into the artifact directory on every claim attempt, because a per-account quota can leave a filesystem reporting itself mostly free while every write still fails. Set `chroniclerDiskProbeBytes` to `0` to disable the probe and fall back to the ratio-only check. See [Deployment requirements](deployment.md) for what the combined gate does and does not protect you from, and [Async exports](exports.md) for how a claim behaves once it trips.
 
-**`lockNamespace` almost never needs setting, but is worth understanding if you are on shared hosting.** StarDust takes two MySQL advisory locks, and MySQL scopes advisory lock names to the *server*, not to your database — so on a host where many accounts share one MySQL server, two StarDust installations would otherwise compete for the same lock names and each would periodically stall waiting for the other. Left at `null`, StarDust derives a private namespace from your database name, which is correct automatically and needs no action from you.
+**`lockNamespace` almost never needs setting, but is worth understanding if you are on shared hosting.** StarDust takes two MySQL advisory locks, and MySQL scopes advisory lock names to the *server*, not to your database — so on a host where many accounts share one MySQL server, two StarDust installations would otherwise compete for the same lock names and each would periodically stall waiting for the other. Left at `null`, StarDust derives a private namespace from your database name and your table prefix, which is correct automatically and needs no action from you.
 
 Set it explicitly only in two situations: you are renaming the database and want the lock identity to stay put across the move, or you are deliberately running two installations that should coordinate as one. Any non-empty string works — it is only an identifier, never a secret, and the value never leaves your server.
 
 One upgrade note: locks named under the old scheme and the new one do not recognise each other, so **stop your daemons (or pause the cron line) while deploying this version** rather than restarting them one at a time. On a cron schedule, that is a single skipped run.
+
+**`tablePrefix` lets StarDust share a database with other applications.** By default StarDust creates its tables with bare names such as `entry_data`, `stardust_models` and `entry_slots_page_1`, and assumes that nothing else in the database uses those names. A host that gives you a single database often breaks that assumption. Set `tablePrefix` and every table StarDust creates gets that text in front of its name, so with `sd_` the tables are `sd_entry_data`, `sd_stardust_models`, `sd_entry_slots_page_1` and so on, and an application that owns its own `entry_data` keeps it untouched. The rest of this documentation writes the tables with their bare names, so read the prefix in front of each one if you use it.
+
+```php
+$engine = new StarDust(new Config(pdo: $pdo, tablePrefix: 'sd_'));
+$engine->bootstrap();
+```
+
+| Topic | What holds |
+| :-- | :-- |
+| What a prefix may be | 1 to 16 characters, lowercase letters, digits and underscores, starting with a letter. Anything else throws `InvalidArgumentException` when the `Config` is built. The prefix is joined as written, so write `sd_` and not `sd`. |
+| What it covers | Every table, the named constraints inside them, the advisory lock names, and the watcher's pid file and the shutdown flag files. Nothing else in your database is touched. |
+| When to choose it | Before the first `bootstrap()`. StarDust does not rename tables, so pointing a database that already holds data at a different prefix starts a second, empty installation beside the first. |
+| Command line | Set `STARDUST_TABLE_PREFIX` next to `STARDUST_DSN`. Unset or empty means no prefix. |
+| Two installations in one database | Give each its own prefix, such as `prod_` and `stage_`. They share no tables, they take different lock names, and their daemons never wait for each other. |
+
+A prefix separates the tables and not the permissions, because both installations connect as the same MySQL user. Separating tenants inside one installation is still done by `tenant_id`.

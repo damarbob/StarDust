@@ -12,6 +12,7 @@ use Psr\Log\LoggerInterface;
 use StarDust\Daemon\YieldSignal;
 use StarDust\Exception\ChroniclerArtifactDiskFullException;
 use StarDust\Exception\ChroniclerRowEncodingException;
+use StarDust\Support\TableNames;
 use Throwable;
 
 /**
@@ -107,6 +108,7 @@ final class ExportJobProcessor
         private readonly array $dbDisconnectBackoffSeconds,
         ?callable $sleepFn = null,
         private readonly ?PdoConnector $connector = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $this->sleepFn = $sleepFn ?? static fn (int $micros) => usleep($micros);
     }
@@ -431,7 +433,7 @@ final class ExportJobProcessor
         try {
             if ($isFinal) {
                 $stmt = $this->pdo->prepare(
-                    'UPDATE stardust_export_jobs'
+                    'UPDATE ' . $this->tables->exportJobs
                     . " SET last_cursor = ?, heartbeat_at = ?, skip_count = ?,"
                     . "     status = 'completed', artifact_path = ?, artifact_bytes = ?, completed_at = ?"
                     . ' WHERE id = ? AND worker_identity = ?'
@@ -441,7 +443,7 @@ final class ExportJobProcessor
                 ]);
             } elseif ($yield) {
                 $stmt = $this->pdo->prepare(
-                    'UPDATE stardust_export_jobs'
+                    'UPDATE ' . $this->tables->exportJobs
                     . " SET last_cursor = ?, heartbeat_at = ?, skip_count = ?,"
                     . "     artifact_path = ?, artifact_bytes = ?,"
                     . "     status = 'pending', worker_identity = NULL"
@@ -452,7 +454,7 @@ final class ExportJobProcessor
                 ]);
             } else {
                 $stmt = $this->pdo->prepare(
-                    'UPDATE stardust_export_jobs'
+                    'UPDATE ' . $this->tables->exportJobs
                     . ' SET last_cursor = ?, heartbeat_at = ?, skip_count = ?,'
                     . '     artifact_path = ?, artifact_bytes = ?'
                     . ' WHERE id = ? AND worker_identity = ?'
@@ -567,7 +569,7 @@ final class ExportJobProcessor
         try {
             if ($preserveCursor && $lastCursor !== null && $skipCount !== null) {
                 $stmt = $this->pdo->prepare(
-                    'UPDATE stardust_export_jobs'
+                    'UPDATE ' . $this->tables->exportJobs
                     . " SET status = 'failed', failed_reason = ?, completed_at = ?,"
                     . '     heartbeat_at = ?, last_cursor = ?, skip_count = ?,'
                     . '     artifact_path = NULL, artifact_bytes = NULL'
@@ -578,7 +580,7 @@ final class ExportJobProcessor
                 ]);
             } else {
                 $stmt = $this->pdo->prepare(
-                    'UPDATE stardust_export_jobs'
+                    'UPDATE ' . $this->tables->exportJobs
                     . " SET status = 'failed', failed_reason = ?, completed_at = ?, heartbeat_at = ?,"
                     . '     artifact_path = NULL, artifact_bytes = NULL'
                     . ' WHERE id = ? AND worker_identity = ?'
@@ -645,7 +647,7 @@ final class ExportJobProcessor
                 continue; // still down — next delay
             }
             $this->pdo = $fresh;
-            $this->pager = new EntryDataPager($fresh);
+            $this->pager = new EntryDataPager($fresh, tables: $this->tables);
             return true;
         }
         return false;

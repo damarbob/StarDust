@@ -12,6 +12,7 @@ use StarDust\Clock\SystemClock;
 use StarDust\Filter\Limits\FilterLimits;
 use StarDust\Logging\StdoutNdjsonLogger;
 use StarDust\Search\EntrySearchInterface;
+use StarDust\Support\TableNames;
 
 /**
  * Construction-time configuration object. (ADR 0026 grounds only the
@@ -82,6 +83,13 @@ final class Config
      * write, as it did before.
      */
     public readonly bool $reserveSlotAtRegistration;
+    /**
+     * ADR 0059, the text put in front of every table and named constraint
+     * this installation creates, so StarDust can share a database with
+     * another application or with a second installation. `null` means
+     * none, which is the bare names every earlier installation has.
+     */
+    public readonly ?string $tablePrefix;
     public readonly ?EntrySearchInterface $searchDriver;
     public readonly FilterLimits $queryFilterLimits;
     public readonly ?PdoConnector $pdoConnector;
@@ -139,6 +147,7 @@ final class Config
         ?int $chroniclerDiskProbeBytes = null,
         ?string $lockNamespace = null,
         ?bool $reserveSlotAtRegistration = null,
+        ?string $tablePrefix = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
         $this->logger = $logger ?? new StdoutNdjsonLogger($this->clock);
@@ -303,5 +312,10 @@ final class Config
         // ADR 0058. On by default. Off keeps the slot lazy, reserved after
         // the field's first write.
         $this->reserveSlotAtRegistration = $reserveSlotAtRegistration ?? true;
+
+        // ADR 0059. Validated here so a bad prefix fails when the Config is
+        // built and not at the first query. An empty string means none.
+        new TableNames($tablePrefix);
+        $this->tablePrefix = $tablePrefix === '' ? null : $tablePrefix;
     }
 }

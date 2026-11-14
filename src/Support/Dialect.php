@@ -95,19 +95,19 @@ final class Dialect
      * has exactly one caller and does not meet this class's
      * more-than-one-package threshold for living here.
      */
-    public static function liveSlotUniqueIndexDdl(ServerEngine $engine): string
+    public static function liveSlotUniqueIndexDdl(ServerEngine $engine, TableNames $tables = new TableNames()): string
     {
         return match ($engine) {
-            ServerEngine::MYSQL => <<<'SQL'
+            ServerEngine::MYSQL => <<<SQL
                 CREATE UNIQUE INDEX ux_slot_assignments_field_live
-                    ON stardust_slot_assignments (
+                    ON {$tables->slotAssignments} (
                         (CASE WHEN status IN ('assigned', 'backfilling', 'ready')
                               THEN field_id END)
                     )
                 SQL,
-            ServerEngine::MARIADB => <<<'SQL'
+            ServerEngine::MARIADB => <<<SQL
                 CREATE UNIQUE INDEX ux_slot_assignments_field_live
-                    ON stardust_slot_assignments (live_field_id)
+                    ON {$tables->slotAssignments} (live_field_id)
                 SQL,
         };
     }

@@ -6,6 +6,7 @@ namespace StarDust\Retype;
 
 use PDO;
 use StarDust\Support\LikePattern;
+use StarDust\Support\TableNames;
 
 /**
  * Encapsulates all reads/writes against `backfill_checkpoints` whose
@@ -22,8 +23,10 @@ final class RetypeCheckpointRepository
 {
     public const JOB_NAME_PREFIX = 'retype_field_';
 
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     public static function jobNameFor(int $fieldId): string
@@ -48,10 +51,10 @@ final class RetypeCheckpointRepository
             . ' f.declared_type AS target_declared_type,'
             . ' f.is_filterable AS target_is_filterable,'
             . ' f.model_id, m.tenant_id'
-            . ' FROM backfill_checkpoints c'
-            . ' JOIN stardust_fields f'
+            . ' FROM ' . $this->tables->backfillCheckpoints . ' c'
+            . ' JOIN ' . $this->tables->fields . ' f'
             . '   ON f.id = CAST(SUBSTRING(c.job_name, ' . (strlen(self::JOB_NAME_PREFIX) + 1) . ') AS UNSIGNED)'
-            . ' JOIN stardust_models m ON m.id = f.model_id'
+            . ' JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             . " WHERE c.status = 'running' AND c.job_name LIKE ? ESCAPE '\\\\'"
             . ' ORDER BY c.id'
             . ' LIMIT 1 FOR UPDATE SKIP LOCKED'
@@ -78,7 +81,7 @@ final class RetypeCheckpointRepository
     public function existsRunningForField(int $fieldId): bool
     {
         $stmt = $this->pdo->prepare(
-            "SELECT 1 FROM backfill_checkpoints"
+            "SELECT 1 FROM {$this->tables->backfillCheckpoints}"
             . " WHERE job_name = ? AND status = 'running'"
             . ' LIMIT 1'
         );
@@ -115,8 +118,8 @@ final class RetypeCheckpointRepository
     {
         $stmt = $this->pdo->prepare(
             'SELECT 1'
-            . ' FROM backfill_checkpoints c'
-            . ' JOIN stardust_fields f'
+            . ' FROM ' . $this->tables->backfillCheckpoints . ' c'
+            . ' JOIN ' . $this->tables->fields . ' f'
             . '   ON f.id = CAST(SUBSTRING(c.job_name, ' . (strlen(self::JOB_NAME_PREFIX) + 1) . ') AS UNSIGNED)'
             . " WHERE c.status = 'running' AND c.job_name LIKE ? ESCAPE '\\\\'"
             . '   AND f.model_id = ?'
@@ -147,7 +150,7 @@ final class RetypeCheckpointRepository
     public function statusForField(int $fieldId): ?string
     {
         $stmt = $this->pdo->prepare(
-            'SELECT status FROM backfill_checkpoints WHERE job_name = ? LIMIT 1'
+            'SELECT status FROM ' . $this->tables->backfillCheckpoints . ' WHERE job_name = ? LIMIT 1'
         );
         $stmt->execute([self::jobNameFor($fieldId)]);
         $status = $stmt->fetchColumn();
@@ -199,7 +202,7 @@ final class RetypeCheckpointRepository
         ?string $correlationId = null,
     ): void {
         $stmt = $this->pdo->prepare(
-            'INSERT INTO backfill_checkpoints'
+            'INSERT INTO ' . $this->tables->backfillCheckpoints
             . ' (job_name, last_processed_id, status, started_at, updated_at,'
             . '  source_declared_type, correlation_id)'
             . " VALUES (?, 0, 'running', ?, ?, ?, ?)"
@@ -222,7 +225,7 @@ final class RetypeCheckpointRepository
     public function advance(int $checkpointId, int $newLastProcessedId, string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE backfill_checkpoints'
+            'UPDATE ' . $this->tables->backfillCheckpoints
             . ' SET last_processed_id = ?, updated_at = ?'
             . ' WHERE id = ?'
         );
@@ -232,7 +235,7 @@ final class RetypeCheckpointRepository
     public function markCompleted(int $checkpointId, int $finalCursor, string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE backfill_checkpoints'
+            'UPDATE ' . $this->tables->backfillCheckpoints
             . " SET status = 'completed',"
             . '     last_processed_id = ?,'
             . '     updated_at = ?,'

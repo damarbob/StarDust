@@ -45,3 +45,7 @@ See [ai-patterns-guide.md](ai-patterns-guide.md).
 ## Changelogs
 
 When you create or edit a changelog, read [changelog-guide.md](changelog-guide.md) first. It sets the layout and the item format.
+
+## Technical documents
+
+When you write a long technical document, such as a design document, a decision record, a blueprint or a specification, read [technical-document-guide.md](technical-document-guide.md) first, so a reader who was not in the discussion can follow it and review it.

@@ -72,6 +72,8 @@ GitHub Actions runs the same suite on every push against MySQL and against Maria
 - `Conventions/DocLinkIntegrityTest` is DB-free and scans README.md plus `docs/*.md`: every `](#anchor)` must resolve to a heading in the same file, every relative link must resolve to a real file (and a real heading, when it carries a fragment), every `##` section must be named in the Contents list, and every page under `docs/` must be linked from both the Contents list and the README body. It closes the gap that let README's Slot maintenance section point readers at "the CLI section below" after that section had already moved to `docs/cli.md`.
 - `Conventions/WritingStyleTest` is DB-free and ratchets em and en dashes per file across the human-read text (root docs, `docs/`, `src/`, `tests/`, `bin/`, `examples/`, `docker/` and `release.sh`, every `CLAUDE.md` excepted). Each file's count is pinned in `dash-baseline.json` and may only go down, a file missing from it is held at zero, and a count that drops must be lowered in the same change. It also rejects a colon or semicolon in any Markdown heading outside a code fence.
 
+- `Conventions/TableNamesConventionTest` is DB-free and scans every string under `src/` except `Support/TableNames.php`. A fixed table or constraint name that follows a SQL keyword, is qualified with a column or is compared against `table_name` fails the build, so SQL has to take its names from `TableNames`. A name assembled by concatenation is invisible to the scan, which is what the prefix suite below covers. Every guarded shape and every allowed shape (an interpolated name, a comment, a longer identifier) has a case of its own, so a green run means the scan can see what it guards.
+
 ## Field rename (ADR 0036)
 
 `tests/Smoke/Rename/` — 28 tests over the rename lifecycle, extending `Phase6bTestCase`.
@@ -169,3 +171,23 @@ Two edge cases carry their own tests because both fail silently. A **second** li
 **Not covered by an automated test.** The `SHUTDOWN` stop reason (a `ShutdownSignal` flipping mid-run) is exercised only by hand — see below — since scripting it deterministically would need the same kind of injected control the budget test already has for time, and the budget test's coverage of "the loop checks its stop conditions only between rounds" already covers the mechanism `SHUTDOWN` shares with it.
 
 **Validated end to end by hand, not only by the suite.** `bin/stardust tick --budget=5` run against a freshly bootstrapped database with one repair-needing entry queued: the Watcher provisioned a page, the Reconciler drained the queue row, and `tick_complete` reported `stop_reason: idle` — one process, one connection, no separate daemon running. Run again with a real `bin/stardust watcher` already holding its pid file: `tick` printed its skip line and exited `0`, confirming the tier's central promise — an overlapping cron firing is a no-op, not a failure a cron mail alert would need to wake anyone for.
+
+## Table prefix (ADR 0059)
+
+`tests/Smoke/Support/TableNamesTest` (DB-free) pins the names `TableNames` builds, the prefixes it accepts and rejects, and the arithmetic behind the 16 character limit, where the longest identifier is exactly 64 characters. `Conventions/TableNamesConventionTest`, described above, keeps SQL from naming a table directly.
+
+`tests/Smoke/Prefix/TablePrefixInstallationTest` runs nine tests under a prefix, in a database that the class creates and drops. **The separate database is what makes it sharp.** The rest of the suite leaves the bare StarDust tables in its own database, so a query that missed the prefix would quietly succeed against them. Here no bare table exists, so a missed prefix fails with "table does not exist". The class skips when no test database is configured or the connection may not create one.
+
+| Test | What it proves |
+| :-- | :-- |
+| Bootstrap | Exactly the twelve prefixed tables exist, nothing was created without the prefix, and every foreign key name carries it. The `CHECK` names are checked where the server stores them, which is MySQL 8.0.16 and later and MariaDB. |
+| A full lifecycle | One installation driven through `StarDust` and `tick()`. The Watcher provisions `pxa_entry_slots_page_1`, the Reconciler backfills the first writes, and search by equality and by range, a field sort, pagination, `getMany()`, update and delete all work. So do both bulk paths, an export through the Chronicler, a field rename and a retype, a compaction dry run, a field deletion with the Liberator reclaiming its slot, and a model deletion. |
+| Two installations | They number their pages from 1 separately, and deleting a model in one leaves the other's rows alone. |
+| Lock names | Two prefixes in one database take different lock names, and with no prefix the name is what `LockNamespace` gave before the prefix existed. |
+| Daemon files | One installation's running Watcher does not block the other's `tick`, and a shutdown flag file stops one installation's daemon only. |
+| An application's own tables | Bare `entry_data` and `backfill_checkpoints` tables with rows in them are unchanged after a prefixed installation bootstraps, writes and renames a field. |
+| An invalid prefix | It stops at `Config`, before any query. |
+
+**Validated by neutering.** One table name in `EntryDeleter` was built as `'entry_' . 'data'`, which the convention scan cannot see, and the lifecycle test failed with error 1146 for the missing bare table while the convention test stayed green. The same name written as a literal turned the convention test red. The lock and daemon file tests were red before the code that makes them pass was written, two failures out of nine.
+
+**Not covered.** The whole existing suite runs without a prefix only, because its tests write the bare names in their own SQL. The `Watcher` builds a default `AdvisoryScheduleRepository` for a hand-built instance, and that default uses the bare names, so only `StarDust::watcher()` carries the prefix there.

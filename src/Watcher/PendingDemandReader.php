@@ -6,6 +6,7 @@ namespace StarDust\Watcher;
 
 use PDO;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\TableNames;
 use StarDust\Write\LiveSlotMap;
 
 /**
@@ -40,8 +41,10 @@ use StarDust\Write\LiveSlotMap;
  */
 final class PendingDemandReader
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     public function read(): PendingDemand
@@ -50,7 +53,7 @@ final class PendingDemandReader
 
         $stmt = $this->pdo->prepare(
             'SELECT f.declared_type AS declared_type, COUNT(*) AS waiters'
-            . ' FROM stardust_fields f'
+            . ' FROM ' . $this->tables->fields . ' f'
             // ADR 0037 clears `is_filterable` when a deletion starts, so
             // the predicate below already excludes a deleting field. The
             // explicit `deleted_at` check is here because the
@@ -58,7 +61,7 @@ final class PendingDemandReader
             // whole page of capacity for a field that is being erased.
             . ' WHERE f.is_filterable = 1 AND f.deleted_at IS NULL'
             . '   AND NOT EXISTS ('
-            . '     SELECT 1 FROM stardust_slot_assignments a'
+            . '     SELECT 1 FROM ' . $this->tables->slotAssignments . ' a'
             . "      WHERE a.field_id = f.id AND a.status IN ({$placeholders})"
             . '   )'
             . ' GROUP BY f.declared_type'

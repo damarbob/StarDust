@@ -10,6 +10,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use StarDust\Exception\EntryNotFoundException;
 use StarDust\Exception\ModelDeletionInProgressException;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -74,8 +75,9 @@ final class EntryWriter
         private readonly LoggerInterface $logger,
         private readonly SlotRowUpserter $slotRowUpserter,
         ?EntryChunkWriter $chunkWriter = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
-        $this->chunkWriter = $chunkWriter ?? new EntryChunkWriter($pdo, $clock, $slotRowUpserter);
+        $this->chunkWriter = $chunkWriter ?? new EntryChunkWriter($pdo, $clock, $slotRowUpserter, tables: $tables);
     }
 
     /**
@@ -201,7 +203,7 @@ final class EntryWriter
     private function lockEntryForUpdate(int $tenantId, int $entryId): int
     {
         $select = $this->pdo->prepare(
-            'SELECT model_id FROM entry_data'
+            'SELECT model_id FROM ' . $this->tables->entryData
             . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
             . ' FOR UPDATE'
         );
@@ -240,7 +242,7 @@ final class EntryWriter
         // an already-canonical payload. Comparing against a stale key
         // would make the renamed field look absent and NULL its slot on
         // every update during the rename window.
-        $map = LiveSlotMap::loadFor($this->pdo, $modelId);
+        $map = LiveSlotMap::loadFor($this->pdo, $modelId, $this->tables);
 
         // ADR 0038 — see the identical guard on the write path. `$modelId`
         // comes from the locked `entry_data` row rather than the caller,
@@ -265,7 +267,7 @@ final class EntryWriter
         $pageTableNames = $this->resolvePageTableNames(array_keys($slotWrites));
 
         $updateEntry = $this->pdo->prepare(
-            'UPDATE entry_data SET fields = ?, updated_at = ?'
+            'UPDATE ' . $this->tables->entryData . ' SET fields = ?, updated_at = ?'
             . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
         $updateEntry->execute([$jsonFields, $now, $entryId, $tenantId]);
@@ -282,7 +284,7 @@ final class EntryWriter
         $enqueued = $plan->hasMissingSlotFields();
         if ($enqueued) {
             $enqueue = $this->pdo->prepare(
-                'INSERT INTO stardust_sync_queue (entry_id, created_at, origin_correlation_id)'
+                'INSERT INTO ' . $this->tables->syncQueue . ' (entry_id, created_at, origin_correlation_id)'
                 . ' VALUES (?, ?, ?)'
             );
             $enqueue->execute([$entryId, $now, $correlationId]);
@@ -412,7 +414,7 @@ final class EntryWriter
 
         $placeholders = implode(',', array_fill(0, count($pageIds), '?'));
         $stmt = $this->pdo->prepare(
-            "SELECT id, table_name FROM stardust_pages WHERE id IN ({$placeholders})"
+            "SELECT id, table_name FROM {$this->tables->pages} WHERE id IN ({$placeholders})"
         );
         $stmt->execute($pageIds);
 

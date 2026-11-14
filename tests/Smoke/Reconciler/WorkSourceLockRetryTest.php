@@ -154,7 +154,7 @@ final class WorkSourceLockRetryTest extends Phase6bTestCase
         $outcome = (new SyncQueueWorkSource(
             pdo: $pdo,
             logger: $logger,
-            backfillExecutor: new BackfillExecutor($pdo, new SlotRowUpserter($pdo), new SystemClock(), $logger),
+            backfillExecutor: new BackfillExecutor($pdo, new SlotRowUpserter($pdo)),
             dlqWriter: $this->makeDlqWriter($logger),
             unmappedFieldReserver: $this->makeUnmappedFieldReserver($logger),
             chunkSize: 500,

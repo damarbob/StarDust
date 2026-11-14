@@ -11,6 +11,7 @@ use StarDust\Chronicler\ChroniclerOutcome;
 use StarDust\Liberator\Liberator;
 use StarDust\Reconciler\Reconciler;
 use StarDust\Reconciler\TickOutcome;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use StarDust\Watcher\Watcher;
 
@@ -117,6 +118,7 @@ final class CombinedTick
         private readonly ClockInterface $clock,
         private readonly ShutdownSignal $shutdown,
         private readonly string $pidFileDir,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -133,7 +135,7 @@ final class CombinedTick
             'exports'        => $exports,
         ]);
 
-        $watcherGuard = PidFileGuard::tryAcquire($this->pidFileDir, 'watcher');
+        $watcherGuard = PidFileGuard::tryAcquire($this->pidFileDir, $this->tables->daemon('watcher'));
         if ($watcherGuard === null) {
             return $this->skipped($correlationId, $budget, 'watcher');
         }

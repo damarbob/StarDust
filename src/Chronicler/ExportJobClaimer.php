@@ -7,6 +7,7 @@ namespace StarDust\Chronicler;
 use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
+use StarDust\Support\TableNames;
 use StarDust\Support\WorkerIdentity;
 use Throwable;
 
@@ -69,6 +70,7 @@ final class ExportJobClaimer
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
         private readonly int $leaseTimeoutSeconds,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -96,10 +98,10 @@ final class ExportJobClaimer
             $select = $this->pdo->prepare(
                 'SELECT j.id, j.tenant_id, j.filter, j.format,'
                 . '       j.last_cursor, j.skip_count, j.artifact_path, j.artifact_bytes, j.correlation_id'
-                . '  FROM stardust_export_jobs j'
+                . '  FROM ' . $this->tables->exportJobs . ' j'
                 . " WHERE j.status = 'pending'"
                 . ' ORDER BY ('
-                . '   SELECT MIN(j2.created_at) FROM stardust_export_jobs j2'
+                . '   SELECT MIN(j2.created_at) FROM ' . $this->tables->exportJobs . ' j2'
                 . "    WHERE j2.status = 'pending' AND j2.tenant_id = j.tenant_id"
                 . ' ) ASC, j.created_at ASC'
                 . ' LIMIT 1 FOR UPDATE SKIP LOCKED'
@@ -113,7 +115,7 @@ final class ExportJobClaimer
 
             $jobId = (int) $row['id'];
             $update = $this->pdo->prepare(
-                'UPDATE stardust_export_jobs'
+                'UPDATE ' . $this->tables->exportJobs
                 . " SET status = 'processing',"
                 . '     worker_identity = ?, claimed_at = ?, heartbeat_at = ?'
                 . ' WHERE id = ?'
@@ -170,7 +172,7 @@ final class ExportJobClaimer
             $select = $this->pdo->prepare(
                 'SELECT j.id, j.tenant_id, j.filter, j.format,'
                 . '       j.last_cursor, j.skip_count, j.artifact_path, j.artifact_bytes, j.correlation_id'
-                . '  FROM stardust_export_jobs j'
+                . '  FROM ' . $this->tables->exportJobs . ' j'
                 . " WHERE j.status = 'processing'"
                 . '   AND j.heartbeat_at IS NOT NULL'
                 . '   AND j.heartbeat_at < (UTC_TIMESTAMP() - INTERVAL ' . $this->leaseTimeoutSeconds . ' SECOND)'
@@ -189,7 +191,7 @@ final class ExportJobClaimer
             // operators can see the original claim time; only
             // worker_identity and heartbeat_at are overwritten.
             $update = $this->pdo->prepare(
-                'UPDATE stardust_export_jobs'
+                'UPDATE ' . $this->tables->exportJobs
                 . ' SET worker_identity = ?, heartbeat_at = ?'
                 . ' WHERE id = ?'
             );

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Rename;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Rewrites one bounded chunk of `entry_data.fields`, moving each row's
@@ -45,8 +46,10 @@ use PDO;
  */
 final class RenameBackfillExecutor
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     public function processChunk(RenameCheckpoint $checkpoint, int $chunkSize): RenameChunkResult
@@ -72,7 +75,7 @@ final class RenameBackfillExecutor
 
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
         $stmt = $this->pdo->prepare(
-            'UPDATE entry_data'
+            'UPDATE ' . $this->tables->entryData
             . ' SET fields = JSON_REMOVE(JSON_SET(fields, ?, JSON_EXTRACT(fields, ?)), ?)'
             . " WHERE id IN ({$placeholders})"
             . "   AND JSON_CONTAINS_PATH(fields, 'one', ?)"
@@ -103,7 +106,7 @@ final class RenameBackfillExecutor
     private function fetchChunkIds(int $tenantId, int $modelId, int $cursor, int $chunkSize): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM entry_data'
+            'SELECT id FROM ' . $this->tables->entryData
             . ' WHERE tenant_id = ? AND model_id = ? AND id > ?'
             . ' ORDER BY id ASC'
             . ' LIMIT ?'

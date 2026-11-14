@@ -13,6 +13,7 @@ use Psr\Log\LoggerInterface;
 use StarDust\Reconciler\ReconcilerWorkSource;
 use StarDust\Reconciler\TickOutcome;
 use StarDust\Support\RetryableLockFailure;
+use StarDust\Support\TableNames;
 use Throwable;
 
 /**
@@ -59,6 +60,7 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
         private readonly int $lockRetryBudget = 3,
         private readonly int $retryDelayMicros = 0,
         ?callable $sleepFn = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         $this->sleepFn = $sleepFn !== null
             ? Closure::fromCallable($sleepFn)
@@ -226,7 +228,7 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
     private function entriesRemain(ModelDeleteCheckpoint $checkpoint): bool
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id FROM entry_data WHERE tenant_id = ? AND model_id = ? LIMIT 1'
+            'SELECT id FROM ' . $this->tables->entryData . ' WHERE tenant_id = ? AND model_id = ? LIMIT 1'
         );
         $stmt->execute([$checkpoint->tenantId, $checkpoint->modelId]);
 
@@ -258,8 +260,8 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
         // column, not the status. The `field_id IS NULL` convention for
         // non-live rows is enforced by application code, not the schema.
         $stmt = $this->pdo->prepare(
-            'SELECT sa.id FROM stardust_slot_assignments sa'
-            . ' JOIN stardust_fields f ON f.id = sa.field_id'
+            'SELECT sa.id FROM ' . $this->tables->slotAssignments . ' sa'
+            . ' JOIN ' . $this->tables->fields . ' f ON f.id = sa.field_id'
             . ' WHERE f.model_id = ?'
             . ' FOR UPDATE'
         );
@@ -278,7 +280,7 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
             // key inside this transaction, and it clears the functional
             // partial unique index before any status flip.
             $clear = $this->pdo->prepare(
-                "UPDATE stardust_slot_assignments SET field_id = NULL, updated_at = ?"
+                "UPDATE {$this->tables->slotAssignments} SET field_id = NULL, updated_at = ?"
                 . " WHERE id IN ({$placeholders})"
             );
             $clear->execute(array_merge([$now], $slotIds));
@@ -295,7 +297,7 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
             // the Liberator may be mid-sweep on, matches nothing here
             // and keeps the cursor that is correct for its own sweep.
             $tombstone = $this->pdo->prepare(
-                'UPDATE stardust_slot_assignments'
+                'UPDATE ' . $this->tables->slotAssignments
                 . " SET status = 'tombstoned',"
                 . '     tombstoned_at = COALESCE(tombstoned_at, ?),'
                 . '     updated_at = ?,'
@@ -309,7 +311,7 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
 
         // Any field row that lost its marker or reacquired filterability.
         $refresh = $this->pdo->prepare(
-            'UPDATE stardust_fields'
+            'UPDATE ' . $this->tables->fields
             . ' SET deleted_at = COALESCE(deleted_at, ?), is_filterable = 0, updated_at = ?'
             . ' WHERE model_id = ? AND (deleted_at IS NULL OR is_filterable = 1)'
         );
@@ -319,7 +321,7 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
         // Defence in depth: the cascade below would orphan it permanently,
         // because both sibling repositories recover the field id by INNER
         // JOIN on a substring of `job_name`.
-        $fields = $this->pdo->prepare('SELECT id FROM stardust_fields WHERE model_id = ?');
+        $fields = $this->pdo->prepare('SELECT id FROM ' . $this->tables->fields . ' WHERE model_id = ?');
         $fields->execute([$modelId]);
 
         $fieldIds = [];
@@ -345,14 +347,14 @@ final class ModelPurgeWorkSource implements ReconcilerWorkSource
      */
     private function deleteModelRow(int $modelId): void
     {
-        $stmt = $this->pdo->prepare('DELETE FROM stardust_models WHERE id = ?');
+        $stmt = $this->pdo->prepare('DELETE FROM ' . $this->tables->models . ' WHERE id = ?');
         $stmt->execute([$modelId]);
     }
 
     private function bumpSchemaVersion(string $now): void
     {
         $stmt = $this->pdo->prepare(
-            'UPDATE stardust_schema_version SET version = version + 1, updated_at = ? WHERE id = 1'
+            'UPDATE ' . $this->tables->schemaVersion . ' SET version = version + 1, updated_at = ? WHERE id = 1'
         );
         $stmt->execute([$now]);
     }

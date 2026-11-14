@@ -10,6 +10,7 @@ use PDO;
 use RuntimeException;
 use StarDust\Slot\SlotAssignment;
 use StarDust\Support\MultiRowBatches;
+use StarDust\Support\TableNames;
 use StarDust\Write\SlotRowUpserter;
 
 /**
@@ -68,6 +69,7 @@ final class RetypeBackfillExecutor
         private readonly SlotRowUpserter $slotRowUpserter,
         private readonly int $maxPlaceholders = MultiRowBatches::DEFAULT_MAX_PLACEHOLDERS,
         ?int $maxStatementBytes = null,
+        private readonly TableNames $tables = new TableNames(),
     ) {
         if ($maxPlaceholders < 1) {
             throw new InvalidArgumentException('RetypeBackfillExecutor: maxPlaceholders must be >= 1.');
@@ -88,7 +90,7 @@ final class RetypeBackfillExecutor
         int $chunkSize,
     ): ChunkResult {
         $select = $this->pdo->prepare(
-            'SELECT id, fields FROM entry_data'
+            'SELECT id, fields FROM ' . $this->tables->entryData
             . ' WHERE tenant_id = ? AND model_id = ? AND id > ?'
             . ' ORDER BY id LIMIT ?'
         );

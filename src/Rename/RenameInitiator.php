@@ -15,6 +15,7 @@ use StarDust\Exception\FieldNotFoundException;
 use StarDust\Exception\RenameInProgressException;
 use StarDust\Exception\RetypeInProgressException;
 use StarDust\Retype\RetypeCheckpointRepository;
+use StarDust\Support\TableNames;
 use StarDust\Support\UuidV4;
 use Throwable;
 
@@ -43,6 +44,7 @@ final class RenameInitiator
         private readonly LoggerInterface $logger,
         private readonly RenameCheckpointRepository $renameCheckpoints,
         private readonly RetypeCheckpointRepository $retypeCheckpoints,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -102,14 +104,14 @@ final class RenameInitiator
             $this->assertNameAvailable($field['model_id'], $fieldId, $newName);
 
             $update = $this->pdo->prepare(
-                'UPDATE stardust_fields'
+                'UPDATE ' . $this->tables->fields
                 . ' SET name = ?, previous_name = ?, updated_at = ?'
                 . ' WHERE id = ?'
             );
             $update->execute([$newName, $field['name'], $now, $fieldId]);
 
             $bump = $this->pdo->prepare(
-                'UPDATE stardust_schema_version'
+                'UPDATE ' . $this->tables->schemaVersion
                 . ' SET version = version + 1, updated_at = ?'
                 . ' WHERE id = 1'
             );
@@ -156,7 +158,7 @@ final class RenameInitiator
     private function assertNameAvailable(int $modelId, int $fieldId, string $newName): void
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, name, previous_name, deleted_at FROM stardust_fields'
+            'SELECT id, name, previous_name, deleted_at FROM ' . $this->tables->fields
             . ' WHERE model_id = ? AND id <> ? AND (name = ? OR previous_name = ?)'
             . ' LIMIT 1 FOR UPDATE'
         );
@@ -196,8 +198,8 @@ final class RenameInitiator
     {
         $stmt = $this->pdo->prepare(
             'SELECT f.name, f.model_id, f.deleted_at, m.tenant_id'
-            . ' FROM stardust_fields f'
-            . ' JOIN stardust_models m ON m.id = f.model_id'
+            . ' FROM ' . $this->tables->fields . ' f'
+            . ' JOIN ' . $this->tables->models . ' m ON m.id = f.model_id'
             . ' WHERE f.id = ?'
         );
         $stmt->execute([$fieldId]);

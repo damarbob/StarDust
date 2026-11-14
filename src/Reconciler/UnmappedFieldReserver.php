@@ -8,6 +8,7 @@ use PDO;
 use PDOException;
 use StarDust\Retype\RetypeCheckpointRepository;
 use StarDust\Slot\SlotReserver;
+use StarDust\Support\TableNames;
 
 /**
  * Reserves slots for the filterable fields a sync-queue backfill found
@@ -79,6 +80,7 @@ final class UnmappedFieldReserver
         private readonly PDO $pdo,
         private readonly SlotReserver $slotReserver,
         private readonly RetypeCheckpointRepository $retypeCheckpoints,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -146,8 +148,8 @@ final class UnmappedFieldReserver
         // guard, but a predicate that the SQL's correctness depends on
         // belongs in the SQL.
         $stmt = $this->pdo->prepare(
-            'SELECT f.id FROM stardust_fields f'
-            . ' JOIN entry_data e ON e.model_id = f.model_id'
+            'SELECT f.id FROM ' . $this->tables->fields . ' f'
+            . ' JOIN ' . $this->tables->entryData . ' e ON e.model_id = f.model_id'
             // ADR 0037: `deleted_at IS NULL` matters more here than the
             // `is_filterable` clause it sits beside. Reserving a slot for
             // a field being deleted would re-take the RESTRICT foreign

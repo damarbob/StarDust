@@ -105,6 +105,7 @@ use StarDust\Write\EntryWriteResult;
 use StarDust\Write\EntryWriter;
 use StarDust\Write\ImportJob;
 use StarDust\Write\ImportJobId;
+use StarDust\Support\TableNames;
 use StarDust\Write\SlotRowUpserter;
 use StarDust\Write\TenantId;
 
@@ -146,9 +147,13 @@ final class StarDust
     private ?SchemaBuilder $schemaBuilder = null;
     private ?SchemaReader $schemaReader = null;
     private ?ServerEngine $serverEngine = null;
+    private readonly TableNames $tables;
 
     public function __construct(private readonly Config $config)
     {
+        // ADR 0059. Every collaborator below gets this one instance, so the
+        // prefix is applied the same way everywhere.
+        $this->tables = new TableNames($config->tablePrefix);
     }
 
     public function config(): Config
@@ -174,7 +179,7 @@ final class StarDust
      */
     public function bootstrap(): void
     {
-        (new Bootstrapper($this->config->pdo, $this->serverEngine()))->run();
+        (new Bootstrapper($this->config->pdo, $this->serverEngine(), tables: $this->tables))->run();
     }
 
     /**
@@ -222,6 +227,7 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             slotReserver: $this->config->reserveSlotAtRegistration ? $this->slotReserver() : null,
+            tables: $this->tables,
         );
     }
 
@@ -691,7 +697,7 @@ final class StarDust
 
     private function schemaReader(): SchemaReader
     {
-        return $this->schemaReader ??= new SchemaReader($this->config->pdo);
+        return $this->schemaReader ??= new SchemaReader($this->config->pdo, tables: $this->tables);
     }
 
     /**
@@ -712,6 +718,7 @@ final class StarDust
         return $this->lockNamespace ??= new LockNamespace(
             pdo: $this->config->pdo,
             explicit: $this->config->lockNamespace,
+            tables: $this->tables,
         );
     }
 
@@ -721,13 +728,14 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
-            capacityReporter: new CapacityReporter($this->config->pdo),
-            pendingDemandReader: new PendingDemandReader($this->config->pdo),
+            capacityReporter: new CapacityReporter($this->config->pdo, tables: $this->tables),
+            pendingDemandReader: new PendingDemandReader($this->config->pdo, tables: $this->tables),
             pageProvisioner: new PageProvisioner(
                 pdo: $this->config->pdo,
                 clock: $this->config->clock,
                 logger: $this->config->logger,
                 engine: $this->serverEngine(),
+                tables: $this->tables,
             ),
             cardinalitySampler: $this->cardinalitySampler(),
             spreadSampler: $this->spreadSampler(),
@@ -739,6 +747,7 @@ final class StarDust
             advisorySchedule: new AdvisoryScheduleRepository(
                 pdo: $this->config->pdo,
                 clock: $this->config->clock,
+                tables: $this->tables,
             ),
             lockNamespace: $this->lockNamespace(),
         );
@@ -765,6 +774,7 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
+            tables: $this->tables,
         );
 
         $syncQueue = new SyncQueueWorkSource(
@@ -775,11 +785,13 @@ final class StarDust
             unmappedFieldReserver: new UnmappedFieldReserver(
                 pdo: $this->config->pdo,
                 slotReserver: $this->slotReserver(),
-                retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
+                retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo, tables: $this->tables),
+                tables: $this->tables,
             ),
             chunkSize: $this->config->reconcilerChunkSize,
             lockRetryBudget: $this->config->reconcilerLockRetryBudget,
             retryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
+            tables: $this->tables,
         );
 
         $importJobs = new ImportJobWorkSource(
@@ -794,16 +806,18 @@ final class StarDust
             leaseTimeoutSeconds: $this->config->reconcilerImportLeaseTimeoutSeconds,
             lockRetryBudget: $this->config->reconcilerLockRetryBudget,
             lockRetryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
+            tables: $this->tables,
         );
 
         $retypeBackfill = new RetypeBackfillWorkSource(
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
-            repository: new RetypeCheckpointRepository($this->config->pdo),
+            repository: new RetypeCheckpointRepository($this->config->pdo, tables: $this->tables),
             executor: new RetypeBackfillExecutor(
                 pdo: $this->config->pdo,
                 slotRowUpserter: $this->slotRowUpserter(),
+                tables: $this->tables,
             ),
             slotReserver: $this->slotReserver(),
             cardinalitySampler: $this->cardinalitySampler(),
@@ -811,6 +825,7 @@ final class StarDust
             chunkSize: $this->config->reconcilerChunkSize,
             lockRetryBudget: $this->config->reconcilerLockRetryBudget,
             retryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
+            tables: $this->tables,
         );
 
         // Appended as the fourth source rather than inserted: the
@@ -821,11 +836,12 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
-            repository: new RenameCheckpointRepository($this->config->pdo),
-            executor: new RenameBackfillExecutor(pdo: $this->config->pdo),
+            repository: new RenameCheckpointRepository($this->config->pdo, tables: $this->tables),
+            executor: new RenameBackfillExecutor(pdo: $this->config->pdo, tables: $this->tables),
             chunkSize: $this->config->reconcilerChunkSize,
             lockRetryBudget: $this->config->reconcilerLockRetryBudget,
             retryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
+            tables: $this->tables,
         );
 
         // Fifth, appended for the same reason the fourth was: the
@@ -836,11 +852,12 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
-            repository: new DeleteCheckpointRepository($this->config->pdo),
-            executor: new DeletePurgeExecutor(pdo: $this->config->pdo),
+            repository: new DeleteCheckpointRepository($this->config->pdo, tables: $this->tables),
+            executor: new DeletePurgeExecutor(pdo: $this->config->pdo, tables: $this->tables),
             chunkSize: $this->config->reconcilerChunkSize,
             lockRetryBudget: $this->config->reconcilerLockRetryBudget,
             retryDelayMicros: $this->config->reconcilerLockRetryDelayMicros,
+            tables: $this->tables,
         );
 
         // Sixth, appended. Last in the tick on purpose: it and the
@@ -850,11 +867,12 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
-            repository: new ModelDeleteCheckpointRepository($this->config->pdo),
-            executor: new ModelPurgeExecutor(pdo: $this->config->pdo),
+            repository: new ModelDeleteCheckpointRepository($this->config->pdo, tables: $this->tables),
+            executor: new ModelPurgeExecutor(pdo: $this->config->pdo, tables: $this->tables),
             chunkSize: $this->config->modelPurgeChunkSize,
             lockRetryBudget: $this->config->modelPurgeLockRetryBudget,
             retryDelayMicros: $this->config->reconcilerInterChunkDelayMicros,
+            tables: $this->tables,
         );
 
         return new Reconciler(
@@ -940,8 +958,8 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
-            pager: new EntryDataPager($this->config->pdo),
-            headerResolver: new HeaderResolver($this->config->pdo),
+            pager: new EntryDataPager($this->config->pdo, tables: $this->tables),
+            headerResolver: new HeaderResolver($this->config->pdo, tables: $this->tables),
             streamFactory: $streamFactory,
             pageSize: $this->config->chroniclerPageSize,
             interChunkDelayMicros: $this->config->chroniclerInterChunkDelayMicros,
@@ -950,6 +968,7 @@ final class StarDust
             artifactSizeCapBytes: $this->config->chroniclerArtifactSizeCapBytes,
             dbDisconnectBackoffSeconds: $this->config->chroniclerDbDisconnectBackoffSeconds,
             connector: $this->config->pdoConnector,
+            tables: $this->tables,
         );
 
         return new Chronicler(
@@ -958,6 +977,7 @@ final class StarDust
                 pdo: $this->config->pdo,
                 clock: $this->config->clock,
                 leaseTimeoutSeconds: $this->config->chroniclerLeaseTimeoutSeconds,
+                tables: $this->tables,
             ),
             processor: $processor,
             diskGate: new DiskPressureGate(
@@ -971,6 +991,7 @@ final class StarDust
                 artifactTtlSeconds: $this->config->chroniclerArtifactTtlSeconds,
                 orphanedPartialTtlSeconds: $this->config->chroniclerOrphanedPartialTtlSeconds,
                 artifactDir: $this->config->artifactDir,
+                tables: $this->tables,
             ),
             yieldSignal: $shutdown !== null ? new ShutdownYield($shutdown) : null,
         );
@@ -997,6 +1018,7 @@ final class StarDust
             repository: new TombstonedSlotRepository(
                 pdo: $this->config->pdo,
                 batchSize: $this->config->liberatorBatchSize,
+                tables: $this->tables,
             ),
             sweeper: new SlotSweeper(
                 pdo: $this->config->pdo,
@@ -1004,6 +1026,7 @@ final class StarDust
                 chunkSize: $this->config->liberatorChunkSize,
                 interChunkDelayMicros: $this->config->liberatorInterChunkDelayMicros,
                 deadlockRetryBudget: $this->config->liberatorDeadlockRetryBudget,
+                tables: $this->tables,
             ),
             pageLock: new SweepPageLock($this->config->pdo, $this->lockNamespace()),
             workerIdentity: WorkerIdentity::mint(),
@@ -1034,6 +1057,7 @@ final class StarDust
             clock: $this->config->clock,
             shutdown: $this->shutdownSignal('tick'),
             pidFileDir: $this->config->pidFileDir,
+            tables: $this->tables,
         );
     }
 
@@ -1084,6 +1108,7 @@ final class StarDust
         return new DlqReplayer(
             pdo: $this->config->pdo,
             clock: $this->config->clock,
+            tables: $this->tables,
         );
     }
 
@@ -1106,7 +1131,7 @@ final class StarDust
     {
         return new CompositeShutdownSignal(
             new SignalShutdownSignal(),
-            new FlagFileShutdownSignal($this->config->pidFileDir, $daemonName),
+            new FlagFileShutdownSignal($this->config->pidFileDir, $this->tables->daemon($daemonName)),
         );
     }
 
@@ -1117,6 +1142,7 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             slotRowUpserter: $this->slotRowUpserter(),
+            tables: $this->tables,
         );
     }
 
@@ -1130,6 +1156,7 @@ final class StarDust
         return $this->backfillExecutor ??= new BackfillExecutor(
             pdo: $this->config->pdo,
             slotRowUpserter: $this->slotRowUpserter(),
+            tables: $this->tables,
         );
     }
 
@@ -1139,6 +1166,7 @@ final class StarDust
             pdo: $this->config->pdo,
             entryWriter: $this->entryWriter(),
             logger: $this->config->logger,
+            tables: $this->tables,
         );
     }
 
@@ -1149,6 +1177,7 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             artifactDir: $this->config->artifactDir,
+            tables: $this->tables,
         );
     }
 
@@ -1181,6 +1210,7 @@ final class StarDust
                 logger: $this->config->logger,
                 cache:  $this->schemaVersionCache(),
                 engine: $this->serverEngine(),
+                tables: $this->tables,
             );
     }
 
@@ -1189,6 +1219,7 @@ final class StarDust
         return $this->schemaVersionCache ??= new SchemaVersionCache(
             $this->config->pdo,
             $this->config->logger,
+            tables: $this->tables,
         );
     }
 
@@ -1198,6 +1229,7 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
+            tables: $this->tables,
         );
     }
 
@@ -1219,6 +1251,7 @@ final class StarDust
             selectivityThreshold: $this->config->cardinalitySelectivityThreshold,
             rowFloor: $this->config->cardinalityRowFloor,
             distinctFloor: $this->config->cardinalityDistinctFloor,
+            tables: $this->tables,
         );
     }
 
@@ -1233,7 +1266,8 @@ final class StarDust
             pdo: $this->config->pdo,
             logger: $this->config->logger,
             excessPageThreshold: $this->config->spreadExcessPageThreshold,
-            capacityReader: new IndexedFreeCapacityReader($this->config->pdo),
+            capacityReader: new IndexedFreeCapacityReader($this->config->pdo, tables: $this->tables),
+            tables: $this->tables,
         );
     }
 
@@ -1330,15 +1364,16 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
+            tables: $this->tables,
         );
     }
 
     private function compactionService(): CompactionService
     {
         return $this->compactionService ??= new CompactionService(
-            repository: new CompactionRepository($this->config->pdo),
+            repository: new CompactionRepository($this->config->pdo, tables: $this->tables),
             retypeInitiator: $this->retypeInitiator(),
-            checkpointRepository: new RetypeCheckpointRepository($this->config->pdo),
+            checkpointRepository: new RetypeCheckpointRepository($this->config->pdo, tables: $this->tables),
             logger: $this->config->logger,
             clock: $this->config->clock,
         );
@@ -1352,8 +1387,9 @@ final class StarDust
             logger: $this->config->logger,
             slotReserver: $this->slotReserver(),
             tombstoner: $this->liveSlotTombstoner(),
-            checkpointRepository: new RetypeCheckpointRepository($this->config->pdo),
-            renameCheckpointRepository: new RenameCheckpointRepository($this->config->pdo),
+            checkpointRepository: new RetypeCheckpointRepository($this->config->pdo, tables: $this->tables),
+            renameCheckpointRepository: new RenameCheckpointRepository($this->config->pdo, tables: $this->tables),
+            tables: $this->tables,
         );
     }
 
@@ -1363,8 +1399,9 @@ final class StarDust
             pdo: $this->config->pdo,
             clock: $this->config->clock,
             logger: $this->config->logger,
-            renameCheckpoints: new RenameCheckpointRepository($this->config->pdo),
-            retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
+            renameCheckpoints: new RenameCheckpointRepository($this->config->pdo, tables: $this->tables),
+            retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo, tables: $this->tables),
+            tables: $this->tables,
         );
     }
 
@@ -1375,9 +1412,10 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             tombstoner: $this->liveSlotTombstoner(),
-            deleteCheckpoints: new DeleteCheckpointRepository($this->config->pdo),
-            renameCheckpoints: new RenameCheckpointRepository($this->config->pdo),
-            retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo),
+            deleteCheckpoints: new DeleteCheckpointRepository($this->config->pdo, tables: $this->tables),
+            renameCheckpoints: new RenameCheckpointRepository($this->config->pdo, tables: $this->tables),
+            retypeCheckpoints: new RetypeCheckpointRepository($this->config->pdo, tables: $this->tables),
+            tables: $this->tables,
         );
     }
 
@@ -1388,13 +1426,14 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             tombstoner: $this->liveSlotTombstoner(),
-            modelCheckpoints: new ModelDeleteCheckpointRepository($this->config->pdo),
+            modelCheckpoints: new ModelDeleteCheckpointRepository($this->config->pdo, tables: $this->tables),
+            tables: $this->tables,
         );
     }
 
     private function liveSlotTombstoner(): LiveSlotTombstoner
     {
-        return $this->liveSlotTombstoner ??= new LiveSlotTombstoner($this->config->pdo);
+        return $this->liveSlotTombstoner ??= new LiveSlotTombstoner($this->config->pdo, tables: $this->tables);
     }
 
     private function modelRenamer(): ModelRenamer
@@ -1402,6 +1441,7 @@ final class StarDust
         return $this->modelRenamer ??= new ModelRenamer(
             pdo: $this->config->pdo,
             logger: $this->config->logger,
+            tables: $this->tables,
         );
     }
 
@@ -1412,6 +1452,7 @@ final class StarDust
             clock: $this->config->clock,
             logger: $this->config->logger,
             perTenantActiveCap: $this->config->chroniclerPerTenantActiveCap,
+            tables: $this->tables,
         );
     }
 }

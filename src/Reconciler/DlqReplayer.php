@@ -8,6 +8,7 @@ use DateTimeZone;
 use PDO;
 use Psr\Clock\ClockInterface;
 use StarDust\Exception\DlqReplayNotFoundException;
+use StarDust\Support\TableNames;
 use Throwable;
 
 /**
@@ -36,6 +37,7 @@ final class DlqReplayer
     public function __construct(
         private readonly PDO $pdo,
         private readonly ClockInterface $clock,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -91,7 +93,7 @@ final class DlqReplayer
     {
         $stmt = $this->pdo->prepare(
             'SELECT id, entry_id, retry_count'
-            . ' FROM stardust_reconciler_dlq '
+            . ' FROM ' . $this->tables->reconcilerDlq . ' '
             . $whereClause
             . ' ORDER BY id FOR UPDATE'
         );
@@ -111,13 +113,13 @@ final class DlqReplayer
             ->format('Y-m-d H:i:s');
 
         $enqueue = $this->pdo->prepare(
-            'INSERT INTO stardust_sync_queue (entry_id, created_at) VALUES (?, ?)'
+            'INSERT INTO ' . $this->tables->syncQueue . ' (entry_id, created_at) VALUES (?, ?)'
         );
         $bumpRetry = $this->pdo->prepare(
-            'UPDATE stardust_reconciler_dlq SET retry_count = retry_count + 1 WHERE id = ?'
+            'UPDATE ' . $this->tables->reconcilerDlq . ' SET retry_count = retry_count + 1 WHERE id = ?'
         );
         $delete = $this->pdo->prepare(
-            'DELETE FROM stardust_reconciler_dlq WHERE id = ?'
+            'DELETE FROM ' . $this->tables->reconcilerDlq . ' WHERE id = ?'
         );
 
         $dlqIds = [];

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace StarDust\Schema;
 
 use PDO;
+use StarDust\Support\TableNames;
 
 /**
  * Read-only introspection over the schema registry.
@@ -49,8 +50,10 @@ final class SchemaReader
      */
     private const QUERYABLE_STATUSES = ['assigned', 'ready'];
 
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly TableNames $tables = new TableNames(),
+    ) {
     }
 
     /**
@@ -64,7 +67,7 @@ final class SchemaReader
             // ADR 0038: a model being deleted is gone from introspection
             // the instant severance commits, matching every other
             // first-class surface.
-            'SELECT id, name FROM stardust_models'
+            'SELECT id, name FROM ' . $this->tables->models
             . ' WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY id'
         );
         $stmt->execute([$tenantId]);
@@ -90,7 +93,7 @@ final class SchemaReader
             // ADR 0038: `null` for a deleting model, the same answer
             // this method already gives for a model that does not exist
             // or belongs to another tenant.
-            'SELECT id, name FROM stardust_models'
+            'SELECT id, name FROM ' . $this->tables->models
             . ' WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
         );
         $model->execute([$modelId, $tenantId]);
@@ -123,8 +126,8 @@ final class SchemaReader
         $stmt = $this->pdo->prepare(
             'SELECT f.id, f.name, f.declared_type, f.is_filterable,'
             . ' a.id AS slot_assignment_id'
-            . ' FROM stardust_fields f'
-            . ' LEFT JOIN stardust_slot_assignments a'
+            . ' FROM ' . $this->tables->fields . ' f'
+            . ' LEFT JOIN ' . $this->tables->slotAssignments . ' a'
             . "   ON a.field_id = f.id AND a.status IN ({$placeholders})"
             // ADR 0037: a field being deleted is gone as far as
             // introspection is concerned. Its registry row only survives

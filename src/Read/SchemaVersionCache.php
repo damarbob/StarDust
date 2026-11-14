@@ -7,6 +7,7 @@ namespace StarDust\Read;
 use PDO;
 use PDOException;
 use Psr\Log\LoggerInterface;
+use StarDust\Support\TableNames;
 
 /**
  * In-process schema-version cache per ADR 0015.
@@ -43,6 +44,7 @@ final class SchemaVersionCache
     public function __construct(
         private readonly PDO $pdo,
         private readonly LoggerInterface $logger,
+        private readonly TableNames $tables = new TableNames(),
     ) {
     }
 
@@ -99,7 +101,7 @@ final class SchemaVersionCache
             return $cached;
         }
 
-        $fresh = SlotResolver::load($this->pdo, $modelId, $liveVersion);
+        $fresh = SlotResolver::load($this->pdo, $modelId, $liveVersion, $this->tables);
         $this->snapshotsByModel[$modelId] = $fresh;
 
         $this->logger->info('schema cache miss', [
@@ -117,7 +119,7 @@ final class SchemaVersionCache
 
     private function readLiveVersion(): int
     {
-        $stmt = $this->pdo->query('SELECT version FROM stardust_schema_version WHERE id = 1');
+        $stmt = $this->pdo->query('SELECT version FROM ' . $this->tables->schemaVersion . ' WHERE id = 1');
         if ($stmt === false) {
             throw new PDOException('stardust_schema_version probe returned no statement');
         }
