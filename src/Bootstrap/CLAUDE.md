@@ -11,6 +11,7 @@ It creates the data plane (`entry_data`, `stardust_sync_queue`), the schema regi
 - **A column added to a table that can hold in-flight work is nullable, and every reader falls back when it is null.** Work already running when the `ALTER` lands has no value. The correlation-id columns below are the precedent.
 - **A new table also goes in `SchemaFixture::CORE_TABLES`**, or tests leak state between each other. `Conventions/BootstrapperTableAllowlistTest` fails on drift in either direction. See `tests/Smoke/CLAUDE.md`.
 - **Engine-specific DDL text comes from `Support\Dialect`**, never an inline literal (root `CLAUDE.md`, "Support utilities").
+- **Table and constraint names come from `Support\TableNames` (ADR 0059).** Every statement in this class interpolates them (`CREATE TABLE IF NOT EXISTS {$this->tables->models}`), and the `<<<'SQL'` nowdocs became interpolating heredocs for it, so a `$` or a backslash in new DDL needs escaping. The five named constraints (`fk_fields_model`, `fk_slot_assignments_page`, `fk_slot_assignments_field` and the two `ck_*_singleton`) carry the prefix because a foreign key name is scoped to the database on both engines and a `CHECK` name is on MySQL. **Index names do not**, since an index name belongs to its table. Probed on MySQL 8.0.46 and MariaDB 10.11.19, and the table is in the ADR. The `information_schema` probes in the `ensureXxx()` methods take the table name from the same instance, so a prefixed installation migrates its own tables and never a bare one.
 
 ## The page-size gate
 
